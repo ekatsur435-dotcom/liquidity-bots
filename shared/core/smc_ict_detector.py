@@ -1,13 +1,13 @@
 """
-SMC + ICT Pattern Detector
+SMC + ICT Detector — БЕЗ PANDAS
 Smart Money Concepts + Inner Circle Trader
 На основе методологии Статхэма (из Pine Script v130)
 """
 
-import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Tuple
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 
 
@@ -15,12 +15,10 @@ class SMCType(Enum):
     """Типы SMC структур"""
     ORDER_BLOCK_BULLISH = "ob_bullish"
     ORDER_BLOCK_BEARISH = "ob_bearish"
-    FAIR_VALUE_GAP_BULLISH = "fvg_bullish"
-    FAIR_VALUE_GAP_BEARISH = "fvg_bearish"
-    BREAKER_BLOCK = "breaker"
-    MITIGATION_BLOCK = "mitigation"
-    LIQUIDITY_SWEEP_HIGH = "sweep_high"
-    LIQUIDITY_SWEEP_LOW = "sweep_low"
+    FVG_BULLISH = "fvg_bullish"
+    FVG_BEARISH = "fvg_bearish"
+    LIQUIDITY_SWING_HIGH = "liq_high"
+    LIQUIDITY_SWING_LOW = "liq_low"
     CHoCH_BULLISH = "choch_bullish"
     CHoCH_BEARISH = "choch_bearish"
     BOS_BULLISH = "bos_bullish"
@@ -31,357 +29,296 @@ class SMCType(Enum):
 class SMCStructure:
     """SMC структура (Order Block, FVG, etc.)"""
     type: SMCType
-    start_time: pd.Timestamp
-    end_time: pd.Timestamp
+    start_time: datetime
+    end_time: datetime
     top: float
     bottom: float
     volume: float
-    strength: int  # 1-10
-    is_active: bool
-    mitigation_price: Optional[float] = None
+    strength: int = 50  # 0-100
+    is_valid: bool = True
+    mitigated: bool = False
+    mitigated_time: Optional[datetime] = None
     
-    @property
-    def height(self) -> float:
-        return self.top - self.bottom
-    
-    @property
-    def mid(self) -> float:
+    def get_mid(self) -> float:
         return (self.top + self.bottom) / 2
+    
+    def get_size(self) -> float:
+        return abs(self.top - self.bottom)
+    
+    def contains_price(self, price: float) -> bool:
+        return self.bottom <= price <= self.top
 
 
 @dataclass
 class LiquidityZone:
-    """Зона ликвидности (EQH/EQL, PWH/PWL)"""
-    level: float
-    type: str  # 'equal_highs', 'equal_lows', 'pwh', 'pwl'
+    """Зона ликвидности"""
+    price_level: float
+    zone_type: str  # 'equal_highs', 'equal_lows', 'pwh', 'pwl', 'ssl', 'bsl'
     touches: int
     volume_at_level: float
     is_swept: bool = False
-    sweep_time: Optional[pd.Timestamp] = None
+    sweep_time: Optional[datetime] = None
 
 
 @dataclass
 class ICTSession:
-    """ICT Trading Session"""
-    name: str  # 'asia', 'london', 'ny', 'ny_pm'
-    start_hour: int
-    end_hour: int
+    """ICT торговая сессия"""
+    name: str  # 'asia', 'london', 'ny_am', 'ny_pm'
+    start_time: datetime
+    end_time: datetime
     high: float
     low: float
     open: float
     close: float
-    displacement: float  # Движение внутри сессии
+    displacement: float  # % изменение
 
 
-class SMCICTDetector:
+class SMCDetector:
     """
-    Детектор SMC+ICT паттернов
-    На основе концепций: ICT, Algo Forex, Smart Money Concepts
+    Детектор SMC (Smart Money Concepts) паттернов
+    Без pandas — только lists и dicts
     """
     
-    def __init__(self, 
-                 ob_lookback: int = 5,
-                 fvg_min_size: float = 0.001,  # 0.1%
-                 min_volume_mult: float = 1.5):
-        self.ob_lookback = ob_lookback
-        self.fvg_min_size = fvg_min_size
-        self.min_volume_mult = min_volume_mult
+    def __init__(self, timeframe: str = "15m"):
+        self.timeframe = timeframe
+    
+    def _get_candle(self, data: List[Dict], idx: int) -> Optional[Dict]:
+        """Безопасно получить свечу по индексу"""
+        if 0 <= idx < len(data):
+            return data[idx]
+        return None
+    
+    def _is_bullish(self, candle: Dict) -> bool:
+        return candle['close'] > candle['open']
+    
+    def _is_bearish(self, candle: Dict) -> bool:
+        return candle['close'] < candle['open']
+    
+    def _get_body(self, candle: Dict) -> float:
+        return abs(candle['close'] - candle['open'])
+    
+    def _get_range(self, candle: Dict) -> float:
+        return candle['high'] - candle['low']
     
     # =========================================================================
     # ORDER BLOCKS (OB)
     # =========================================================================
     
-    def detect_order_blocks(self, df: pd.DataFrame) -> List[SMCStructure]:
-        """
-        Детекция Order Blocks
-        
-        Bullish OB: Последняя медвежья свеча перед импульсом вверх
-        Bearish OB: Последняя бычья свеча перед импульсом вниз
-        """
+    def detect_order_blocks(self, data: List[Dict]) -> List[SMCStructure]:
+        """Детекция Order Blocks"""
         obs = []
         
-        for i in range(self.ob_lookback, len(df) - 1):
-            window = df.iloc[i-self.ob_lookback:i+1]
-            
-            # Bullish Order Block
-            bullish_ob = self._detect_bullish_ob(window, i, df)
-            if bullish_ob:
-                obs.append(bullish_ob)
-            
-            # Bearish Order Block
-            bearish_ob = self._detect_bearish_ob(window, i, df)
-            if bearish_ob:
-                obs.append(bearish_ob)
+        if len(data) < 5:
+            return obs
         
-        # Фильтруем и сортируем по силе
-        obs = self._filter_quality_obs(obs)
-        
-        return obs
-    
-    def _detect_bullish_ob(self, window: pd.DataFrame, 
-                          idx: int, df: pd.DataFrame) -> Optional[SMCStructure]:
-        """Детекция бычьего Order Block"""
-        
-        # Ищем последнюю красную свечу перед импульсом вверх
-        for j in range(len(window) - 1, -1, -1):
-            candle = window.iloc[j]
-            
-            # Должна быть медвежья свеча
-            if candle['close'] >= candle['open']:  # Зелёная или дожи
-                continue
-            
-            # Проверяем что после неё идёт импульс вверх
-            if idx + 1 < len(df):
-                next_candles = df.iloc[idx+1:min(idx+4, len(df))]
+        # Ищем импульсы и OB перед ними
+        for i in range(3, len(data) - 2):
+            # Бычий импульс (3 зелёные свечи)
+            if (self._is_bullish(data[i]) and 
+                self._is_bullish(data[i+1]) and 
+                self._is_bullish(data[i+2])):
                 
-                # Должен быть рост минимум на 0.5%
-                price_change = (next_candles['close'].iloc[-1] - candle['close']) / candle['close']
-                
-                if price_change > 0.005:  # 0.5% импульс
-                    # Проверяем объём
-                    avg_vol = window['volume'].mean()
-                    if candle['volume'] > avg_vol * 0.8:  # Не слишком маленький объём
-                        return SMCStructure(
-                            type=SMCType.ORDER_BLOCK_BULLISH,
-                            start_time=candle.name if isinstance(candle.name, pd.Timestamp) else pd.Timestamp.now(),
-                            end_time=candle.name if isinstance(candle.name, pd.Timestamp) else pd.Timestamp.now(),
-                            top=candle['open'],  # Верх OB - открытие медвежьей свечи
-                            bottom=candle['low'],  # Низ OB - минимум
-                            volume=candle['volume'],
-                            strength=min(10, int(price_change * 1000)),  # Сила от импульса
-                            is_active=True,
-                            mitigation_price=None
-                        )
-        
-        return None
-    
-    def _detect_bearish_ob(self, window: pd.DataFrame,
-                          idx: int, df: pd.DataFrame) -> Optional[SMCStructure]:
-        """Детекция медвежьего Order Block"""
-        
-        for j in range(len(window) - 1, -1, -1):
-            candle = window.iloc[j]
+                # Ищем последнюю красную свечу перед импульсом
+                for j in range(i-1, max(i-5, -1), -1):
+                    if self._is_bearish(data[j]):
+                        avg_vol = np.mean([d['volume'] for d in data[max(0,j-5):j+1]])
+                        if data[j]['volume'] > avg_vol * 0.8:
+                            ob = SMCStructure(
+                                type=SMCType.ORDER_BLOCK_BULLISH,
+                                start_time=data[j].get('timestamp', datetime.now()),
+                                end_time=data[j].get('timestamp', datetime.now()),
+                                top=data[j]['open'],
+                                bottom=data[j]['low'],
+                                volume=data[j]['volume'],
+                                strength=70
+                            )
+                            obs.append(ob)
+                            break
             
-            # Должна быть бычья свеча
-            if candle['close'] <= candle['open']:  # Красная или дожи
-                continue
-            
-            # Проверяем что после неё идёт импульс вниз
-            if idx + 1 < len(df):
-                next_candles = df.iloc[idx+1:min(idx+4, len(df))]
+            # Медвежий импульс (3 красные свечи)
+            if (self._is_bearish(data[i]) and 
+                self._is_bearish(data[i+1]) and 
+                self._is_bearish(data[i+2])):
                 
-                price_change = (next_candles['close'].iloc[-1] - candle['close']) / candle['close']
-                
-                if price_change < -0.005:  # -0.5% импульс
-                    avg_vol = window['volume'].mean()
-                    if candle['volume'] > avg_vol * 0.8:
-                        return SMCStructure(
-                            type=SMCType.ORDER_BLOCK_BEARISH,
-                            start_time=candle.name if isinstance(candle.name, pd.Timestamp) else pd.Timestamp.now(),
-                            end_time=candle.name if isinstance(candle.name, pd.Timestamp) else pd.Timestamp.now(),
-                            top=candle['high'],
-                            bottom=candle['open'],  # Низ OB - открытие бычьей свечи
-                            volume=candle['volume'],
-                            strength=min(10, int(abs(price_change) * 1000)),
-                            is_active=True,
-                            mitigation_price=None
-                        )
+                for j in range(i-1, max(i-5, -1), -1):
+                    if self._is_bullish(data[j]):
+                        avg_vol = np.mean([d['volume'] for d in data[max(0,j-5):j+1]])
+                        if data[j]['volume'] > avg_vol * 0.8:
+                            ob = SMCStructure(
+                                type=SMCType.ORDER_BLOCK_BEARISH,
+                                start_time=data[j].get('timestamp', datetime.now()),
+                                end_time=data[j].get('timestamp', datetime.now()),
+                                top=data[j]['high'],
+                                bottom=data[j]['open'],
+                                volume=data[j]['volume'],
+                                strength=70
+                            )
+                            obs.append(ob)
+                            break
         
-        return None
-    
-    def _filter_quality_obs(self, obs: List[SMCStructure]) -> List[SMCStructure]:
-        """Фильтрация качественных OB"""
-        # Убираем слишком близкие друг к другу
-        filtered = []
-        last_ob_end = None
-        
-        for ob in sorted(obs, key=lambda x: x.strength, reverse=True):
-            if last_ob_end is None or (ob.start_time - last_ob_end).total_seconds() > 3600:  # 1 час
-                filtered.append(ob)
-                last_ob_end = ob.end_time
-        
-        return filtered[:10]  # Максимум 10 OB
+        return obs[-10:]  # Последние 10 OB
     
     # =========================================================================
     # FAIR VALUE GAPS (FVG)
     # =========================================================================
     
-    def detect_fvgs(self, df: pd.DataFrame) -> List[SMCStructure]:
-        """
-        Детекция Fair Value Gaps
-        
-        Bullish FVG: Low текущей > High двух свечей назад (импульс вверх)
-        Bearish FVG: High текущей < Low двух свечей назад (импульс вниз)
-        """
+    def detect_fvgs(self, data: List[Dict]) -> List[SMCStructure]:
+        """Детекция Fair Value Gaps"""
         fvgs = []
         
-        for i in range(3, len(df)):
-            current = df.iloc[i]
-            prev1 = df.iloc[i-1]  # Первая свеча импульса
-            prev2 = df.iloc[i-2]  # Вторая свеча (зазор)
-            
-            # Bullish FVG
-            if current['low'] > prev2['high']:
-                gap_size = current['low'] - prev2['high']
-                gap_pct = gap_size / prev2['high']
-                
-                if gap_pct > self.fvg_min_size:
-                    # Проверяем что импульс был сильным
-                    impulse = (current['close'] - prev2['open']) / prev2['open']
-                    if impulse > 0.01:  # 1% импульс
-                        fvgs.append(SMCStructure(
-                            type=SMCType.FAIR_VALUE_GAP_BULLISH,
-                            start_time=prev2.name,
-                            end_time=current.name,
-                            top=current['low'],
-                            bottom=prev2['high'],
-                            volume=current['volume'],
-                            strength=min(10, int(gap_pct * 10000)),
-                            is_active=True
-                        ))
-            
-            # Bearish FVG
-            if current['high'] < prev2['low']:
-                gap_size = prev2['low'] - current['high']
-                gap_pct = gap_size / prev2['low']
-                
-                if gap_pct > self.fvg_min_size:
-                    impulse = (current['close'] - prev2['open']) / prev2['open']
-                    if impulse < -0.01:  # -1% импульс
-                        fvgs.append(SMCStructure(
-                            type=SMCType.FAIR_VALUE_GAP_BEARISH,
-                            start_time=prev2.name,
-                            end_time=current.name,
-                            top=prev2['low'],
-                            bottom=current['high'],
-                            volume=current['volume'],
-                            strength=min(10, int(gap_pct * 10000)),
-                            is_active=True
-                        ))
+        if len(data) < 3:
+            return fvgs
         
-        return fvgs[:15]  # Максимум 15 FVG
+        for i in range(2, len(data)):
+            prev2 = data[i-2]
+            prev1 = data[i-1]
+            curr = data[i]
+            
+            # Бычий FVG: high[i-2] < low[i]
+            if prev2['high'] < curr['low']:
+                fvg = SMCStructure(
+                    type=SMCType.FVG_BULLISH,
+                    start_time=curr.get('timestamp', datetime.now()),
+                    end_time=curr.get('timestamp', datetime.now()),
+                    top=curr['low'],
+                    bottom=prev2['high'],
+                    volume=curr['volume'],
+                    strength=60
+                )
+                fvgs.append(fvg)
+            
+            # Медвежий FVG: low[i-2] > high[i]
+            if prev2['low'] > curr['high']:
+                fvg = SMCStructure(
+                    type=SMCType.FVG_BEARISH,
+                    start_time=curr.get('timestamp', datetime.now()),
+                    end_time=curr.get('timestamp', datetime.now()),
+                    top=prev2['low'],
+                    bottom=curr['high'],
+                    volume=curr['volume'],
+                    strength=60
+                )
+                fvgs.append(fvg)
+        
+        return fvgs[-10:]
     
     # =========================================================================
     # LIQUIDITY SWEEPS
     # =========================================================================
     
-    def detect_liquidity_sweeps(self, df: pd.DataFrame, 
+    def detect_liquidity_sweeps(self, data: List[Dict], 
                                 lookback: int = 20) -> List[LiquidityZone]:
-        """
-        Детекция ликвидности (Equal Highs/Lows, PWH/PWL)
-        
-        Sweep: Цена берёт ликвидность за уровнем и возвращается
-        """
+        """Детекция ликвидности (Equal Highs/Lows, PWH/PWL)"""
         sweeps = []
         
-        # Ищем Equal Highs (два примерно одинаковых максимума)
-        highs = df['high'].rolling(window=5).max()
+        if len(data) < lookback:
+            return sweeps
         
-        for i in range(lookback, len(df) - 1):
-            current_high = df.iloc[i]['high']
-            
-            # Ищем предыдущий похожий максимум
-            for j in range(i - lookback, i - 2):
-                prev_high = df.iloc[j]['high']
-                
-                # Если максимумы примерно равны (0.1% разница)
-                if abs(current_high - prev_high) / prev_high < 0.001:
-                    # Проверяем был ли sweep (цена взяла ликвидность и вернулась)
-                    if i + 1 < len(df):
-                        next_close = df.iloc[i + 1]['close']
-                        if next_close < current_high * 0.998:  # Вернулась ниже
-                            sweeps.append(LiquidityZone(
-                                level=current_high,
-                                type='equal_highs',
-                                touches=2,
-                                volume_at_level=df.iloc[i]['volume'],
-                                is_swept=True,
-                                sweep_time=df.iloc[i].name if isinstance(df.iloc[i].name, pd.Timestamp) else None
-                            ))
+        # Ищем Equal Highs (два одинаковых максимума)
+        highs = [(i, d['high']) for i, d in enumerate(data[-lookback:])]
         
-        # Ищем Equal Lows (такая же логика для минимумов)
-        for i in range(lookback, len(df) - 1):
-            current_low = df.iloc[i]['low']
-            
-            for j in range(i - lookback, i - 2):
-                prev_low = df.iloc[j]['low']
-                
-                if abs(current_low - prev_low) / prev_low < 0.001:
-                    if i + 1 < len(df):
-                        next_close = df.iloc[i + 1]['close']
-                        if next_close > current_low * 1.002:  # Вернулась выше
+        for i, (idx1, h1) in enumerate(highs):
+            for idx2, h2 in highs[i+1:]:
+                if abs(h1 - h2) / h1 < 0.001:  # 0.1% tolerance
+                    # Проверяем был ли sweep
+                    for k in range(idx2+1, len(data)):
+                        if data[k]['high'] > h1:
                             sweeps.append(LiquidityZone(
-                                level=current_low,
-                                type='equal_lows',
+                                price_level=h1,
+                                zone_type='equal_highs',
                                 touches=2,
-                                volume_at_level=df.iloc[i]['volume'],
+                                volume_at_level=data[k]['volume'],
                                 is_swept=True,
-                                sweep_time=df.iloc[i].name if isinstance(df.iloc[i].name, pd.Timestamp) else None
+                                sweep_time=data[k].get('timestamp')
                             ))
+                            break
+                    break
+        
+        # Ищем Equal Lows (два одинаковых минимума)
+        lows = [(i, d['low']) for i, d in enumerate(data[-lookback:])]
+        
+        for i, (idx1, l1) in enumerate(lows):
+            for idx2, l2 in lows[i+1:]:
+                if abs(l1 - l2) / l1 < 0.001:
+                    for k in range(idx2+1, len(data)):
+                        if data[k]['low'] < l1:
+                            sweeps.append(LiquidityZone(
+                                price_level=l1,
+                                zone_type='equal_lows',
+                                touches=2,
+                                volume_at_level=data[k]['volume'],
+                                is_swept=True,
+                                sweep_time=data[k].get('timestamp')
+                            ))
+                            break
+                    break
         
         return sweeps[:10]
     
     # =========================================================================
-    # CHoCH / BOS (Change of Character / Break of Structure)
+    # CHoCH / BOS
     # =========================================================================
     
-    def detect_structure_breaks(self, df: pd.DataFrame) -> List[SMCStructure]:
-        """
-        Детекция CHoCH и BOS
-        
-        CHoCH: Смена характера (бычий → медвежий или наоборот)
-        BOS: Пробой структуры (продолжение тренда)
-        """
+    def detect_structure_breaks(self, data: List[Dict]) -> List[SMCStructure]:
+        """Детекция CHoCH и BOS"""
         breaks = []
         
-        # Определяем структуру через swing highs/lows
-        swing_highs = self._find_swing_highs(df)
-        swing_lows = self._find_swing_lows(df)
+        if len(data) < 10:
+            return breaks
         
-        # Ищем CHoCH (смена)
-        for i in range(2, len(swing_highs)):
-            # Bearish CHoCH: новый максимум ниже предыдущего
-            if swing_highs[i] < swing_highs[i-1] and swing_highs[i-1] > swing_highs[i-2]:
-                breaks.append(SMCStructure(
-                    type=SMCType.CHoch_BEARISH,
-                    start_time=df.iloc[swing_highs[i]].name,
-                    end_time=df.iloc[swing_highs[i]].name,
-                    top=df.iloc[swing_highs[i]]['high'],
-                    bottom=df.iloc[swing_lows[i-1]]['low'] if i-1 < len(swing_lows) else df.iloc[swing_highs[i]]['low'],
-                    volume=df.iloc[swing_highs[i]]['volume'],
-                    strength=7,
-                    is_active=True
-                ))
+        # Находим swing highs/lows
+        swing_highs = self._find_swing_highs(data)
+        swing_lows = self._find_swing_lows(data)
         
-        for i in range(2, len(swing_lows)):
-            # Bullish CHoCH: новый минимум выше предыдущего
-            if swing_lows[i] > swing_lows[i-1] and swing_lows[i-1] < swing_lows[i-2]:
-                breaks.append(SMCStructure(
-                    type=SMCType.CHoch_BULLISH,
-                    start_time=df.iloc[swing_lows[i]].name,
-                    end_time=df.iloc[swing_lows[i]].name,
-                    top=df.iloc[swing_highs[i-1]]['high'] if i-1 < len(swing_highs) else df.iloc[swing_lows[i]]['high'],
-                    bottom=df.iloc[swing_lows[i]]['low'],
-                    volume=df.iloc[swing_lows[i]]['volume'],
-                    strength=7,
-                    is_active=True
-                ))
+        if len(swing_highs) < 2 or len(swing_lows) < 2:
+            return breaks
+        
+        # BOS (Break of Structure) - пробой последнего swing high/low
+        last_sh = swing_highs[-1]
+        prev_sh = swing_highs[-2]
+        
+        if data[-1]['close'] > data[last_sh]['high']:
+            breaks.append(SMCStructure(
+                type=SMCType.BOS_BULLISH,
+                start_time=data[last_sh].get('timestamp', datetime.now()),
+                end_time=data[-1].get('timestamp', datetime.now()),
+                top=data[-1]['high'],
+                bottom=data[prev_sh]['low'],
+                volume=data[-1]['volume'],
+                strength=75
+            ))
+        
+        last_sl = swing_lows[-1]
+        prev_sl = swing_lows[-2]
+        
+        if data[-1]['close'] < data[last_sl]['low']:
+            breaks.append(SMCStructure(
+                type=SMCType.BOS_BEARISH,
+                start_time=data[last_sl].get('timestamp', datetime.now()),
+                end_time=data[-1].get('timestamp', datetime.now()),
+                top=data[prev_sl]['high'],
+                bottom=data[-1]['low'],
+                volume=data[-1]['volume'],
+                strength=75
+            ))
         
         return breaks
     
-    def _find_swing_highs(self, df: pd.DataFrame, window: int = 5) -> List[int]:
+    def _find_swing_highs(self, data: List[Dict], window: int = 5) -> List[int]:
         """Находит индексы swing highs"""
         highs = []
-        for i in range(window, len(df) - window):
-            if df.iloc[i]['high'] == df.iloc[i-window:i+window+1]['high'].max():
+        for i in range(window, len(data) - window):
+            if all(data[i]['high'] > data[i-j]['high'] for j in range(1, window+1)) and \
+               all(data[i]['high'] > data[i+j]['high'] for j in range(1, window+1)):
                 highs.append(i)
         return highs
     
-    def _find_swing_lows(self, df: pd.DataFrame, window: int = 5) -> List[int]:
+    def _find_swing_lows(self, data: List[Dict], window: int = 5) -> List[int]:
         """Находит индексы swing lows"""
         lows = []
-        for i in range(window, len(df) - window):
-            if df.iloc[i]['low'] == df.iloc[i-window:i+window+1]['low'].min():
+        for i in range(window, len(data) - window):
+            if all(data[i]['low'] < data[i-j]['low'] for j in range(1, window+1)) and \
+               all(data[i]['low'] < data[i+j]['low'] for j in range(1, window+1)):
                 lows.append(i)
         return lows
     
@@ -389,333 +326,245 @@ class SMCICTDetector:
     # ICT TIME CONCEPTS
     # =========================================================================
     
-    def get_ict_session(self, df: pd.DataFrame, timestamp: pd.Timestamp) -> ICTSession:
-        """
-        Определяет ICT сессию по времени
-        
-        Asia: 00:00 - 08:00 UTC
-        London: 08:00 - 12:00 UTC
-        NY AM: 12:00 - 16:00 UTC
-        NY PM: 16:00 - 20:00 UTC
-        """
+    def get_ict_session(self, timestamp: datetime) -> ICTSession:
+        """Определяет ICT сессию по времени"""
         hour = timestamp.hour
         
         if 0 <= hour < 8:
             name = 'asia'
-            start, end = 0, 8
         elif 8 <= hour < 12:
             name = 'london'
-            start, end = 8, 12
         elif 12 <= hour < 16:
-            name = 'ny'
-            start, end = 12, 16
+            name = 'ny_am'
         else:
             name = 'ny_pm'
-            start, end = 16, 20
-        
-        # Рассчитываем статистику сессии
-        session_data = df[(df.index.hour >= start) & (df.index.hour < end)]
-        
-        if len(session_data) == 0:
-            return ICTSession(name, start, end, 0, 0, 0, 0, 0)
         
         return ICTSession(
             name=name,
-            start_hour=start,
-            end_hour=end,
-            high=session_data['high'].max(),
-            low=session_data['low'].min(),
-            open=session_data['open'].iloc[0],
-            close=session_data['close'].iloc[-1],
-            displacement=(session_data['close'].iloc[-1] - session_data['open'].iloc[0]) / session_data['open'].iloc[0]
+            start_time=timestamp.replace(hour=hour, minute=0),
+            end_time=timestamp.replace(hour=hour+4, minute=0),
+            high=0, low=0, open=0, close=0, displacement=0
         )
     
-    def is_ict_killzone(self, timestamp: pd.Timestamp) -> bool:
-        """Проверяет находимся ли в ICT Killzone (лучшее время для входов)"""
+    def is_ict_killzone(self, timestamp: datetime) -> bool:
+        """Проверяет находимся ли в ICT Killzone"""
         hour = timestamp.hour
         minute = timestamp.minute
         
-        # London Open Killzone: 08:00 - 10:00 UTC
-        if hour == 8 or (hour == 9 and minute < 30):
-            return True
+        # London Open Killzone: 8:00-10:00
+        london_kz = (8 <= hour < 10)
         
-        # NY Open Killzone: 12:00 - 14:00 UTC
-        if hour == 12 or (hour == 13 and minute < 30):
-            return True
+        # NY Open Killzone: 9:30-11:30 (NY time = 13:30-15:30 UTC)
+        ny_kz = (13 <= hour < 16 and self.timeframe != "1h")
         
-        # NY Close Killzone: 19:00 - 21:00 UTC
-        if hour == 19 or hour == 20:
-            return True
+        # London Close Killzone: 16:00-17:00
+        london_close = (15 <= hour < 17)
         
-        return False
+        return london_kz or ny_kz or london_close
     
     # =========================================================================
-    # PREMIUM / DISCOUNT (ICT Concept)
+    # PREMIUM / DISCOUNT
     # =========================================================================
     
-    def calculate_fibonacci_levels(self, df: pd.DataFrame, 
+    def calculate_fibonacci_levels(self, data: List[Dict], 
                                    lookback: int = 20) -> Dict[str, float]:
-        """
-        Рассчитывает уровни Фибоначчи (Premium/Discount)
+        """Рассчитывает уровни Фибоначчи (Premium/Discount)"""
+        if len(data) < lookback:
+            lookback = len(data)
         
-        Premium: Выше 50% (дорого)
-        Discount: Ниже 50% (дешево)
-        """
-        recent = df.tail(lookback)
+        recent = data[-lookback:]
+        swing_high = max(d['high'] for d in recent)
+        swing_low = min(d['low'] for d in recent)
         
-        high = recent['high'].max()
-        low = recent['low'].min()
-        range_size = high - low
+        range_size = swing_high - swing_low
         
         return {
-            'fib_0': high,
-            'fib_236': high - range_size * 0.236,
-            'fib_382': high - range_size * 0.382,
-            'fib_50': high - range_size * 0.5,  # Equilibrium
-            'fib_618': high - range_size * 0.618,  # OTE (Optimal Trade Entry)
-            'fib_786': high - range_size * 0.786,
-            'fib_100': low
+            'premium': swing_high - range_size * 0.25,  # 75% (short zone)
+            'discount': swing_low + range_size * 0.25,   # 25% (long zone)
+            'equilibrium': swing_low + range_size * 0.5, # 50%
+            'swing_high': swing_high,
+            'swing_low': swing_low,
+            'range': range_size
         }
     
-    def is_price_at_ote(self, price: float, fib_levels: Dict[str, float],
-                       tolerance: float = 0.005) -> bool:
-        """Проверяет находится ли цена в зоне OTE (0.618-0.786)"""
-        ote_high = fib_levels['fib_618']
-        ote_low = fib_levels['fib_786']
-        
-        return (ote_low * (1 - tolerance)) <= price <= (ote_high * (1 + tolerance))
-    
     # =========================================================================
-    # SMC SIGNAL SCORING
+    # SCORING
     # =========================================================================
     
-    def calculate_smc_score(self, 
-                           symbol: str,
-                           direction: str,
+    def calculate_smc_score(self, data: List[Dict],
                            obs: List[SMCStructure],
                            fvgs: List[SMCStructure],
                            sweeps: List[LiquidityZone],
                            breaks: List[SMCStructure],
                            fib_levels: Dict[str, float],
                            current_price: float,
-                           timestamp: pd.Timestamp) -> Dict:
-        """
-        Рассчитывает SMC-Score для текущей ситуации
+                           timestamp: datetime) -> Dict:
+        """Рассчитывает SMC-Score для текущей ситуации"""
         
-        Returns:
-            {
-                'score': int (0-100),
-                'factors': List[str],
-                'entry_zone': Tuple[float, float],
-                'stop_loss': float,
-                'is_valid': bool
-            }
-        """
         score = 0
-        factors = []
+        details = []
         
-        # 1. Order Block в зоне (макс 25 очков)
-        relevant_obs = [ob for ob in obs if ob.is_active]
-        for ob in relevant_obs:
-            if direction == 'long' and ob.type == SMCType.ORDER_BLOCK_BULLISH:
-                if ob.bottom * 0.995 <= current_price <= ob.top * 1.005:
-                    score += 20 + ob.strength
-                    factors.append(f"Bullish OB (strength {ob.strength})")
-                    break
-            elif direction == 'short' and ob.type == SMCType.ORDER_BLOCK_BEARISH:
-                if ob.bottom * 0.995 <= current_price <= ob.top * 1.005:
-                    score += 20 + ob.strength
-                    factors.append(f"Bearish OB (strength {ob.strength})")
-                    break
+        # 1. Наличие ликвидности рядом (+20)
+        near_liquidity = any(
+            abs(zone.price_level - current_price) / current_price < 0.005
+            for zone in sweeps if zone.is_swept
+        )
+        if near_liquidity:
+            score += 20
+            details.append("Liquidity swept nearby")
         
-        # 2. FVG в зоне (макс 20 очков)
-        for fvg in fvgs:
-            if fvg.is_active:
-                if direction == 'long' and fvg.type == SMCType.FAIR_VALUE_GAP_BULLISH:
-                    if fvg.bottom <= current_price <= fvg.top:
-                        score += 15 + fvg.strength // 2
-                        factors.append(f"Bullish FVG")
-                        break
-                elif direction == 'short' and fvg.type == SMCType.FAIR_VALUE_GAP_BEARISH:
-                    if fvg.bottom <= current_price <= fvg.top:
-                        score += 15 + fvg.strength // 2
-                        factors.append(f"Bearish FVG")
-                        break
+        # 2. Наличие OB рядом (+25)
+        near_ob = any(
+            ob.contains_price(current_price) and not ob.mitigated
+            for ob in obs
+        )
+        if near_ob:
+            score += 25
+            details.append("In Order Block zone")
         
-        # 3. Ликвидность взята (макс 15 очков)
-        for sweep in sweeps:
-            if sweep.is_swept:
-                if direction == 'long' and sweep.type == 'equal_lows':
-                    if abs(current_price - sweep.level) / sweep.level < 0.01:
-                        score += 15
-                        factors.append("Equal Lows swept (liquidity taken)")
-                        break
-                elif direction == 'short' and sweep.type == 'equal_highs':
-                    if abs(current_price - sweep.level) / sweep.level < 0.01:
-                        score += 15
-                        factors.append("Equal Highs swept (liquidity taken)")
-                        break
+        # 3. FVG рядом (+20)
+        near_fvg = any(
+            fvg.contains_price(current_price)
+            for fvg in fvgs
+        )
+        if near_fvg:
+            score += 20
+            details.append("In Fair Value Gap")
         
-        # 4. CHoCH/BOS подтверждает (макс 15 очков)
-        for br in breaks:
-            if direction == 'long' and br.type in [SMCType.CHoch_BULLISH, SMCType.BOS_BULLISH]:
-                if (timestamp - br.start_time).total_seconds() < 7200:  # 2 часа
-                    score += 15
-                    factors.append(f"{br.type.value} confirms bullish bias")
-                    break
-            elif direction == 'short' and br.type in [SMCType.CHoch_BEARISH, SMCType.BOS_BEARISH]:
-                if (timestamp - br.start_time).total_seconds() < 7200:
-                    score += 15
-                    factors.append(f"{br.type.value} confirms bearish bias")
-                    break
-        
-        # 5. OTE зона (макс 15 очков)
-        if self.is_price_at_ote(current_price, fib_levels):
+        # 4. Premium/Discount zone (+15)
+        if current_price > fib_levels.get('premium', 0):
             score += 15
-            factors.append("Price at OTE (Optimal Trade Entry)")
+            details.append("Price in Premium zone (short)")
+        elif current_price < fib_levels.get('discount', float('inf')):
+            score += 15
+            details.append("Price in Discount zone (long)")
         
-        # 6. ICT Killzone (макс 10 очков)
+        # 5. CHoCH/BOS недавно (+20)
+        recent_break = any(
+            (breaks[-1].end_time - b.end_time).total_seconds() < 3600
+            for b in breaks[-1:]
+        ) if breaks else False
+        if recent_break:
+            score += 20
+            details.append("Recent structure break")
+        
+        # 6. ICT Killzone (+10)
         if self.is_ict_killzone(timestamp):
             score += 10
-            factors.append("ICT Killzone (optimal time)")
-        
-        # Cap at 100
-        score = min(score, 100)
-        
-        # Рассчитываем зоны входа и SL
-        entry_zone, stop_loss = self._calculate_zones(
-            direction, relevant_obs, fvgs, fib_levels, current_price
-        )
+            details.append("In ICT Killzone")
         
         return {
-            'score': score,
-            'factors': factors,
-            'entry_zone': entry_zone,
-            'stop_loss': stop_loss,
-            'is_valid': score >= 60,  # Минимум 60 для SMC-сигнала
-            'smc_structures': {
-                'obs': len(relevant_obs),
+            'total_score': min(score, 100),
+            'max_possible': 100,
+            'details': details,
+            'confidence': 'high' if score >= 70 else 'medium' if score >= 50 else 'low',
+            'entry_zone': self._get_optimal_entry_zone(obs, fvgs, current_price)
+        }
+    
+    def _get_optimal_entry_zone(self, obs: List[SMCStructure], 
+                                fvgs: List[SMCStructure],
+                                current_price: float) -> Optional[Tuple[float, float]]:
+        """Определяет оптимальную зону входа"""
+        # Ищем ближайший OB или FVG
+        candidates = obs + fvgs
+        
+        if not candidates:
+            return None
+        
+        # Находим ближайшую к цене зону
+        closest = min(candidates, 
+                     key=lambda x: abs(x.get_mid() - current_price))
+        
+        return (closest.bottom, closest.top)
+    
+    # =========================================================================
+    # MAIN ANALYSIS
+    # =========================================================================
+    
+    def analyze(self, data: List[Dict], timestamp: datetime) -> Dict:
+        """Полный анализ SMC для текущей ситуации"""
+        
+        if not data:
+            return {'score': 0, 'confidence': 'none', 'signals': []}
+        
+        current_price = data[-1]['close']
+        
+        # Детектируем все паттерны
+        obs = self.detect_order_blocks(data)
+        fvgs = self.detect_fvgs(data)
+        sweeps = self.detect_liquidity_sweeps(data)
+        breaks = self.detect_structure_breaks(data)
+        fib_levels = self.calculate_fibonacci_levels(data)
+        
+        # Считаем скор
+        score_result = self.calculate_smc_score(
+            data, obs, fvgs, sweeps, breaks, fib_levels,
+            current_price, timestamp
+        )
+        
+        # Определяем сигнал
+        signal = 'neutral'
+        if breaks and breaks[-1].type == SMCType.BOS_BULLISH:
+            signal = 'bullish'
+        elif breaks and breaks[-1].type == SMCType.BOS_BEARISH:
+            signal = 'bearish'
+        
+        # Проверяем OB
+        bullish_obs = [ob for ob in obs if ob.type == SMCType.ORDER_BLOCK_BULLISH]
+        bearish_obs = [ob for ob in obs if ob.type == SMCType.ORDER_BLOCK_BEARISH]
+        
+        return {
+            'score': score_result['total_score'],
+            'max_score': 100,
+            'confidence': score_result['confidence'],
+            'signal': signal,
+            'entry_zone': score_result['entry_zone'],
+            'details': score_result['details'],
+            'patterns': {
+                'order_blocks': len(obs),
+                'bullish_obs': len(bullish_obs),
+                'bearish_obs': len(bearish_obs),
                 'fvgs': len(fvgs),
                 'sweeps': len(sweeps),
                 'breaks': len(breaks)
+            },
+            'ict_context': {
+                'in_killzone': self.is_ict_killzone(timestamp),
+                'premium_zone': current_price > fib_levels.get('premium', 0),
+                'discount_zone': current_price < fib_levels.get('discount', float('inf'))
             }
         }
-    
-    def _calculate_zones(self, direction: str, obs: List[SMCStructure],
-                        fvgs: List[SMCStructure], 
-                        fib_levels: Dict[str, float],
-                        current_price: float) -> Tuple[Tuple[float, float], float]:
-        """Рассчитывает зону входа и стоп-лосс на основе SMC"""
-        
-        entry_high = current_price * 1.002
-        entry_low = current_price * 0.998
-        
-        if direction == 'long':
-            # SL за последним OB или FVG
-            stop_loss = current_price * 0.985  # -1.5% по умолчанию
-            
-            for ob in obs:
-                if ob.type == SMCType.ORDER_BLOCK_BULLISH:
-                    stop_loss = min(stop_loss, ob.bottom * 0.995)
-                    entry_low = max(entry_low, ob.bottom)
-                    entry_high = min(entry_high, ob.top)
-                    break
-            
-            for fvg in fvgs:
-                if fvg.type == SMCType.FAIR_VALUE_GAP_BULLISH:
-                    stop_loss = min(stop_loss, fvg.bottom * 0.997)
-                    break
-        
-        else:  # short
-            stop_loss = current_price * 1.015  # +1.5% по умолчанию
-            
-            for ob in obs:
-                if ob.type == SMCType.ORDER_BLOCK_BEARISH:
-                    stop_loss = max(stop_loss, ob.top * 1.005)
-                    entry_low = max(entry_low, ob.bottom)
-                    entry_high = min(entry_high, ob.top)
-                    break
-            
-            for fvg in fvgs:
-                if fvg.type == SMCType.FAIR_VALUE_GAP_BEARISH:
-                    stop_loss = max(stop_loss, fvg.top * 1.003)
-                    break
-        
-        return ((entry_low, entry_high), stop_loss)
 
 
-# ============================================================================
-# EXAMPLE
-# ============================================================================
-
+# Example usage
 if __name__ == "__main__":
-    # Создаём тестовые данные
+    # Тестовые данные
     np.random.seed(42)
     
-    dates = pd.date_range('2024-01-01', periods=100, freq='15min')
-    data = {
-        'open': 100 + np.cumsum(np.random.randn(100) * 0.5),
-        'high': 100 + np.cumsum(np.random.randn(100) * 0.5) + 1,
-        'low': 100 + np.cumsum(np.random.randn(100) * 0.5) - 1,
-        'close': 100 + np.cumsum(np.random.randn(100) * 0.5),
-        'volume': np.random.rand(100) * 1000000
-    }
+    base_price = 50000
+    data = []
+    for i in range(100):
+        o = base_price + np.random.randn() * 100
+        c = o + np.random.randn() * 200
+        h = max(o, c) + abs(np.random.randn()) * 50
+        l = min(o, c) - abs(np.random.randn()) * 50
+        v = np.random.rand() * 1000000
+        
+        data.append({
+            'open': o,
+            'high': h,
+            'low': l,
+            'close': c,
+            'volume': v,
+            'timestamp': datetime.now() + timedelta(minutes=15*i)
+        })
+        base_price = c
     
-    df = pd.DataFrame(data, index=dates)
+    detector = SMCDetector()
+    result = detector.analyze(data, datetime.now())
     
-    # Корректируем high/low
-    df['high'] = df[['open', 'close', 'high']].max(axis=1) + 0.5
-    df['low'] = df[['open', 'close', 'low']].min(axis=1) - 0.5
-    
-    print("=" * 60)
-    print("SMC+ICT DETECTOR TEST")
-    print("=" * 60)
-    
-    detector = SMCICTDetector()
-    
-    # Детекция
-    obs = detector.detect_order_blocks(df)
-    fvgs = detector.detect_fvgs(df)
-    sweeps = detector.detect_liquidity_sweeps(df)
-    breaks = detector.detect_structure_breaks(df)
-    fib = detector.calculate_fibonacci_levels(df)
-    
-    print(f"\nOrder Blocks found: {len(obs)}")
-    for ob in obs[:3]:
-        print(f"  {ob.type.value}: {ob.bottom:.2f} - {ob.top:.2f} (strength: {ob.strength})")
-    
-    print(f"\nFVGs found: {len(fvgs)}")
-    for fvg in fvgs[:3]:
-        print(f"  {fvg.type.value}: {fvg.bottom:.2f} - {fvg.top:.2f}")
-    
-    print(f"\nLiquidity Sweeps: {len(sweeps)}")
-    print(f"Structure Breaks: {len(breaks)}")
-    
-    print(f"\nFibonacci Levels:")
-    for level, price in fib.items():
-        print(f"  {level}: {price:.2f}")
-    
-    # Рассчитываем SMC Score
-    current_price = df['close'].iloc[-1]
-    current_time = df.index[-1]
-    
-    score_result = detector.calculate_smc_score(
-        symbol="TESTUSDT",
-        direction="long",
-        obs=obs,
-        fvgs=fvgs,
-        sweeps=sweeps,
-        breaks=breaks,
-        fib_levels=fib,
-        current_price=current_price,
-        timestamp=current_time
-    )
-    
-    print(f"\n{'=' * 60}")
-    print(f"SMC Score: {score_result['score']}/100")
-    print(f"Valid: {score_result['is_valid']}")
-    print(f"Factors:")
-    for factor in score_result['factors']:
-        print(f"  ✓ {factor}")
-    print(f"Entry Zone: {score_result['entry_zone'][0]:.2f} - {score_result['entry_zone'][1]:.2f}")
-    print(f"Stop Loss: {score_result['stop_loss']:.2f}")
+    print(f"SMC Score: {result['score']}/100")
+    print(f"Confidence: {result['confidence']}")
+    print(f"Signal: {result['signal']}")
+    print(f"Patterns: {result['patterns']}")
+    print(f"\nDetails: {result['details']}")
