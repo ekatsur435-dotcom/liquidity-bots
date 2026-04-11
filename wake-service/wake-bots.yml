@@ -1,0 +1,24 @@
+name: Keep Bots Awake
+
+on:
+  schedule:
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  wake-short-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up SHORT Bot
+        run: |
+          curl -sSf "${{ secrets.SHORT_BOT_URL }}/health" || echo "SHORT bot wake attempted"
+        continue-on-error: true
+
+  wake-long-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up LONG Bot
+        run: |
+          curl -sSf "${{ secrets.LONG_BOT_URL }}/health" || echo "LONG bot wake attempted"
+        continue-on-error: true
