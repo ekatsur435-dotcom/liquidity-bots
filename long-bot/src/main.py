@@ -88,7 +88,8 @@ async def lifespan(app: FastAPI):
     state.cmd_handler = TelegramCommandHandler(
         bot=state.telegram,
         redis_client=state.redis,
-        bot_state=state
+        bot_state=state,
+        bot_type=Config.BOT_TYPE        # ← добавить это
     )
     
     # Register webhook in Telegram
