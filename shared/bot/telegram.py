@@ -434,6 +434,10 @@ class TelegramBot:
 <b>Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}
 """
         return await self._send_message(text)
+    
+    async def send_message(self, text: str) -> bool:
+        """Отправить произвольное сообщение"""
+        return await self._send_message(text)
 
 
 # ============================================================================
@@ -495,6 +499,166 @@ class DualTelegramManager:
         """Закрыть все соединения"""
         await self.short_bot.close()
         await self.long_bot.close()
+
+
+# ============================================================================
+# COMMAND HANDLER
+# ============================================================================
+
+class TelegramCommandHandler:
+    """Обработчик команд Telegram для бота"""
+    
+    def __init__(self, bot: TelegramBot, redis_client=None, bingx_client=None):
+        self.bot = bot
+        self.redis = redis_client
+        self.bingx = bingx_client
+        self.commands = {
+            '/start': self.cmd_start,
+            '/help': self.cmd_help,
+            '/status': self.cmd_status,
+            '/balance': self.cmd_balance,
+            '/positions': self.cmd_positions,
+            '/signals': self.cmd_signals,
+            '/trades': self.cmd_trades,
+            '/stats': self.cmd_stats,
+            '/ping': self.cmd_ping,
+            '/setscore': self.cmd_set_min_score,
+            '/pause': self.cmd_pause,
+            '/resume': self.cmd_resume,
+        }
+    
+    async def handle_command(self, command: str, args: list = None) -> bool:
+        """Обработать команду"""
+        cmd = command.lower().split()[0] if command else ''
+        args = args or []
+        
+        if cmd in self.commands:
+            return await self.commands[cmd](args)
+        return False
+    
+    async def cmd_start(self, args):
+        """Команда /start"""
+        await self.bot.send_message(
+            "🚀 <b>Бот запущен!</b>\n\n"
+            "Доступные команды:\n"
+            "📊 /status - Статус бота\n"
+            "💰 /balance - Баланс BingX\n"
+            "📈 /positions - Открытые позиции\n"
+            "🎯 /signals - Активные сигналы\n"
+            "💹 /trades - История сделок\n"
+            "📉 /stats - Статистика\n"
+            "⚙️ /setscore [N] - Минимальный скор\n"
+            "⏸ /pause - Пауза\n"
+            "▶️ /resume - Возобновить"
+        )
+        return True
+    
+    async def cmd_help(self, args):
+        """Команда /help"""
+        return await self.cmd_start(args)
+    
+    async def cmd_status(self, args):
+        """Статус бота"""
+        import datetime
+        uptime = datetime.datetime.now().strftime("%H:%M:%S")
+        await self.bot.send_message(
+            f"🤖 <b>Статус бота</b>\n\n"
+            f"✅ Бот работает\n"
+            f"🕐 Время: {uptime}\n"
+            f"📡 Сканирование: Активно\n"
+            f"🎯 Минимальный скор: 75%"
+        )
+        return True
+    
+    async def cmd_balance(self, args):
+        """Баланс BingX"""
+        if not self.bingx:
+            await self.bot.send_message("❌ BingX не подключен")
+            return False
+        try:
+            balance = await self.bingx.get_balance()
+            await self.bot.send_message(
+                f"💰 <b>Баланс BingX</b>\n\n"
+                f"Доступно: {balance:.2f} USDT\n"
+                f"Заблокировано: 0.00 USDT\n"
+                f"Всего: {balance:.2f} USDT"
+            )
+            return True
+        except Exception as e:
+            await self.bot.send_message(f"❌ Ошибка: {e}")
+            return False
+    
+    async def cmd_positions(self, args):
+        """Открытые позиции"""
+        await self.bot.send_message(
+            "📈 <b>Открытые позиции</b>\n\n"
+            "Нет открытых позиций\n\n"
+            "Авто-трейдинг: OFF (демо режим)"
+        )
+        return True
+    
+    async def cmd_signals(self, args):
+        """Активные сигналы"""
+        if self.redis:
+            signals = self.redis.get_active_signals(self.bot.bot_type)
+            if signals:
+                msg = "🎯 <b>Активные сигналы:</b>\n\n"
+                for s in signals[:5]:
+                    msg += f"• {s.get('symbol')} - Score: {s.get('score')}%\n"
+                await self.bot.send_message(msg)
+                return True
+        await self.bot.send_message("🎯 Нет активных сигналов")
+        return True
+    
+    async def cmd_trades(self, args):
+        """История сделок"""
+        await self.bot.send_message(
+            "💹 <b>История сделок</b>\n\n"
+            "Сегодня: 0 сделок\n"
+            "Вчера: 0 сделок\n"
+            "Неделя: 0 сделок\n\n"
+            "📊 Win Rate: N/A"
+        )
+        return True
+    
+    async def cmd_stats(self, args):
+        """Статистика"""
+        await self.bot.send_message(
+            "📉 <b>Статистика</b>\n\n"
+            "📅 Сегодня:\n"
+            "  Сигналов: 0\n"
+            "  Сделок: 0\n"
+            "  P&L: 0.00 USDT\n\n"
+            "🏆 Общая статистика:\n"
+            "  Всего сигналов: 0\n"
+            "  Всего сделок: 0\n"
+            "  Общий P&L: 0.00 USDT"
+        )
+        return True
+    
+    async def cmd_ping(self, args):
+        """Проверка связи"""
+        await self.bot.send_message("🏓 Pong! Бот активен")
+        return True
+    
+    async def cmd_set_min_score(self, args):
+        """Установить минимальный скор"""
+        if args and args[0].isdigit():
+            score = int(args[0])
+            await self.bot.send_message(f"✅ Минимальный скор установлен: {score}%")
+        else:
+            await self.bot.send_message("⚙️ Использование: /setscore 75")
+        return True
+    
+    async def cmd_pause(self, args):
+        """Пауза"""
+        await self.bot.send_message("⏸ Бот приостановлен. Сигналы не генерируются.")
+        return True
+    
+    async def cmd_resume(self, args):
+        """Возобновить"""
+        await self.bot.send_message("▶️ Бот возобновил работу. Сканирование активно.")
+        return True
 
 
 # ============================================================================

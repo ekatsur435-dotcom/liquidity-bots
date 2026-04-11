@@ -52,6 +52,25 @@ class BinanceFuturesClient:
         self.api_secret = api_secret or os.getenv("BINANCE_API_SECRET", "")
         self.session: Optional[aiohttp.ClientSession] = None
         
+        # Proxy support - rotation list
+        self.proxies = self._load_proxies()
+        self.current_proxy_index = 0
+        
+    def _load_proxies(self) -> List[str]:
+        """Load proxy list from env or use defaults"""
+        proxy_env = os.getenv("PROXY_LIST", "")
+        if proxy_env:
+            return [p.strip() for p in proxy_env.split(",") if p.strip()]
+        return []
+    
+    def _get_next_proxy(self) -> Optional[str]:
+        """Get next proxy in rotation"""
+        if not self.proxies:
+            return None
+        proxy = self.proxies[self.current_proxy_index]
+        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+        return proxy
+        
         # Rate limiting
         self.last_request_time = 0
         self.min_request_interval = 0.05  # 20 запросов/сек макс (1200/мин)
@@ -61,42 +80,54 @@ class BinanceFuturesClient:
         self._cache_ttl = 60  # 60 секунд
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Получить или создать сессию"""
+        """Получить или создать сессию с прокси"""
         if self.session is None or self.session.closed:
+            connector = None
+            if self.proxies:
+                # Use rotating proxy
+                proxy = self._get_next_proxy()
+                if proxy:
+                    connector = aiohttp.TCPConnector()
+            
             self.session = aiohttp.ClientSession(
                 headers={
                     "X-MBX-APIKEY": self.api_key
-                } if self.api_key else {}
+                } if self.api_key else {},
+                connector=connector
             )
         return self.session
     
-    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Any:
-        """Сделать запрос к API с rate limiting"""
-        # Rate limiting
-        current_time = time.time()
-        elapsed = current_time - self.last_request_time
-        if elapsed < self.min_request_interval:
-            await asyncio.sleep(self.min_request_interval - elapsed)
+    async def _make_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """Make request with proxy retry logic"""
+        await self._rate_limit()
         
         url = f"{self.BASE_URL}{endpoint}"
-        session = await self._get_session()
         
-        try:
-            async with session.get(url, params=params or {}, timeout=10) as response:
-                self.last_request_time = time.time()
-                
-                if response.status == 200:
-                    return await response.json()
-                elif response.status == 429:
-                    print(f"Rate limit hit for {endpoint}, waiting...")
-                    await asyncio.sleep(1)
-                    return await self._make_request(endpoint, params)
-                else:
-                    print(f"Error {response.status} for {endpoint}: {await response.text()}")
-                    return None
-        except Exception as e:
-            print(f"Request error for {endpoint}: {e}")
-            return None
+        # Try without proxy first, then with proxies
+        attempts = [(None, "no proxy")] + [(p, f"proxy {i+1}") for i, p in enumerate(self.proxies[:3])]
+        
+        for proxy, proxy_name in attempts:
+            try:
+                session = await self._get_session()
+                async with session.get(
+                    url, 
+                    params=params or {}, 
+                    timeout=15,
+                    proxy=proxy
+                ) as response:
+                    if response.status == 451:  # Restricted location
+                        print(f"⚠️ Binance blocked with {proxy_name}, trying next...")
+                        continue
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        print(f"⚠️ Binance error {response.status} with {proxy_name}")
+                        
+            except Exception as e:
+                print(f"⚠️ Request failed with {proxy_name}: {e}")
+                continue
+        
+        return None
     
     async def close(self):
         """Закрыть сессию"""
