@@ -77,7 +77,11 @@ async def lifespan(app: FastAPI):
     state.binance = get_binance_client()
     state.scorer = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
-    state.telegram = TelegramBot()
+    state.telegram = TelegramBot(
+        bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID"),
+        topic_id=os.getenv("SHORT_TELEGRAM_TOPIC_ID")
+    )
     
     # Test connections
     print("🔌 Testing connections...")

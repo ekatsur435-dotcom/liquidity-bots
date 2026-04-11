@@ -71,7 +71,11 @@ async def lifespan(app: FastAPI):
     state.binance = get_binance_client()
     state.scorer = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
-    state.telegram = TelegramBot()
+    state.telegram = TelegramBot(
+        bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID"),
+        topic_id=os.getenv("LONG_TELEGRAM_TOPIC_ID")
+    )
     
     # Test connections
     redis_ok = state.redis.health_check()
