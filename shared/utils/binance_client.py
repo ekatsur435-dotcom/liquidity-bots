@@ -1,12 +1,7 @@
 """
-Binance Futures API Client
-Бесплатный tier: 1200 запросов/мин
-
-FIXES:
-- self.last_request_time и self.min_request_interval теперь инициализируются в __init__
-  (раньше код был недостижим — был после `return proxy`)
-- Добавлен fallback watchlist если Binance заблокирован (HTTP 451)
-- _rate_limit() теперь работает корректно
+Binance + Bybit Futures API Client
+Bybit используется как fallback если Binance заблокирован (HTTP 451)
+Bybit не имеет гео-ограничений → работает с Render US серверов
 """
 
 import os
@@ -14,13 +9,12 @@ import asyncio
 import aiohttp
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 
 
 @dataclass
 class CandleData:
-    """OHLCV данные свечи"""
     timestamp: int
     open: float
     high: float
@@ -32,7 +26,6 @@ class CandleData:
 
 @dataclass
 class MarketData:
-    """Полные рыночные данные для анализа"""
     symbol: str
     price: float
     rsi_1h: Optional[float]
@@ -48,381 +41,414 @@ class MarketData:
     last_updated: datetime
 
 
-# ✅ Fallback watchlist если Binance заблокирован (HTTP 451 с Render US серверов)
 FALLBACK_WATCHLIST = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
     "MATICUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "ETCUSDT",
     "XLMUSDT", "BCHUSDT", "FILUSDT", "AAVEUSDT", "NEARUSDT",
     "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
-    "SEIUSDT", "TIAUSDT", "WLDUSDT", "ORDIUSDT", "BLURUSDT",
-    "LDOUSDT", "STXUSDT", "RUNEUSDT", "MKRUSDT", "SNXUSDT",
-    "GALAUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "APEUSDT",
-    "GMXUSDT", "DYDXUSDT", "OCEANUSDT", "FTMUSDT", "ALGOUSDT",
-    "FLOWUSDT", "HBARUSDT", "QNTUSDT", "EGLDUSDT", "THETAUSDT",
+    "SEIUSDT", "TIAUSDT", "WLDUSDT", "ORDIUSDT", "LDOUSDT",
+    "STXUSDT", "RUNEUSDT", "MKRUSDT", "SNXUSDT", "GALAUSDT",
+    "SANDUSDT", "MANAUSDT", "AXSUSDT", "APEUSDT", "GMXUSDT",
+    "DYDXUSDT", "FTMUSDT", "ALGOUSDT", "FLOWUSDT", "HBARUSDT",
+    "QNTUSDT", "EGLDUSDT", "THETAUSDT", "BLURUSDT", "OCEANUSDT",
 ]
 
 
 class BinanceFuturesClient:
-    """Клиент для Binance Futures API (бесплатный tier)"""
-    
-    BASE_URL = "https://fapi.binance.com"
-    
-    def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None):
+    BINANCE_URL = "https://fapi.binance.com"
+    BYBIT_URL = "https://api.bybit.com"
+
+    def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.api_secret = api_secret or os.getenv("BINANCE_API_SECRET", "")
         self.session: Optional[aiohttp.ClientSession] = None
-        
-        # ✅ FIX: эти переменные ДОЛЖНЫ быть здесь, в __init__
-        # Раньше они были после `return proxy` в _get_next_proxy() — недостижимый код!
-        self.last_request_time = 0
-        self.min_request_interval = 0.05  # 20 запросов/сек макс (1200/мин)
-        self._cache = {}
+        self.last_request_time = 0.0
+        self.min_request_interval = 0.05
+        self._cache: Dict = {}
         self._cache_ttl = 60
-        
-        # Proxy support
-        self.proxies = self._load_proxies()
-        self.current_proxy_index = 0
-        
-    def _load_proxies(self) -> List[str]:
-        """Load proxy list from env"""
-        proxy_env = os.getenv("PROXY_LIST", "")
-        if proxy_env:
-            return [p.strip() for p in proxy_env.split(",") if p.strip()]
-        return []
-    
-    def _get_next_proxy(self) -> Optional[str]:
-        """Get next proxy in rotation"""
-        if not self.proxies:
-            return None
-        proxy = self.proxies[self.current_proxy_index]
-        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-        return proxy
-    
+        self._use_bybit = False
+        self._source_checked = False
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
     async def _rate_limit(self):
-        """Соблюдаем rate limit"""
-        now = time.time()
-        elapsed = now - self.last_request_time
+        elapsed = time.time() - self.last_request_time
         if elapsed < self.min_request_interval:
             await asyncio.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
-    
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Получить или создать сессию"""
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(
-                headers={"X-MBX-APIKEY": self.api_key} if self.api_key else {}
-            )
-        return self.session
-    
-    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Any]:
-        """Make request with proxy retry logic"""
-        await self._rate_limit()
-        
-        url = f"{self.BASE_URL}{endpoint}"
-        
-        # Try without proxy first, then with proxies
-        proxy_list = [None] + self.proxies[:3]
-        
-        for proxy in proxy_list:
-            try:
-                session = await self._get_session()
-                async with session.get(
-                    url,
-                    params=params or {},
-                    timeout=aiohttp.ClientTimeout(total=15),
-                    proxy=proxy
-                ) as response:
-                    if response.status == 451:  # Geo-restricted
-                        print(f"⚠️ Binance HTTP 451 (geo-restricted) for {endpoint}")
-                        return None
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        print(f"⚠️ Binance error {response.status} for {endpoint}")
-                        
-            except Exception as e:
-                print(f"⚠️ Request failed for {endpoint}: {type(e).__name__}: {e}")
-                continue
-        
-        return None
-    
+
     async def close(self):
-        """Закрыть сессию"""
         if self.session and not self.session.closed:
             await self.session.close()
-    
-    # =========================================================================
-    # BASE DATA
-    # =========================================================================
-    
-    async def get_exchange_info(self) -> Optional[Dict]:
-        return await self._make_request("/fapi/v1/exchangeInfo")
-    
-    async def get_all_symbols(self, min_volume_usdt: float = 10_000_000) -> List[str]:
-        """
-        Получить список всех USDT perpetual пар.
-        Если Binance недоступен — возвращает fallback список.
-        """
+
+    async def _check_source(self):
+        """Один раз определяем: Binance или Bybit"""
+        if self._source_checked:
+            return
+        self._source_checked = True
         try:
-            info = await self.get_exchange_info()
-            
-            # ✅ Если Binance заблокирован — используем fallback
+            session = await self._get_session()
+            async with session.get(
+                f"{self.BINANCE_URL}/fapi/v1/time",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    self._use_bybit = False
+                    print("✅ Data source: Binance Futures")
+                    return
+        except Exception:
+            pass
+        self._use_bybit = True
+        print("⚠️ Binance unavailable. Using Bybit as data source.")
+
+    async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        await self._rate_limit()
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.BINANCE_URL}{endpoint}",
+                params=params or {},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return None
+        except Exception:
+            return None
+
+    async def _bybit(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        await self._rate_limit()
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.BYBIT_URL}{endpoint}",
+                params=params or {},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("retCode") == 0:
+                        return data.get("result")
+                return None
+        except Exception:
+            return None
+
+    # =========================================================================
+    # SYMBOLS
+    # =========================================================================
+
+    async def get_all_symbols(self, min_volume_usdt: float = 10_000_000) -> List[str]:
+        await self._check_source()
+        if self._use_bybit:
+            return await self._symbols_bybit(min_volume_usdt)
+        symbols = await self._symbols_binance(min_volume_usdt)
+        return symbols if symbols else await self._symbols_bybit(min_volume_usdt)
+
+    async def _symbols_binance(self, min_vol: float) -> List[str]:
+        try:
+            info = await self._binance("/fapi/v1/exchangeInfo")
             if not info:
-                print(f"⚠️ Binance unreachable. Using fallback watchlist ({len(FALLBACK_WATCHLIST)} symbols)")
+                return []
+            syms = [s["symbol"] for s in info.get("symbols", [])
+                    if s.get("symbol", "").endswith("USDT")
+                    and s.get("status") == "TRADING"
+                    and s.get("contractType") == "PERPETUAL"]
+            filtered = []
+            for sym in syms[:60]:
+                t = await self._binance("/fapi/v1/ticker/24hr", {"symbol": sym})
+                if t and float(t.get("quoteVolume", 0)) >= min_vol:
+                    filtered.append(sym)
+                if len(filtered) >= 50:
+                    break
+            return filtered or syms[:50]
+        except Exception:
+            return []
+
+    async def _symbols_bybit(self, min_vol: float) -> List[str]:
+        try:
+            result = await self._bybit("/v5/market/tickers", {"category": "linear"})
+            if not result:
+                print(f"⚠️ Bybit also unavailable. Using fallback watchlist.")
                 return FALLBACK_WATCHLIST
-            
-            symbols = []
-            for symbol_info in info.get("symbols", []):
-                if (symbol_info.get("symbol", "").endswith("USDT") and
-                    symbol_info.get("status") == "TRADING" and
-                    symbol_info.get("contractType") == "PERPETUAL"):
-                    symbols.append(symbol_info["symbol"])
-            
-            if not symbols:
-                print("⚠️ No symbols from Binance. Using fallback.")
-                return FALLBACK_WATCHLIST
-            
-            # Фильтруем по объёму (только если можем получить данные)
-            if min_volume_usdt > 0:
-                filtered = []
-                for symbol in symbols[:50]:
-                    ticker = await self.get_24h_ticker(symbol)
-                    if ticker and float(ticker.get("quoteVolume", 0)) >= min_volume_usdt:
-                        filtered.append(symbol)
-                
-                if filtered:
-                    print(f"✅ Binance watchlist: {len(filtered)} symbols (volume filter)")
-                    return filtered
-                else:
-                    print("⚠️ Volume filter returned 0 symbols. Using raw list.")
-                    return symbols[:50]
-            
-            return symbols[:50]
-            
-        except Exception as e:
-            print(f"Error getting symbols: {e}. Using fallback watchlist.")
+            tickers = result.get("list", [])
+            syms = [t["symbol"] for t in tickers
+                    if t.get("symbol", "").endswith("USDT")
+                    and float(t.get("turnover24h", 0)) >= min_vol]
+            print(f"✅ Bybit watchlist: {len(syms[:50])} symbols")
+            return syms[:50] if syms else FALLBACK_WATCHLIST
+        except Exception:
             return FALLBACK_WATCHLIST
-    
+
     # =========================================================================
-    # PRICE DATA
+    # PRICE / KLINES
     # =========================================================================
-    
+
+    async def get_price(self, symbol: str) -> Optional[float]:
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/fapi/v1/ticker/price", {"symbol": symbol})
+            if d:
+                return float(d["price"])
+        result = await self._bybit("/v5/market/tickers",
+                                   {"category": "linear", "symbol": symbol})
+        if result:
+            items = result.get("list", [])
+            if items:
+                p = items[0].get("lastPrice")
+                return float(p) if p else None
+        return None
+
     async def get_klines(self, symbol: str, interval: str = "1h",
                          limit: int = 100) -> List[CandleData]:
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        data = await self._make_request("/fapi/v1/klines", params)
-        
+        await self._check_source()
+        if not self._use_bybit:
+            return await self._klines_binance(symbol, interval, limit)
+        return await self._klines_bybit(symbol, interval, limit)
+
+    async def _klines_binance(self, symbol, interval, limit) -> List[CandleData]:
+        data = await self._binance("/fapi/v1/klines",
+                                   {"symbol": symbol, "interval": interval, "limit": limit})
         if not data:
             return []
-        
-        candles = []
-        for candle in data:
-            candles.append(CandleData(
-                timestamp=candle[0],
-                open=float(candle[1]),
-                high=float(candle[2]),
-                low=float(candle[3]),
-                close=float(candle[4]),
-                volume=float(candle[5]),
-                quote_volume=float(candle[7])
-            ))
+        return [CandleData(int(c[0]), float(c[1]), float(c[2]),
+                           float(c[3]), float(c[4]), float(c[5]), float(c[7]))
+                for c in data]
+
+    async def _klines_bybit(self, symbol, interval, limit) -> List[CandleData]:
+        imap = {"1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+                "1h": "60", "2h": "120", "4h": "240", "1d": "D"}
+        bi = imap.get(interval, "60")
+        result = await self._bybit("/v5/market/kline",
+                                   {"category": "linear", "symbol": symbol,
+                                    "interval": bi, "limit": limit})
+        if not result:
+            return []
+        candles = [CandleData(
+            int(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]),
+            float(c[5]), float(c[6]) if len(c) > 6 else 0.0
+        ) for c in result.get("list", [])]
+        candles.reverse()  # Bybit: новые → старые, нам нужно старые → новые
         return candles
-    
+
     async def get_24h_ticker(self, symbol: Optional[str] = None) -> Optional[Dict]:
-        params = {"symbol": symbol} if symbol else {}
-        return await self._make_request("/fapi/v1/ticker/24hr", params)
-    
-    async def get_price(self, symbol: str) -> Optional[float]:
-        data = await self._make_request("/fapi/v1/ticker/price", {"symbol": symbol})
-        return float(data["price"]) if data else None
-    
-    # =========================================================================
-    # FUNDING RATE
-    # =========================================================================
-    
-    async def get_funding_rate(self, symbol: str) -> Optional[float]:
-        data = await self._make_request(
-            "/fapi/v1/fundingRate",
-            {"symbol": symbol, "limit": 1}
-        )
-        if data and len(data) > 0:
-            return float(data[0].get("fundingRate", 0))
+        await self._check_source()
+        if not self._use_bybit:
+            params = {"symbol": symbol} if symbol else {}
+            return await self._binance("/fapi/v1/ticker/24hr", params)
+        if symbol:
+            result = await self._bybit("/v5/market/tickers",
+                                       {"category": "linear", "symbol": symbol})
+            if result:
+                items = result.get("list", [])
+                if items:
+                    t = items[0]
+                    return {
+                        "quoteVolume": t.get("turnover24h", 0),
+                        "priceChangePercent": float(t.get("price24hPcnt", 0)) * 100
+                    }
         return None
-    
+
+    # =========================================================================
+    # FUNDING
+    # =========================================================================
+
+    async def get_funding_rate(self, symbol: str) -> Optional[float]:
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/fapi/v1/fundingRate",
+                                    {"symbol": symbol, "limit": 1})
+            if d and len(d) > 0:
+                return float(d[0].get("fundingRate", 0))
+        result = await self._bybit("/v5/market/tickers",
+                                   {"category": "linear", "symbol": symbol})
+        if result:
+            items = result.get("list", [])
+            if items:
+                return float(items[0].get("fundingRate", 0))
+        return None
+
     async def get_funding_history(self, symbol: str, limit: int = 12) -> List[Dict]:
-        data = await self._make_request(
-            "/fapi/v1/fundingRate",
-            {"symbol": symbol, "limit": limit}
-        )
-        return data or []
-    
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/fapi/v1/fundingRate",
+                                    {"symbol": symbol, "limit": limit})
+            return d or []
+        result = await self._bybit("/v5/market/funding/history",
+                                   {"category": "linear", "symbol": symbol, "limit": limit})
+        if result:
+            return [{"fundingRate": item.get("fundingRate", 0)}
+                    for item in result.get("list", [])]
+        return []
+
     async def get_accumulated_funding(self, symbol: str, days: int = 4) -> float:
-        periods = days * 3
-        history = await self.get_funding_history(symbol, periods)
+        history = await self.get_funding_history(symbol, days * 3)
         if not history:
             return 0.0
-        total = sum(float(h.get("fundingRate", 0)) for h in history)
-        return round(total * 100, 4)
-    
+        return round(sum(float(h.get("fundingRate", 0)) for h in history) * 100, 4)
+
     # =========================================================================
     # OPEN INTEREST
     # =========================================================================
-    
+
     async def get_open_interest(self, symbol: str) -> Optional[float]:
-        data = await self._make_request("/fapi/v1/openInterest", {"symbol": symbol})
-        if data:
-            return float(data.get("openInterest", 0))
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
+            if d:
+                return float(d.get("openInterest", 0))
+        result = await self._bybit("/v5/market/tickers",
+                                   {"category": "linear", "symbol": symbol})
+        if result:
+            items = result.get("list", [])
+            if items:
+                oi = items[0].get("openInterest")
+                return float(oi) if oi else None
         return None
-    
+
     async def get_open_interest_history(self, symbol: str,
-                                        period: str = "1h",
-                                        limit: int = 100) -> List[Dict]:
-        return await self._make_request(
-            "/fapi/v1/openInterestHist",
-            {"symbol": symbol, "period": period, "limit": limit}
-        ) or []
-    
+                                         period: str = "1h", limit: int = 5) -> List[Dict]:
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/fapi/v1/openInterestHist",
+                                    {"symbol": symbol, "period": period, "limit": limit})
+            return d or []
+        imap = {"5m": "5min", "15m": "15min", "30m": "30min",
+                "1h": "1h", "4h": "4h", "1d": "1d"}
+        result = await self._bybit("/v5/market/open-interest",
+                                   {"category": "linear", "symbol": symbol,
+                                    "intervalTime": imap.get(period, "1h"), "limit": limit})
+        if result:
+            return [{"sumOpenInterest": item.get("openInterest", 0)}
+                    for item in result.get("list", [])]
+        return []
+
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
         history = await self.get_open_interest_history(symbol, "1d", days + 1)
         if not history or len(history) < 2:
             return 0.0
-        old_oi = float(history[0].get("sumOpenInterest", 0))
-        new_oi = float(history[-1].get("sumOpenInterest", 0))
-        if old_oi == 0:
-            return 0.0
-        return round((new_oi - old_oi) / old_oi * 100, 2)
-    
+        old = float(history[0].get("sumOpenInterest", 0))
+        new = float(history[-1].get("sumOpenInterest", 0))
+        return round((new - old) / old * 100, 2) if old else 0.0
+
     # =========================================================================
     # LONG/SHORT RATIO
     # =========================================================================
-    
-    async def get_long_short_ratio(self, symbol: str,
-                                   period: str = "1h") -> Optional[float]:
-        data = await self._make_request(
-            "/futures/data/topLongShortAccountRatio",
-            {"symbol": symbol, "period": period, "limit": 1}
-        )
-        if data and len(data) > 0:
-            return float(data[0].get("longAccount", 0))
-        return None
-    
+
+    async def get_long_short_ratio(self, symbol: str, period: str = "1h") -> Optional[float]:
+        await self._check_source()
+        if not self._use_bybit:
+            d = await self._binance("/futures/data/topLongShortAccountRatio",
+                                    {"symbol": symbol, "period": period, "limit": 1})
+            if d and len(d) > 0:
+                return float(d[0].get("longAccount", 0))
+        result = await self._bybit("/v5/market/account-ratio",
+                                   {"category": "linear", "symbol": symbol,
+                                    "period": period, "limit": 1})
+        if result:
+            items = result.get("list", [])
+            if items:
+                return float(items[0].get("buyRatio", 0.5)) * 100
+        return 50.0
+
     # =========================================================================
-    # VOLUME (Delta approximation)
+    # VOLUME PROFILE
     # =========================================================================
-    
-    async def get_agg_trades(self, symbol: str,
-                             start_time: Optional[int] = None,
-                             end_time: Optional[int] = None,
-                             limit: int = 1000) -> List[Dict]:
+
+    async def get_agg_trades(self, symbol: str, start_time=None,
+                             end_time=None, limit: int = 500) -> List[Dict]:
+        if self._use_bybit:
+            return []
         params = {"symbol": symbol, "limit": limit}
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
-        return await self._make_request("/fapi/v1/aggTrades", params) or []
-    
+        return await self._binance("/fapi/v1/aggTrades", params) or []
+
     async def get_hourly_volume_profile(self, symbol: str, hours: int = 7) -> List[float]:
-        """Профиль объёма по часам (приближение к дельте)"""
-        now = int(time.time() * 1000)
-        one_hour = 60 * 60 * 1000
-        
-        volumes = []
-        for i in range(hours, 0, -1):
-            start = now - (i * one_hour)
-            end = now - ((i - 1) * one_hour)
-            trades = await self.get_agg_trades(symbol, start, end, 1000)
-            volume = sum(float(t.get("q", 0)) for t in trades)
-            volumes.append(volume)
-            await asyncio.sleep(0.1)
-        
-        return volumes
-    
+        """Берём объёмы из часовых свечей — быстрее aggTrades"""
+        try:
+            candles = await self.get_klines(symbol, "1h", hours + 1)
+            if candles and len(candles) >= hours:
+                return [c.quote_volume for c in candles[-hours:]]
+        except Exception:
+            pass
+        return [0.0] * hours
+
     # =========================================================================
     # COMPLETE MARKET DATA
     # =========================================================================
-    
+
     async def get_complete_market_data(self, symbol: str) -> Optional[MarketData]:
         try:
-            price_task = self.get_price(symbol)
-            funding_task = self.get_funding_rate(symbol)
-            oi_task = self.get_open_interest(symbol)
-            ratio_task = self.get_long_short_ratio(symbol)
-            ticker_task = self.get_24h_ticker(symbol)
-            klines_task = self.get_klines(symbol, "1h", 100)
-            
+            await self._check_source()
+
             price, funding, oi, ratio, ticker, klines = await asyncio.gather(
-                price_task, funding_task, oi_task,
-                ratio_task, ticker_task, klines_task
+                self.get_price(symbol),
+                self.get_funding_rate(symbol),
+                self.get_open_interest(symbol),
+                self.get_long_short_ratio(symbol),
+                self.get_24h_ticker(symbol),
+                self.get_klines(symbol, "1h", 100),
+                return_exceptions=True
             )
-            
-            if not price or not klines:
+
+            if isinstance(price, Exception) or not price:
                 return None
-            
+            if isinstance(klines, Exception) or not klines or len(klines) < 20:
+                return None
+
+            funding = None if isinstance(funding, Exception) else funding
+            oi = None if isinstance(oi, Exception) else oi
+            ratio = None if isinstance(ratio, Exception) else ratio
+            ticker = None if isinstance(ticker, Exception) else ticker
+
             rsi = self._calculate_rsi([c.close for c in klines])
             funding_acc = await self.get_accumulated_funding(symbol, 4)
             oi_change = await self.get_oi_change(symbol, 4)
-            hourly_volumes = await self.get_hourly_volume_profile(symbol, 7)
-            
+            hourly_vols = await self.get_hourly_volume_profile(symbol, 7)
+
             return MarketData(
                 symbol=symbol,
-                price=price,
+                price=float(price),
                 rsi_1h=rsi,
-                funding_rate=round(funding * 100, 4) if funding else 0.0,
+                funding_rate=round(float(funding) * 100, 4) if funding else 0.0,
                 funding_accumulated=funding_acc,
-                open_interest=oi or 0.0,
+                open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
-                long_short_ratio=ratio or 50.0,
-                volume_24h=float(ticker.get("quoteVolume", 0)) if ticker else 0.0,
-                volume_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
-                price_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
-                hourly_deltas=hourly_volumes,
+                long_short_ratio=float(ratio) if ratio else 50.0,
+                volume_24h=float(ticker.get("quoteVolume", 0)) if isinstance(ticker, dict) else 0.0,
+                volume_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
+                price_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
+                hourly_deltas=hourly_vols,
                 last_updated=datetime.utcnow()
             )
         except Exception as e:
-            print(f"Error getting complete data for {symbol}: {e}")
+            print(f"Error market data {symbol}: {e}")
             return None
-    
-    async def scan_all_symbols(self, symbols: List[str]) -> List[MarketData]:
-        tasks = [self.get_complete_market_data(symbol) for symbol in symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        valid_results = []
-        for result in results:
-            if isinstance(result, MarketData):
-                valid_results.append(result)
-            elif isinstance(result, Exception):
-                print(f"Scan error: {result}")
-        return valid_results
-    
+
     # =========================================================================
-    # RSI CALCULATION
+    # RSI
     # =========================================================================
-    
+
     def _calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
-        """Упрощённый расчёт RSI"""
         if len(prices) < period + 1:
             return None
-        
         deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        gains = [d for d in deltas if d > 0]
-        losses = [-d for d in deltas if d < 0]
-        
-        if not gains and not losses:
-            return 50.0
-        
         recent = deltas[-period:]
         avg_gain = sum(d for d in recent if d > 0) / period
         avg_loss = sum(-d for d in recent if d < 0) / period
-        
         if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        return round(100 - (100 / (1 + rs)), 2)
+            return 100.0 if avg_gain > 0 else 50.0
+        return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
 
 # ============================================================================
-# SINGLETON INSTANCE
+# SINGLETON
 # ============================================================================
 
 _binance_client = None
