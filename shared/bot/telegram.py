@@ -1,32 +1,23 @@
 """
 Telegram Bot Integration
-Отправка сигналов и уведомлений в Telegram
+Отправка сигналов и приём команд через Webhook
 """
 
 import os
 import asyncio
 from typing import Optional, Dict, List
-from dataclasses import asdict
 from datetime import datetime
 
 import aiohttp
 
 
 class TelegramBot:
-    """Telegram бот для отправки сигналов"""
+    """Telegram бот для отправки сигналов и приёма команд"""
     
-    def __init__(self, 
+    def __init__(self,
                  bot_token: Optional[str] = None,
                  chat_id: Optional[str] = None,
                  topic_id: Optional[str] = None):
-        """
-        Инициализация бота
-        
-        Args:
-            bot_token: Токен бота от @BotFather
-            chat_id: ID канала/группы (например, -1003867089540)
-            topic_id: ID темы (thread_id) для супергрупп
-        """
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
         self.topic_id = topic_id or os.getenv("TELEGRAM_TOPIC_ID")
@@ -40,60 +31,210 @@ class TelegramBot:
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Получить или создать сессию"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
     
     async def close(self):
-        """Закрыть сессию"""
         if self.session and not self.session.closed:
             await self.session.close()
     
-    async def _send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+    # =========================================================================
+    # WEBHOOK
+    # =========================================================================
+
+    async def setup_webhook(self, webhook_url: str) -> bool:
         """
-        Отправить сообщение в Telegram
+        Зарегистрировать webhook в Telegram.
+        Вызывать один раз при старте бота.
         
         Args:
-            text: Текст сообщения
-            parse_mode: HTML или Markdown
-        
-        Returns:
-            True если успешно
+            webhook_url: Полный URL вида https://your-bot.onrender.com/webhook
         """
         try:
+            session = await self._get_session()
+            url = f"{self.base_url}/setWebhook"
+            payload = {
+                "url": webhook_url,
+                "allowed_updates": ["message", "callback_query"],
+                "drop_pending_updates": True
+            }
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    print(f"✅ Webhook registered: {webhook_url}")
+                    return True
+                else:
+                    print(f"❌ Webhook failed: {data}")
+                    return False
+        except Exception as e:
+            print(f"Error setting webhook: {e}")
+            return False
+
+    async def delete_webhook(self) -> bool:
+        """Удалить webhook (для переключения на polling)"""
+        try:
+            session = await self._get_session()
+            async with session.post(
+                f"{self.base_url}/deleteWebhook",
+                json={"drop_pending_updates": True},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                data = await resp.json()
+                return data.get("ok", False)
+        except Exception as e:
+            print(f"Error deleting webhook: {e}")
+            return False
+
+    async def get_webhook_info(self) -> Optional[Dict]:
+        """Получить информацию о текущем webhook"""
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.base_url}/getWebhookInfo",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                data = await resp.json()
+                return data.get("result")
+        except Exception as e:
+            print(f"Error getting webhook info: {e}")
+            return None
+
+    # =========================================================================
+    # SEND
+    # =========================================================================
+    
+    async def _send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+        try:
             url = f"{self.base_url}/sendMessage"
-            
             payload = {
                 "chat_id": self.chat_id,
                 "text": text,
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True
             }
-            
-            # Добавляем topic_id если есть
             if self.topic_id:
                 payload["message_thread_id"] = int(self.topic_id)
             
             session = await self._get_session()
-            
-            async with session.post(url, json=payload, timeout=30) as response:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status == 200:
                     return True
                 else:
                     error_text = await response.text()
                     print(f"Telegram API error: {response.status} - {error_text}")
                     return False
-        
         except Exception as e:
             print(f"Error sending Telegram message: {e}")
             return False
-    
+
+    async def send_message(self, text: str) -> bool:
+        return await self._send_message(text)
+
+    async def send_signal(self, direction: str, **kwargs) -> bool:
+        if direction == "short":
+            text = self.format_short_signal(**kwargs)
+        else:
+            text = self.format_long_signal(**kwargs)
+        return await self._send_message(text)
+
+    async def send_test_message(self) -> bool:
+        text = "🤖 <b>Bot Connected</b>\n\nСоединение с Telegram установлено!"
+        return await self._send_message(text)
+
+    async def send_error_alert(self, error: str, context: str = "") -> bool:
+        text = (
+            f"<b>⚠️ BOT ERROR</b>\n\n"
+            f"<b>Context:</b> {context}\n"
+            f"<b>Error:</b> <code>{error}</code>\n"
+            f"<b>Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}"
+        )
+        return await self._send_message(text)
+
+    async def send_position_update(self, update_type: str, **kwargs) -> bool:
+        if update_type == "opened":
+            text = self.format_position_opened(**kwargs)
+        elif update_type == "tp_hit":
+            text = self.format_tp_hit(**kwargs)
+        elif update_type == "sl_hit":
+            text = self.format_sl_hit(**kwargs)
+        else:
+            return False
+        return await self._send_message(text)
+
+    async def send_report(self, report_type: str, **kwargs) -> bool:
+        if report_type == "daily":
+            text = self.format_daily_report(**kwargs)
+        else:
+            return False
+        return await self._send_message(text)
+
     # =========================================================================
-    # SIGNAL MESSAGES
+    # FORMAT: SIGNALS
     # =========================================================================
-    
-    def format_short_signal(self, 
+
+    def _calc_pct(self, entry: float, target: float) -> float:
+        if entry == 0:
+            return 0.0
+        return ((target - entry) / entry) * 100
+
+    def format_short_signal(self,
+                            symbol: str,
+                            score: int,
+                            price: float,
+                            pattern: str,
+                            indicators: Dict,
+                            entry: float,
+                            stop_loss: float,
+                            take_profits: List[tuple],
+                            leverage: str,
+                            risk: str,
+                            valid_minutes: int = 30) -> str:
+        if score >= 85:
+            score_emoji, strength = "🔥", "ЭКСТРЕМАЛЬНЫЙ"
+        elif score >= 75:
+            score_emoji, strength = "⚡", "СИЛЬНЫЙ"
+        elif score >= 65:
+            score_emoji, strength = "✅", "ХОРОШИЙ"
+        else:
+            score_emoji, strength = "⚠️", "СРЕДНИЙ"
+
+        message = (
+            f"\n<b>{score_emoji} SHORT SIGNAL | {strength}</b>\n"
+            f"<b>Score: {score}%</b>\n\n"
+            f"<b>💎 SYMBOL:</b> <code>{symbol}</code>\n"
+            f"<b>💰 Price:</b> ${price:,.2f}\n"
+            f"<b>📊 Pattern:</b> {pattern}\n\n"
+            f"<b>📉 Indicators:</b>\n"
+        )
+
+        for name, value in indicators.items():
+            if "RSI" in name:
+                emoji = "🟥"
+            elif "Funding" in name:
+                emoji = "🟥"
+            elif "L/S" in name or "Ratio" in name:
+                emoji = "🟥"
+            else:
+                emoji = "📊"
+            message += f"{emoji} {name}: {value}\n"
+
+        message += f"\n<b>🎯 ENTRY:</b> <code>${entry:,.2f}</code>\n"
+        message += f"<b>🛑 SL:</b> <code>${stop_loss:,.2f}</code> ({self._calc_pct(entry, stop_loss):+.2f}%)\n\n"
+        message += "<b>🎯 Take Profits:</b>\n"
+        for i, (tp_price, pct) in enumerate(take_profits[:6], 1):
+            tp_pct = self._calc_pct(entry, tp_price)
+            message += f"  TP{i}: <code>${tp_price:,.2f}</code> ({tp_pct:+.1f}%) | {pct}% pos\n"
+
+        message += (
+            f"\n<b>⚡ Leverage:</b> {leverage}\n"
+            f"<b>💵 Risk:</b> {risk}\n"
+            f"<b>⏰ Valid:</b> {valid_minutes} min\n"
+            f"<b>🕐</b> {datetime.utcnow().strftime('%H:%M UTC')}\n"
+        )
+        return message
+
+    def format_long_signal(self,
                            symbol: str,
                            score: int,
                            price: float,
@@ -105,400 +246,111 @@ class TelegramBot:
                            leverage: str,
                            risk: str,
                            valid_minutes: int = 30) -> str:
-        """
-        Форматировать сигнал SHORT
-        
-        Args:
-            symbol: Торговая пара
-            score: Short Score (0-100)
-            price: Текущая цена
-            pattern: Название паттерна
-            indicators: Словарь индикаторов
-            entry: Цена входа
-            stop_loss: Стоп-лосс
-            take_profits: Список (цена, процент_закрытия)
-            leverage: Рекомендуемое плечо
-            risk: Процент риска
-            valid_minutes: Время действия сигнала
-        
-        Returns:
-            HTML форматированный текст
-        """
-        # Эмодзи в зависимости от Score
         if score >= 85:
-            score_emoji = "🔥"
-            strength = "ЭКСТРЕМАЛЬНЫЙ"
+            score_emoji, strength = "🔥", "ЭКСТРЕМАЛЬНЫЙ"
         elif score >= 75:
-            score_emoji = "⚡"
-            strength = "СИЛЬНЫЙ"
+            score_emoji, strength = "⚡", "СИЛЬНЫЙ"
         elif score >= 65:
-            score_emoji = "✅"
-            strength = "ХОРОШИЙ"
+            score_emoji, strength = "✅", "ХОРОШИЙ"
         else:
-            score_emoji = "⚠️"
-            strength = "СРЕДНИЙ"
-        
-        message = f"""
-<b>{score_emoji} SHORT SIGNAL | {strength}</b>
-<b>Score: {score}%</b>
+            score_emoji, strength = "⚠️", "СРЕДНИЙ"
 
-<b>💎 SYMBOL:</b> <code>{symbol}</code>
-<b>💰 Price:</b> ${price:,.2f}
-<b>📊 Pattern:</b> {pattern}
+        message = (
+            f"\n<b>{score_emoji} LONG SIGNAL | {strength}</b>\n"
+            f"<b>Score: {score}%</b>\n\n"
+            f"<b>💎 SYMBOL:</b> <code>{symbol}</code>\n"
+            f"<b>💰 Price:</b> ${price:,.2f}\n"
+            f"<b>📊 Pattern:</b> {pattern}\n\n"
+            f"<b>📈 Indicators:</b>\n"
+        )
 
-<b>📉 Indicators:</b>
-"""
-        
-        # Добавляем индикаторы
         for name, value in indicators.items():
             if "RSI" in name:
-                emoji = "🟥" if value > 70 else "🟨"
+                emoji = "🟩"
             elif "Funding" in name:
-                emoji = "🟥" if value > 0 else "🟨"
+                emoji = "🟩"
             elif "L/S" in name or "Ratio" in name:
-                emoji = "🟥" if value > 60 else "🟨"
+                emoji = "🟩"
             else:
                 emoji = "📊"
-            
             message += f"{emoji} {name}: {value}\n"
-        
-        # Уровни
+
         message += f"\n<b>🎯 ENTRY:</b> <code>${entry:,.2f}</code>\n"
         message += f"<b>🛑 SL:</b> <code>${stop_loss:,.2f}</code> ({self._calc_pct(entry, stop_loss):+.2f}%)\n\n"
-        
-        # Take Profits
         message += "<b>🎯 Take Profits:</b>\n"
         for i, (tp_price, pct) in enumerate(take_profits[:6], 1):
             tp_pct = self._calc_pct(entry, tp_price)
             message += f"  TP{i}: <code>${tp_price:,.2f}</code> ({tp_pct:+.1f}%) | {pct}% pos\n"
-        
-        # Риск-менеджмент
-        message += f"\n<b>⚡ Rec. Leverage:</b> {leverage}\n"
-        message += f"<b>💵 Risk:</b> {risk}\n"
-        message += f"<b>⏰ Valid for:</b> {valid_minutes} minutes\n"
-        message += f"<b>🕐 Time:</b> {datetime.utcnow().strftime('%H:%M UTC')}\n"
-        
-        return message
-    
-    def format_long_signal(self,
-                          symbol: str,
-                          score: int,
-                          price: float,
-                          pattern: str,
-                          indicators: Dict,
-                          entry: float,
-                          stop_loss: float,
-                          take_profits: List[tuple],
-                          leverage: str,
-                          risk: str,
-                          valid_minutes: int = 30) -> str:
-        """Форматировать сигнал LONG (зеркальный SHORT)"""
-        
-        if score >= 85:
-            score_emoji = "🔥"
-            strength = "ЭКСТРЕМАЛЬНЫЙ"
-        elif score >= 75:
-            score_emoji = "⚡"
-            strength = "СИЛЬНЫЙ"
-        elif score >= 65:
-            score_emoji = "✅"
-            strength = "ХОРОШИЙ"
-        else:
-            score_emoji = "⚠️"
-            strength = "СРЕДНИЙ"
-        
-        message = f"""
-<b>{score_emoji} LONG SIGNAL | {strength}</b>
-<b>Score: {score}%</b>
 
-<b>💎 SYMBOL:</b> <code>{symbol}</code>
-<b>💰 Price:</b> ${price:,.2f}
-<b>📊 Pattern:</b> {pattern}
-
-<b>📈 Indicators:</b>
-"""
-        
-        for name, value in indicators.items():
-            if "RSI" in name:
-                emoji = "🟩" if value < 30 else "🟨"
-            elif "Funding" in name:
-                emoji = "🟩" if value < 0 else "🟨"
-            elif "L/S" in name or "Ratio" in name:
-                emoji = "🟩" if value < 40 else "🟨"
-            else:
-                emoji = "📊"
-            
-            message += f"{emoji} {name}: {value}\n"
-        
-        message += f"\n<b>🎯 ENTRY:</b> <code>${entry:,.2f}</code>\n"
-        message += f"<b>🛑 SL:</b> <code>${stop_loss:,.2f}</code> ({self._calc_pct(entry, stop_loss):+.2f}%)\n\n"
-        
-        message += "<b>🎯 Take Profits:</b>\n"
-        for i, (tp_price, pct) in enumerate(take_profits[:6], 1):
-            tp_pct = self._calc_pct(entry, tp_price)
-            message += f"  TP{i}: <code>${tp_price:,.2f}</code> ({tp_pct:+.1f}%) | {pct}% pos\n"
-        
-        message += f"\n<b>⚡ Rec. Leverage:</b> {leverage}\n"
-        message += f"<b>💵 Risk:</b> {risk}\n"
-        message += f"<b>⏰ Valid for:</b> {valid_minutes} minutes\n"
-        message += f"<b>🕐 Time:</b> {datetime.utcnow().strftime('%H:%M UTC')}\n"
-        
+        message += (
+            f"\n<b>⚡ Leverage:</b> {leverage}\n"
+            f"<b>💵 Risk:</b> {risk}\n"
+            f"<b>⏰ Valid:</b> {valid_minutes} min\n"
+            f"<b>🕐</b> {datetime.utcnow().strftime('%H:%M UTC')}\n"
+        )
         return message
-    
-    def _calc_pct(self, entry: float, target: float) -> float:
-        """Расчёт процентного изменения"""
-        if entry == 0:
-            return 0.0
-        return ((target - entry) / entry) * 100
-    
+
     # =========================================================================
-    # POSITION UPDATES
+    # FORMAT: POSITIONS
     # =========================================================================
-    
-    def format_position_opened(self,
-                              symbol: str,
-                              direction: str,
-                              entry_price: float,
-                              size: float,
-                              leverage: int,
-                              stop_loss: float,
-                              take_profits: List[tuple],
-                              score: int) -> str:
-        """Сообщение об открытии позиции"""
-        
+
+    def format_position_opened(self, symbol, direction, entry_price,
+                               size, leverage, stop_loss, take_profits, score) -> str:
         emoji = "🔴" if direction == "SHORT" else "🟢"
-        
-        message = f"""
-<b>{emoji} POSITION OPENED</b>
-
-<b>💎 {symbol} {direction}</b>
-<b>💰 Entry:</b> <code>${entry_price:,.2f}</code>
-<b>📊 Size:</b> {size:.4f} (${size * entry_price:,.0f})
-<b>⚡ Leverage:</b> {leverage}x
-<b>🔥 Score:</b> {score}%
-
-<b>🛑 SL:</b> <code>${stop_loss:,.2f}</code>
-
-<b>🎯 Take Profits:</b>
-"""
+        message = (
+            f"\n<b>{emoji} POSITION OPENED</b>\n\n"
+            f"<b>💎 {symbol} {direction}</b>\n"
+            f"<b>💰 Entry:</b> <code>${entry_price:,.2f}</code>\n"
+            f"<b>📊 Size:</b> {size:.4f} (${size * entry_price:,.0f})\n"
+            f"<b>⚡ Leverage:</b> {leverage}x\n"
+            f"<b>🔥 Score:</b> {score}%\n\n"
+            f"<b>🛑 SL:</b> <code>${stop_loss:,.2f}</code>\n\n"
+            f"<b>🎯 Take Profits:</b>\n"
+        )
         for i, (tp, pct) in enumerate(take_profits[:6], 1):
             message += f"  TP{i}: ${tp:,.2f} | {pct}%\n"
-        
-        message += f"\n<b>⏰ Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}"
-        
+        message += f"\n<b>⏰</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         return message
-    
-    def format_tp_hit(self,
-                     symbol: str,
-                     direction: str,
-                     tp_level: int,
-                     tp_price: float,
-                     pnl: float,
-                     pnl_pct: float,
-                     closed_pct: float) -> str:
-        """Сообщение о достижении TP"""
-        
+
+    def format_tp_hit(self, symbol, direction, tp_level,
+                      tp_price, pnl, pnl_pct, closed_pct) -> str:
         emoji = "💰" if pnl > 0 else "😔"
-        
-        return f"""
-<b>{emoji} TAKE PROFIT HIT | TP{tp_level}</b>
+        return (
+            f"\n<b>{emoji} TAKE PROFIT HIT | TP{tp_level}</b>\n\n"
+            f"<b>💎 {symbol} {direction}</b>\n"
+            f"<b>📈 Price:</b> <code>${tp_price:,.2f}</code>\n"
+            f"<b>💵 PnL:</b> <code>${pnl:+.2f}</code> ({pnl_pct:+.2f}%)\n"
+            f"<b>📊 Closed:</b> {closed_pct}% of position\n\n"
+            f"<b>⏰</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}\n"
+        )
 
-<b>💎 {symbol} {direction}</b>
-<b>📈 Price:</b> <code>${tp_price:,.2f}</code>
-<b>💵 PnL:</b> <code>${pnl:+.2f}</code> ({pnl_pct:+.2f}%)
-<b>📊 Closed:</b> {closed_pct}% of position
+    def format_sl_hit(self, symbol, direction, sl_price, pnl, pnl_pct) -> str:
+        return (
+            f"\n<b>🛑 STOP LOSS HIT</b>\n\n"
+            f"<b>💎 {symbol} {direction}</b>\n"
+            f"<b>📉 Price:</b> <code>${sl_price:,.2f}</code>\n"
+            f"<b>💵 PnL:</b> <code>${pnl:+.2f}</code> ({pnl_pct:+.2f}%)\n\n"
+            f"<b>⏰</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}\n"
+        )
 
-<b>⏰ Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}
-"""
-    
-    def format_sl_hit(self,
-                     symbol: str,
-                     direction: str,
-                     sl_price: float,
-                     pnl: float,
-                     pnl_pct: float) -> str:
-        """Сообщение о срабатывании SL"""
-        
-        return f"""
-<b>🛑 STOP LOSS HIT</b>
-
-<b>💎 {symbol} {direction}</b>
-<b>📉 Price:</b> <code>${sl_price:,.2f}</code>
-<b>💵 PnL:</b> <code>${pnl:+.2f}</code> ({pnl_pct:+.2f}%)
-
-<b>⏰ Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}
-"""
-    
-    # =========================================================================
-    # DAILY REPORTS
-    # =========================================================================
-    
-    def format_daily_report(self,
-                           bot_type: str,
-                           date: str,
-                           signals: int,
-                           trades: int,
-                           wins: int,
-                           losses: int,
-                           total_pnl: float,
-                           win_rate: float,
-                           best_trade: Optional[Dict] = None,
-                           worst_trade: Optional[Dict] = None) -> str:
-        """Ежедневный отчёт"""
-        
+    def format_daily_report(self, bot_type, date, signals, trades,
+                            wins, losses, total_pnl, win_rate,
+                            best_trade=None, worst_trade=None) -> str:
         emoji = "🔴" if bot_type == "SHORT" else "🟢"
-        
-        message = f"""
-<b>{emoji} DAILY REPORT | {bot_type} BOT</b>
-<b>📅 Date:</b> {date}
-
-<b>📊 Performance:</b>
-• Signals: {signals}
-• Trades: {trades}
-• Win Rate: {win_rate:.0f}% ({wins}W / {losses}L)
-• Total PnL: <code>${total_pnl:+.2f}</code> ({(total_pnl/1000)*100:+.2f}%)
-"""
-        
+        message = (
+            f"\n<b>{emoji} DAILY REPORT | {bot_type} BOT</b>\n"
+            f"<b>📅 Date:</b> {date}\n\n"
+            f"<b>📊 Performance:</b>\n"
+            f"• Signals: {signals}\n"
+            f"• Trades: {trades}\n"
+            f"• Win Rate: {win_rate:.0f}% ({wins}W / {losses}L)\n"
+            f"• Total PnL: <code>${total_pnl:+.2f}</code>\n"
+        )
         if best_trade:
-            message += f"\n<b>💎 Best Trade:</b> {best_trade.get('symbol', 'N/A')} +${best_trade.get('pnl', 0):.2f}"
-        
+            message += f"\n<b>💎 Best:</b> {best_trade.get('symbol')} +${best_trade.get('pnl', 0):.2f}"
         if worst_trade:
-            message += f"\n<b>😔 Worst Trade:</b> {worst_trade.get('symbol', 'N/A')} ${worst_trade.get('pnl', 0):.2f}"
-        
+            message += f"\n<b>😔 Worst:</b> {worst_trade.get('symbol')} ${worst_trade.get('pnl', 0):.2f}"
         return message
-    
-    # =========================================================================
-    # SEND METHODS
-    # =========================================================================
-    
-    async def send_signal(self, direction: str, **kwargs) -> bool:
-        """
-        Отправить сигнал
-        
-        Args:
-            direction: 'short' или 'long'
-            **kwargs: Параметры для format_xxx_signal
-        """
-        if direction == "short":
-            text = self.format_short_signal(**kwargs)
-        else:
-            text = self.format_long_signal(**kwargs)
-        
-        return await self._send_message(text)
-    
-    async def send_position_update(self, update_type: str, **kwargs) -> bool:
-        """
-        Отправить обновление позиции
-        
-        Args:
-            update_type: 'opened', 'tp_hit', 'sl_hit'
-        """
-        if update_type == "opened":
-            text = self.format_position_opened(**kwargs)
-        elif update_type == "tp_hit":
-            text = self.format_tp_hit(**kwargs)
-        elif update_type == "sl_hit":
-            text = self.format_sl_hit(**kwargs)
-        else:
-            return False
-        
-        return await self._send_message(text)
-    
-    async def send_report(self, report_type: str, **kwargs) -> bool:
-        """
-        Отправить отчёт
-        
-        Args:
-            report_type: 'daily', 'weekly', etc.
-        """
-        if report_type == "daily":
-            text = self.format_daily_report(**kwargs)
-        else:
-            return False
-        
-        return await self._send_message(text)
-    
-    async def send_test_message(self) -> bool:
-        """Тестовое сообщение для проверки"""
-        text = "🤖 <b>Bot Test</b>\n\nСоединение с Telegram установлено!"
-        return await self._send_message(text)
-    
-    async def send_error_alert(self, error: str, context: str = "") -> bool:
-        """Отправить алерт об ошибке"""
-        text = f"""
-<b>⚠️ BOT ERROR</b>
-
-<b>Context:</b> {context}
-<b>Error:</b> <code>{error}</code>
-
-<b>Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}
-"""
-        return await self._send_message(text)
-    
-    async def send_message(self, text: str) -> bool:
-        """Отправить произвольное сообщение"""
-        return await self._send_message(text)
-
-
-# ============================================================================
-# DUAL BOT MANAGER
-# ============================================================================
-
-class DualTelegramManager:
-    """
-    Менеджер для двух Telegram ботов (SHORT и LONG)
-    Может использовать один бот с двумя темами или два разных бота
-    """
-    
-    def __init__(self,
-                 short_bot_token: Optional[str] = None,
-                 short_chat_id: Optional[str] = None,
-                 short_topic_id: Optional[str] = None,
-                 long_bot_token: Optional[str] = None,
-                 long_chat_id: Optional[str] = None,
-                 long_topic_id: Optional[str] = None):
-        """
-        Инициализация
-        
-        Можно использовать:
-        - Один бот, один чат, две темы (topic_id)
-        - Один бот, два разных чата
-        - Два разных бота
-        """
-        # SHORT bot
-        self.short_bot = TelegramBot(
-            bot_token=short_bot_token or os.getenv("SHORT_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
-            chat_id=short_chat_id or os.getenv("SHORT_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
-            topic_id=short_topic_id or os.getenv("SHORT_TELEGRAM_TOPIC_ID")
-        )
-        
-        # LONG bot
-        self.long_bot = TelegramBot(
-            bot_token=long_bot_token or os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
-            chat_id=long_chat_id or os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
-            topic_id=long_topic_id or os.getenv("LONG_TELEGRAM_TOPIC_ID")
-        )
-    
-    async def send_signal(self, direction: str, **kwargs) -> bool:
-        """Отправить сигнал в соответствующий канал"""
-        if direction == "short":
-            return await self.short_bot.send_signal(direction="short", **kwargs)
-        else:
-            return await self.long_bot.send_signal(direction="long", **kwargs)
-    
-    async def test_connections(self) -> Dict[str, bool]:
-        """Проверить соединения с обоими ботами"""
-        results = {}
-        
-        results["short"] = await self.short_bot.send_test_message()
-        results["long"] = await self.long_bot.send_test_message()
-        
-        return results
-    
-    async def close(self):
-        """Закрыть все соединения"""
-        await self.short_bot.close()
-        await self.long_bot.close()
 
 
 # ============================================================================
@@ -506,159 +358,213 @@ class DualTelegramManager:
 # ============================================================================
 
 class TelegramCommandHandler:
-    """Обработчик команд Telegram для бота"""
-    
-    def __init__(self, bot: TelegramBot, redis_client=None, bingx_client=None):
+    """
+    Обработчик команд Telegram.
+    Используется вместе с webhook endpoint в main.py.
+    """
+
+    def __init__(self, bot: TelegramBot, redis_client=None, bot_state=None):
         self.bot = bot
         self.redis = redis_client
-        self.bingx = bingx_client
+        self.state = bot_state  # ссылка на BotState из main.py
         self.commands = {
-            '/start': self.cmd_start,
-            '/help': self.cmd_help,
-            '/status': self.cmd_status,
-            '/balance': self.cmd_balance,
-            '/positions': self.cmd_positions,
-            '/signals': self.cmd_signals,
-            '/trades': self.cmd_trades,
-            '/stats': self.cmd_stats,
-            '/ping': self.cmd_ping,
+            '/start':    self.cmd_start,
+            '/help':     self.cmd_help,
+            '/status':   self.cmd_status,
+            '/signals':  self.cmd_signals,
+            '/stats':    self.cmd_stats,
+            '/ping':     self.cmd_ping,
+            '/scan':     self.cmd_scan,
+            '/pause':    self.cmd_pause,
+            '/resume':   self.cmd_resume,
             '/setscore': self.cmd_set_min_score,
-            '/pause': self.cmd_pause,
-            '/resume': self.cmd_resume,
         }
-    
-    async def handle_command(self, command: str, args: list = None) -> bool:
-        """Обработать команду"""
-        cmd = command.lower().split()[0] if command else ''
-        args = args or []
-        
-        if cmd in self.commands:
-            return await self.commands[cmd](args)
-        return False
-    
-    async def cmd_start(self, args):
-        """Команда /start"""
-        await self.bot.send_message(
-            "🚀 <b>Бот запущен!</b>\n\n"
-            "Доступные команды:\n"
-            "📊 /status - Статус бота\n"
-            "💰 /balance - Баланс BingX\n"
-            "📈 /positions - Открытые позиции\n"
-            "🎯 /signals - Активные сигналы\n"
-            "💹 /trades - История сделок\n"
-            "📉 /stats - Статистика\n"
-            "⚙️ /setscore [N] - Минимальный скор\n"
-            "⏸ /pause - Пауза\n"
-            "▶️ /resume - Возобновить"
-        )
-        return True
-    
-    async def cmd_help(self, args):
-        """Команда /help"""
-        return await self.cmd_start(args)
-    
-    async def cmd_status(self, args):
-        """Статус бота"""
-        import datetime
-        uptime = datetime.datetime.now().strftime("%H:%M:%S")
-        await self.bot.send_message(
-            f"🤖 <b>Статус бота</b>\n\n"
-            f"✅ Бот работает\n"
-            f"🕐 Время: {uptime}\n"
-            f"📡 Сканирование: Активно\n"
-            f"🎯 Минимальный скор: 75%"
-        )
-        return True
-    
-    async def cmd_balance(self, args):
-        """Баланс BingX"""
-        if not self.bingx:
-            await self.bot.send_message("❌ BingX не подключен")
-            return False
+
+    async def handle_update(self, update: Dict) -> bool:
+        """
+        Обработать входящий update от Telegram webhook.
+        Вызывай это из POST /webhook в main.py.
+        """
         try:
-            balance = await self.bingx.get_balance()
+            message = update.get("message") or update.get("edited_message")
+            if not message:
+                return False
+
+            text = message.get("text", "").strip()
+            if not text.startswith("/"):
+                return False
+
+            # Парсим команду и аргументы
+            parts = text.split()
+            # Убираем @BotName если есть: /start@MyBot → /start
+            cmd = parts[0].split("@")[0].lower()
+            args = parts[1:] if len(parts) > 1 else []
+
+            handler = self.commands.get(cmd)
+            if handler:
+                await handler(args)
+                return True
+            else:
+                await self.bot.send_message(
+                    f"❓ Неизвестная команда: <code>{cmd}</code>\n"
+                    f"Напиши /help для списка команд."
+                )
+                return False
+
+        except Exception as e:
+            print(f"Error handling update: {e}")
+            return False
+
+    # =========================================================================
+    # COMMANDS
+    # =========================================================================
+
+    async def cmd_start(self, args):
+        await self.bot.send_message(
+            "🤖 <b>Бот активен!</b>\n\n"
+            "<b>Команды:</b>\n"
+            "📊 /status — Статус бота\n"
+            "🎯 /signals — Активные сигналы\n"
+            "📉 /stats — Статистика за неделю\n"
+            "🔍 /scan — Запустить скан прямо сейчас\n"
+            "⏸ /pause — Остановить сигналы\n"
+            "▶️ /resume — Возобновить\n"
+            "⚙️ /setscore [75] — Мин. скор\n"
+            "🏓 /ping — Проверка связи"
+        )
+
+    async def cmd_help(self, args):
+        await self.cmd_start(args)
+
+    async def cmd_ping(self, args):
+        await self.bot.send_message("🏓 Pong! Бот активен ✅")
+
+    async def cmd_status(self, args):
+        if self.state:
+            wl = len(self.state.watchlist)
+            last = self.state.last_scan.strftime("%H:%M UTC") if self.state.last_scan else "никогда"
+            running = "✅ Работает" if self.state.is_running else "❌ Остановлен"
+            redis_ok = "✅" if (self.redis and self.redis.health_check()) else "❌"
             await self.bot.send_message(
-                f"💰 <b>Баланс BingX</b>\n\n"
-                f"Доступно: {balance:.2f} USDT\n"
-                f"Заблокировано: 0.00 USDT\n"
-                f"Всего: {balance:.2f} USDT"
+                f"🤖 <b>Статус бота</b>\n\n"
+                f"Состояние: {running}\n"
+                f"Watchlist: {wl} монет\n"
+                f"Последний скан: {last}\n"
+                f"Активных сигналов: {self.state.active_signals}\n"
+                f"Redis: {redis_ok}\n"
+                f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
             )
-            return True
+        else:
+            await self.bot.send_message("✅ Бот работает")
+
+    async def cmd_signals(self, args):
+        if self.redis:
+            try:
+                bot_type = self.state.redis if not self.state else (
+                    "short" if hasattr(self.state, 'watchlist') else "long"
+                )
+                # Определяем bot_type из конфига
+                from main import Config
+                signals = self.redis.get_active_signals(Config.BOT_TYPE)
+                if signals:
+                    msg = f"🎯 <b>Активные сигналы ({len(signals)}):</b>\n\n"
+                    for s in signals[:8]:
+                        direction = "🔴" if s.get("direction") == "short" else "🟢"
+                        msg += f"{direction} <code>{s.get('symbol')}</code> — Score: {s.get('score')}%\n"
+                    await self.bot.send_message(msg)
+                    return
+            except Exception as e:
+                print(f"cmd_signals error: {e}")
+        await self.bot.send_message("🎯 Нет активных сигналов")
+
+    async def cmd_stats(self, args):
+        days = 7
+        if self.redis:
+            try:
+                from main import Config
+                stats = self.redis.get_stats_range(Config.BOT_TYPE, days)
+                total_signals = sum(s.get("signals", 0) for s in stats)
+                total_pnl = sum(s.get("pnl", 0.0) for s in stats)
+                await self.bot.send_message(
+                    f"📉 <b>Статистика за {days} дней</b>\n\n"
+                    f"📨 Сигналов: {total_signals}\n"
+                    f"💵 P&L: ${total_pnl:+.2f}\n"
+                    f"🕐 {datetime.utcnow().strftime('%d.%m.%Y %H:%M UTC')}"
+                )
+                return
+            except Exception as e:
+                print(f"cmd_stats error: {e}")
+        await self.bot.send_message("📉 Статистика недоступна")
+
+    async def cmd_scan(self, args):
+        """Ручной запуск сканирования"""
+        await self.bot.send_message("🔍 Запускаю скан рынка...")
+        try:
+            from main import scan_market
+            asyncio.create_task(scan_market())
         except Exception as e:
             await self.bot.send_message(f"❌ Ошибка: {e}")
-            return False
-    
-    async def cmd_positions(self, args):
-        """Открытые позиции"""
-        await self.bot.send_message(
-            "📈 <b>Открытые позиции</b>\n\n"
-            "Нет открытых позиций\n\n"
-            "Авто-трейдинг: OFF (демо режим)"
-        )
-        return True
-    
-    async def cmd_signals(self, args):
-        """Активные сигналы"""
-        if self.redis:
-            signals = self.redis.get_active_signals(self.bot.bot_type)
-            if signals:
-                msg = "🎯 <b>Активные сигналы:</b>\n\n"
-                for s in signals[:5]:
-                    msg += f"• {s.get('symbol')} - Score: {s.get('score')}%\n"
-                await self.bot.send_message(msg)
-                return True
-        await self.bot.send_message("🎯 Нет активных сигналов")
-        return True
-    
-    async def cmd_trades(self, args):
-        """История сделок"""
-        await self.bot.send_message(
-            "💹 <b>История сделок</b>\n\n"
-            "Сегодня: 0 сделок\n"
-            "Вчера: 0 сделок\n"
-            "Неделя: 0 сделок\n\n"
-            "📊 Win Rate: N/A"
-        )
-        return True
-    
-    async def cmd_stats(self, args):
-        """Статистика"""
-        await self.bot.send_message(
-            "📉 <b>Статистика</b>\n\n"
-            "📅 Сегодня:\n"
-            "  Сигналов: 0\n"
-            "  Сделок: 0\n"
-            "  P&L: 0.00 USDT\n\n"
-            "🏆 Общая статистика:\n"
-            "  Всего сигналов: 0\n"
-            "  Всего сделок: 0\n"
-            "  Общий P&L: 0.00 USDT"
-        )
-        return True
-    
-    async def cmd_ping(self, args):
-        """Проверка связи"""
-        await self.bot.send_message("🏓 Pong! Бот активен")
-        return True
-    
+
+    async def cmd_pause(self, args):
+        if self.state:
+            self.state.is_running = False
+        await self.bot.send_message("⏸ Бот приостановлен. Команды /resume для возобновления.")
+
+    async def cmd_resume(self, args):
+        if self.state:
+            self.state.is_running = True
+        await self.bot.send_message("▶️ Бот возобновил работу. Сканирование активно!")
+
     async def cmd_set_min_score(self, args):
-        """Установить минимальный скор"""
         if args and args[0].isdigit():
             score = int(args[0])
-            await self.bot.send_message(f"✅ Минимальный скор установлен: {score}%")
+            if 50 <= score <= 95:
+                # Динамически обновляем Config
+                try:
+                    from main import Config
+                    Config.MIN_SCORE = score
+                    await self.bot.send_message(f"✅ Минимальный скор обновлён: <b>{score}%</b>")
+                except Exception:
+                    await self.bot.send_message(f"✅ Запрошено изменение скора на {score}%")
+            else:
+                await self.bot.send_message("⚠️ Скор должен быть от 50 до 95")
         else:
-            await self.bot.send_message("⚙️ Использование: /setscore 75")
-        return True
-    
-    async def cmd_pause(self, args):
-        """Пауза"""
-        await self.bot.send_message("⏸ Бот приостановлен. Сигналы не генерируются.")
-        return True
-    
-    async def cmd_resume(self, args):
-        """Возобновить"""
-        await self.bot.send_message("▶️ Бот возобновил работу. Сканирование активно.")
-        return True
+            await self.bot.send_message("⚙️ Использование: <code>/setscore 75</code>")
+
+
+# ============================================================================
+# DUAL BOT MANAGER
+# ============================================================================
+
+class DualTelegramManager:
+    def __init__(self,
+                 short_bot_token=None, short_chat_id=None, short_topic_id=None,
+                 long_bot_token=None, long_chat_id=None, long_topic_id=None):
+        self.short_bot = TelegramBot(
+            bot_token=short_bot_token or os.getenv("SHORT_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
+            chat_id=short_chat_id or os.getenv("SHORT_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
+            topic_id=short_topic_id or os.getenv("SHORT_TELEGRAM_TOPIC_ID")
+        )
+        self.long_bot = TelegramBot(
+            bot_token=long_bot_token or os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
+            chat_id=long_chat_id or os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
+            topic_id=long_topic_id or os.getenv("LONG_TELEGRAM_TOPIC_ID")
+        )
+
+    async def send_signal(self, direction: str, **kwargs) -> bool:
+        if direction == "short":
+            return await self.short_bot.send_signal(direction="short", **kwargs)
+        return await self.long_bot.send_signal(direction="long", **kwargs)
+
+    async def test_connections(self) -> Dict[str, bool]:
+        return {
+            "short": await self.short_bot.send_test_message(),
+            "long": await self.long_bot.send_test_message()
+        }
+
+    async def close(self):
+        await self.short_bot.close()
+        await self.long_bot.close()
 
 
 # ============================================================================
@@ -666,86 +572,9 @@ class TelegramCommandHandler:
 # ============================================================================
 
 _telegram_bot = None
-_dual_manager = None
 
 def get_telegram_bot() -> TelegramBot:
-    """Получить singleton TelegramBot"""
     global _telegram_bot
     if _telegram_bot is None:
         _telegram_bot = TelegramBot()
     return _telegram_bot
-
-def get_dual_manager() -> DualTelegramManager:
-    """Получить singleton DualTelegramManager"""
-    global _dual_manager
-    if _dual_manager is None:
-        _dual_manager = DualTelegramManager()
-    return _dual_manager
-
-
-# ============================================================================
-# EXAMPLE
-# ============================================================================
-
-async def test():
-    """Тест Telegram бота"""
-    import os
-    
-    # Проверяем переменные окружения
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
-    if not token or not chat_id:
-        print("❌ TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не установлены")
-        print("Установите их для тестирования")
-        return
-    
-    bot = TelegramBot(token, chat_id)
-    
-    # Тестовое сообщение
-    print("Отправка тестового сообщения...")
-    success = await bot.send_test_message()
-    
-    if success:
-        print("✅ Тестовое сообщение отправлено!")
-    else:
-        print("❌ Ошибка отправки")
-    
-    # Тестовый сигнал
-    print("\nОтправка тестового сигнала...")
-    success = await bot.send_signal(
-        direction="short",
-        symbol="BTCUSDT.P",
-        score=78,
-        price=73500.0,
-        pattern="MEGA SHORT",
-        indicators={
-            "RSI": "78.5 (перекуплен)",
-            "Funding": "+0.42% (лонги платят)",
-            "L/S Ratio": "72% лонгов",
-            "OI Change": "+18% за 4д"
-        },
-        entry=73500.0,
-        stop_loss=74200.0,
-        take_profits=[
-            (72400.0, 25),
-            (71295.0, 25),
-            (69825.0, 20),
-            (68870.0, 15),
-            (67253.0, 10),
-            (64573.0, 5)
-        ],
-        leverage="5-10x",
-        risk="≤1% deposit"
-    )
-    
-    if success:
-        print("✅ Тестовый сигнал отправлен!")
-    else:
-        print("❌ Ошибка отправки сигнала")
-    
-    await bot.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(test())
