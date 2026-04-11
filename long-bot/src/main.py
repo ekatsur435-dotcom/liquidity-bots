@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 import uvicorn
 
 # Добавляем путь к shared модулям
@@ -20,7 +20,7 @@ from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector
-from bot.telegram import TelegramBot
+from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
 # ============================================================================
@@ -55,6 +55,7 @@ class BotState:
         self.scorer = None
         self.pattern_detector = None
         self.telegram = None
+        self.cmd_handler = None
 
 state = BotState()
 
@@ -82,6 +83,22 @@ async def lifespan(app: FastAPI):
     telegram_ok = await state.telegram.send_test_message()
     
     print(f"✅ Redis: {redis_ok}, Telegram: {telegram_ok}")
+    
+    # Initialize command handler
+    state.cmd_handler = TelegramCommandHandler(
+        bot=state.telegram,
+        redis_client=state.redis,
+        bot_state=state
+    )
+    
+    # Register webhook in Telegram
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        webhook_url = f"{render_url}/webhook"
+        await state.telegram.setup_webhook(webhook_url)
+        print(f"✅ Webhook registered: {webhook_url}")
+    else:
+        print("⚠️ RENDER_EXTERNAL_URL not set — webhook not registered")
     
     # Load watchlist
     symbols = await state.binance.get_all_symbols(min_volume_usdt=50_000_000)
@@ -230,6 +247,31 @@ async def get_stats(days: int = 7):
         "total_pnl": total_pnl,
         "daily_stats": stats
     }
+
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """
+    Endpoint для приёма команд от Telegram.
+    Telegram будет слать сюда все сообщения пользователей.
+    """
+    try:
+        update = await request.json()
+        if state.cmd_handler:
+            await state.cmd_handler.handle_update(update)
+        return {"ok": True}
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/webhook/info")
+async def webhook_info():
+    """Проверить статус webhook"""
+    if state.telegram:
+        info = await state.telegram.get_webhook_info()
+        return {"webhook": info}
+    return {"error": "Telegram not initialized"}
 
 
 # ============================================================================
