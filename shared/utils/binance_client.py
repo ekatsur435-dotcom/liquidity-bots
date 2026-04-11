@@ -11,7 +11,17 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 from datetime import datetime
 import time
+import random
 
+
+# Прокси — используются для Binance если он заблокирован напрямую
+# Берутся из env PROXY_LIST (через запятую) или из этого списка
+DEFAULT_PROXIES = [
+    "http://w8S1GP:ps1b8h@186.65.114.244:9094",
+    "http://Q9r7eX:ARt51J@163.198.135.24:8000",
+    "http://FmE3ov:5yKd4y@161.0.18.201:8000",
+    "http://UJDVUJ:rVPPZC@196.16.8.64:9323",
+]
 
 @dataclass
 class CandleData:
@@ -69,6 +79,18 @@ class BinanceFuturesClient:
         self._cache_ttl = 60
         self._use_bybit = False
         self._source_checked = False
+        # Прокси: из env или дефолтный список
+        proxy_env = os.getenv("PROXY_LIST", "")
+        self._proxies = [p.strip() for p in proxy_env.split(",") if p.strip()] or DEFAULT_PROXIES
+        self._proxy_idx = 0
+
+    def _next_proxy(self) -> Optional[str]:
+        """Следующий прокси в ротации"""
+        if not self._proxies:
+            return None
+        proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+        self._proxy_idx += 1
+        return proxy
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -86,10 +108,12 @@ class BinanceFuturesClient:
             await self.session.close()
 
     async def _check_source(self):
-        """Один раз определяем: Binance или Bybit"""
+        """Один раз определяем: Binance напрямую, Binance через прокси, или Bybit"""
         if self._source_checked:
             return
         self._source_checked = True
+
+        # 1. Пробуем Binance напрямую
         try:
             session = await self._get_session()
             async with session.get(
@@ -98,24 +122,58 @@ class BinanceFuturesClient:
             ) as resp:
                 if resp.status == 200:
                     self._use_bybit = False
-                    print("✅ Data source: Binance Futures")
+                    print("✅ Data source: Binance Futures (direct)")
                     return
         except Exception:
             pass
+
+        # 2. Пробуем Binance через прокси
+        for proxy in self._proxies[:2]:  # Проверяем первые 2 прокси
+            try:
+                session = await self._get_session()
+                async with session.get(
+                    f"{self.BINANCE_URL}/fapi/v1/time",
+                    proxy=proxy,
+                    timeout=aiohttp.ClientTimeout(total=6)
+                ) as resp:
+                    if resp.status == 200:
+                        self._use_bybit = False
+                        self._active_proxy = proxy
+                        print(f"✅ Data source: Binance Futures (proxy {proxy.split('@')[-1]})")
+                        return
+            except Exception:
+                continue
+
+        # 3. Fallback: Bybit (нет гео-ограничений)
         self._use_bybit = True
         print("⚠️ Binance unavailable. Using Bybit as data source.")
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        """Запрос к Binance — сначала напрямую, потом через прокси"""
         await self._rate_limit()
+        proxy = getattr(self, '_active_proxy', None)
         try:
             session = await self._get_session()
             async with session.get(
                 f"{self.BINANCE_URL}{endpoint}",
                 params=params or {},
+                proxy=proxy,
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
                     return await resp.json()
+                if resp.status == 451 and self._proxies:
+                    # Пробуем следующий прокси
+                    next_proxy = self._next_proxy()
+                    async with session.get(
+                        f"{self.BINANCE_URL}{endpoint}",
+                        params=params or {},
+                        proxy=next_proxy,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp2:
+                        if resp2.status == 200:
+                            self._active_proxy = next_proxy
+                            return await resp2.json()
                 return None
         except Exception:
             return None
