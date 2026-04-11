@@ -360,13 +360,15 @@ class TelegramBot:
 class TelegramCommandHandler:
     """
     Обработчик команд Telegram.
-    Используется вместе с webhook endpoint в main.py.
+    Работает и в личке, и в группе — отвечает туда, откуда пришла команда.
     """
 
-    def __init__(self, bot: TelegramBot, redis_client=None, bot_state=None):
+    def __init__(self, bot: TelegramBot, redis_client=None, bot_state=None,
+                 bot_type: str = "short"):
         self.bot = bot
         self.redis = redis_client
-        self.state = bot_state  # ссылка на BotState из main.py
+        self.state = bot_state
+        self.bot_type = bot_type  # "short" или "long" — передаётся из Config.BOT_TYPE
         self.commands = {
             '/start':    self.cmd_start,
             '/help':     self.cmd_help,
@@ -380,10 +382,35 @@ class TelegramCommandHandler:
             '/setscore': self.cmd_set_min_score,
         }
 
+    async def _reply(self, chat_id: str, text: str) -> bool:
+        """
+        Отправить ответ в конкретный chat_id.
+        Это ключевой метод — отвечает ТУДА откуда пришла команда,
+        а не в захардкоженный self.bot.chat_id.
+        """
+        try:
+            url = f"{self.bot.base_url}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }
+            session = await self.bot._get_session()
+            async with session.post(
+                url, json=payload,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return resp.status == 200
+        except Exception as e:
+            print(f"Reply error to {chat_id}: {e}")
+            return False
+
     async def handle_update(self, update: Dict) -> bool:
         """
         Обработать входящий update от Telegram webhook.
-        Вызывай это из POST /webhook в main.py.
+        Извлекаем chat_id из сообщения — отвечаем туда же.
+        Работает и в личке и в группе.
         """
         try:
             message = update.get("message") or update.get("edited_message")
@@ -394,18 +421,25 @@ class TelegramCommandHandler:
             if not text.startswith("/"):
                 return False
 
-            # Парсим команду и аргументы
+            # ✅ Берём chat_id из самого сообщения — не из конфига!
+            reply_chat_id = str(message.get("chat", {}).get("id", ""))
+            if not reply_chat_id:
+                return False
+
+            # Парсим команду
             parts = text.split()
-            # Убираем @BotName если есть: /start@MyBot → /start
-            cmd = parts[0].split("@")[0].lower()
+            cmd = parts[0].split("@")[0].lower()  # /start@BotName → /start
             args = parts[1:] if len(parts) > 1 else []
+
+            print(f"📨 Command: {cmd} from chat {reply_chat_id}")
 
             handler = self.commands.get(cmd)
             if handler:
-                await handler(args)
+                await handler(args, reply_chat_id)
                 return True
             else:
-                await self.bot.send_message(
+                await self._reply(
+                    reply_chat_id,
                     f"❓ Неизвестная команда: <code>{cmd}</code>\n"
                     f"Напиши /help для списка команд."
                 )
@@ -416,36 +450,40 @@ class TelegramCommandHandler:
             return False
 
     # =========================================================================
-    # COMMANDS
+    # COMMANDS — все принимают reply_chat_id и отвечают туда
     # =========================================================================
 
-    async def cmd_start(self, args):
-        await self.bot.send_message(
-            "🤖 <b>Бот активен!</b>\n\n"
+    async def cmd_start(self, args, reply_chat_id: str):
+        bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
+        bot_name = "SHORT" if self.bot_type == "short" else "LONG"
+        await self._reply(reply_chat_id,
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot</b>\n\n"
             "<b>Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
-            "📉 /stats — Статистика за неделю\n"
-            "🔍 /scan — Запустить скан прямо сейчас\n"
+            "📉 /stats — Статистика за 7 дней\n"
+            "🔍 /scan — Запустить скан сейчас\n"
             "⏸ /pause — Остановить сигналы\n"
             "▶️ /resume — Возобновить\n"
-            "⚙️ /setscore [75] — Мин. скор\n"
-            "🏓 /ping — Проверка связи"
+            "⚙️ /setscore 75 — Установить мин. скор\n"
+            "🏓 /ping — Проверка связи\n\n"
+            "Сигналы приходят автоматически!"
         )
 
-    async def cmd_help(self, args):
-        await self.cmd_start(args)
+    async def cmd_help(self, args, reply_chat_id: str):
+        await self.cmd_start(args, reply_chat_id)
 
-    async def cmd_ping(self, args):
-        await self.bot.send_message("🏓 Pong! Бот активен ✅")
+    async def cmd_ping(self, args, reply_chat_id: str):
+        await self._reply(reply_chat_id, "🏓 Pong! Бот активен ✅")
 
-    async def cmd_status(self, args):
+    async def cmd_status(self, args, reply_chat_id: str):
         if self.state:
             wl = len(self.state.watchlist)
             last = self.state.last_scan.strftime("%H:%M UTC") if self.state.last_scan else "никогда"
             running = "✅ Работает" if self.state.is_running else "❌ Остановлен"
             redis_ok = "✅" if (self.redis and self.redis.health_check()) else "❌"
-            await self.bot.send_message(
+            score = getattr(self.state, '_min_score', 65)
+            await self._reply(reply_chat_id,
                 f"🤖 <b>Статус бота</b>\n\n"
                 f"Состояние: {running}\n"
                 f"Watchlist: {wl} монет\n"
@@ -455,38 +493,31 @@ class TelegramCommandHandler:
                 f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
             )
         else:
-            await self.bot.send_message("✅ Бот работает")
+            await self._reply(reply_chat_id, "✅ Бот работает")
 
-    async def cmd_signals(self, args):
+    async def cmd_signals(self, args, reply_chat_id: str):
         if self.redis:
             try:
-                bot_type = self.state.redis if not self.state else (
-                    "short" if hasattr(self.state, 'watchlist') else "long"
-                )
-                # Определяем bot_type из конфига
-                from main import Config
-                signals = self.redis.get_active_signals(Config.BOT_TYPE)
+                signals = self.redis.get_active_signals(self.bot_type)
                 if signals:
                     msg = f"🎯 <b>Активные сигналы ({len(signals)}):</b>\n\n"
                     for s in signals[:8]:
-                        direction = "🔴" if s.get("direction") == "short" else "🟢"
-                        msg += f"{direction} <code>{s.get('symbol')}</code> — Score: {s.get('score')}%\n"
-                    await self.bot.send_message(msg)
+                        d = "🔴" if s.get("direction") == "short" else "🟢"
+                        msg += f"{d} <code>{s.get('symbol')}</code> — Score: {s.get('score')}%\n"
+                    await self._reply(reply_chat_id, msg)
                     return
             except Exception as e:
                 print(f"cmd_signals error: {e}")
-        await self.bot.send_message("🎯 Нет активных сигналов")
+        await self._reply(reply_chat_id, "🎯 Нет активных сигналов")
 
-    async def cmd_stats(self, args):
-        days = 7
+    async def cmd_stats(self, args, reply_chat_id: str):
         if self.redis:
             try:
-                from main import Config
-                stats = self.redis.get_stats_range(Config.BOT_TYPE, days)
+                stats = self.redis.get_stats_range(self.bot_type, 7)
                 total_signals = sum(s.get("signals", 0) for s in stats)
                 total_pnl = sum(s.get("pnl", 0.0) for s in stats)
-                await self.bot.send_message(
-                    f"📉 <b>Статистика за {days} дней</b>\n\n"
+                await self._reply(reply_chat_id,
+                    f"📉 <b>Статистика за 7 дней</b>\n\n"
                     f"📨 Сигналов: {total_signals}\n"
                     f"💵 P&L: ${total_pnl:+.2f}\n"
                     f"🕐 {datetime.utcnow().strftime('%d.%m.%Y %H:%M UTC')}"
@@ -494,42 +525,53 @@ class TelegramCommandHandler:
                 return
             except Exception as e:
                 print(f"cmd_stats error: {e}")
-        await self.bot.send_message("📉 Статистика недоступна")
+        await self._reply(reply_chat_id, "📉 Статистика пока пуста")
 
-    async def cmd_scan(self, args):
-        """Ручной запуск сканирования"""
-        await self.bot.send_message("🔍 Запускаю скан рынка...")
+    async def cmd_scan(self, args, reply_chat_id: str):
+        await self._reply(reply_chat_id, "🔍 Запускаю скан рынка...")
         try:
-            from main import scan_market
-            asyncio.create_task(scan_market())
+            # Импортируем scan_market из main через динамический импорт
+            import importlib
+            main_mod = importlib.import_module("main")
+            asyncio.create_task(main_mod.scan_market())
         except Exception as e:
-            await self.bot.send_message(f"❌ Ошибка: {e}")
+            await self._reply(reply_chat_id, f"❌ Ошибка запуска скана: {e}")
 
-    async def cmd_pause(self, args):
+    async def cmd_pause(self, args, reply_chat_id: str):
         if self.state:
             self.state.is_running = False
-        await self.bot.send_message("⏸ Бот приостановлен. Команды /resume для возобновления.")
+        await self._reply(reply_chat_id, "⏸ Бот приостановлен.\nКоманда /resume для возобновления.")
 
-    async def cmd_resume(self, args):
+    async def cmd_resume(self, args, reply_chat_id: str):
         if self.state:
             self.state.is_running = True
-        await self.bot.send_message("▶️ Бот возобновил работу. Сканирование активно!")
+        await self._reply(reply_chat_id, "▶️ Бот возобновил работу!\nСканирование активно.")
 
-    async def cmd_set_min_score(self, args):
+    async def cmd_set_min_score(self, args, reply_chat_id: str):
         if args and args[0].isdigit():
             score = int(args[0])
             if 50 <= score <= 95:
-                # Динамически обновляем Config
                 try:
-                    from main import Config
-                    Config.MIN_SCORE = score
-                    await self.bot.send_message(f"✅ Минимальный скор обновлён: <b>{score}%</b>")
-                except Exception:
-                    await self.bot.send_message(f"✅ Запрошено изменение скора на {score}%")
+                    import importlib
+                    main_mod = importlib.import_module("main")
+                    main_mod.Config.MIN_SCORE = score
+                    # Сохраняем для /status
+                    if self.state:
+                        self.state._min_score = score
+                    await self._reply(reply_chat_id,
+                        f"✅ Минимальный скор обновлён: <b>{score}%</b>\n"
+                        f"Следующий скан будет фильтровать по {score}%"
+                    )
+                except Exception as e:
+                    await self._reply(reply_chat_id, f"⚠️ Не удалось обновить: {e}")
             else:
-                await self.bot.send_message("⚠️ Скор должен быть от 50 до 95")
+                await self._reply(reply_chat_id, "⚠️ Скор должен быть от 50 до 95")
         else:
-            await self.bot.send_message("⚙️ Использование: <code>/setscore 75</code>")
+            await self._reply(reply_chat_id,
+                "⚙️ Использование: <code>/setscore 75</code>\n"
+                "Например: /setscore 75 (рекомендовано)\n"
+                "Диапазон: 50–95"
+            )
 
 
 # ============================================================================
