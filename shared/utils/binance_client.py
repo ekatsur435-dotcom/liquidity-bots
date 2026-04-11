@@ -97,7 +97,7 @@ class BinanceFuturesClient:
             )
         return self.session
     
-    async def _make_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """Make request with proxy retry logic"""
         await self._rate_limit()
         

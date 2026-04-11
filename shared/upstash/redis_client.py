@@ -26,13 +26,19 @@ class UpstashRedisClient:
         if not self.redis_url:
             raise ValueError("REDIS_URL not provided and not in environment")
         
-        self.client = redis.from_url(
-            self.redis_url,
-            decode_responses=True,
-            ssl=True,  # Upstash требует SSL
-            socket_timeout=5,
-            socket_connect_timeout=5
-        )
+        # SSL detection from URL scheme (rediss:// = SSL)
+        use_ssl = self.redis_url.startswith("rediss://")
+        
+        conn_kwargs = {
+            "decode_responses": True,
+            "socket_timeout": 5,
+            "socket_connect_timeout": 5
+        }
+        
+        if use_ssl:
+            conn_kwargs["ssl_cert_reqs"] = None  # Disable cert verification for Upstash
+        
+        self.client = redis.from_url(self.redis_url, **conn_kwargs)
         
         # TTL для разных типов данных (в секундах)
         self.TTL = {

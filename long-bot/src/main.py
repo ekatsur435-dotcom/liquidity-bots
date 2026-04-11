@@ -143,7 +143,8 @@ async def health_check():
         "is_running": state.is_running,
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
         "watchlist_count": len(state.watchlist),
-        "active_signals": state.active_signals
+        "active_signals": state.active_signals,
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 
