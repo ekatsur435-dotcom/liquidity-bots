@@ -290,7 +290,7 @@ class TelegramCommandHandler:
     ALLOWED_COMMANDS = {
         "/start", "/help", "/ping", "/status",
         "/signals", "/stats", "/scan",
-        "/pause", "/resume", "/setscore",
+        "/pause", "/resume", "/setscore", "/closeall",
         "/clearpos", "/balance", "/positions",
     }
 
@@ -389,6 +389,7 @@ class TelegramCommandHandler:
                 "/resume":   self.cmd_resume,
                 "/setscore": self.cmd_set_min_score,
                 "/clearpos": self.cmd_clearpos,
+                "/closeall": self.cmd_closeall,
                 "/balance":  self.cmd_balance,
                 "/positions": self.cmd_positions,
             }
@@ -664,6 +665,78 @@ class TelegramCommandHandler:
                     f"<i>Подсказка: /clearpos BTCUSDT — очистить одну пару</i>")
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+
+    async def cmd_closeall(self, args, reply_chat_id: str):
+        """
+        /closeall — закрыть ВСЕ открытые позиции на BingX (рыночными ордерами).
+        Используй когда бот показывает "Max positions" но позиции уже устарели.
+        """
+        try:
+            # Проверяем есть ли auto_trader с bingx клиентом
+            if not self.state or not hasattr(self.state, 'auto_trader') or not self.state.auto_trader:
+                await self._reply(reply_chat_id, 
+                    "❌ AutoTrader не инициализирован.\n"
+                    "Убедись что BINGX_API_KEY и BINGX_API_SECRET настроены.")
+                return
+            
+            bingx = self.state.auto_trader.bingx
+            
+            # Получаем все открытые позиции
+            positions = await bingx.get_positions()
+            
+            if not positions:
+                await self._reply(reply_chat_id, 
+                    "✅ Нет открытых позиций на BingX.")
+                return
+            
+            closed = 0
+            failed = 0
+            total_pnl = 0.0
+            
+            for pos in positions:
+                try:
+                    symbol = pos.symbol
+                    side = "SELL" if pos.side == "LONG" else "BUY"
+                    qty = abs(pos.size)
+                    
+                    # Рыночный ордер на закрытие
+                    await bingx.place_market_order(
+                        symbol=symbol,
+                        side=side,
+                        quantity=qty,
+                        position_side=pos.side
+                    )
+                    
+                    closed += 1
+                    total_pnl += pos.unrealized_pnl
+                    print(f"Closed position: {symbol} {pos.side} | PnL: {pos.unrealized_pnl:+.2f}")
+                    
+                except Exception as e:
+                    failed += 1
+                    print(f"Failed to close {pos.symbol}: {e}")
+            
+            # Сбрасываем счётчик позиций
+            if self.state:
+                self.state.active_signals = 0
+            
+            # Очищаем Redis сигналы
+            pattern = f"{self.bot_type}:signals:*"
+            keys = self.redis.client.keys(pattern)
+            for key in keys:
+                self.redis.client.delete(key)
+            
+            emoji = "✅" if closed > 0 else "⚠️"
+            mode = "DEMO" if bingx.demo else "REAL"
+            
+            await self._reply(reply_chat_id,
+                f"{emoji} <b>Закрыто {closed} позиций ({mode})</b>\n\n"
+                f"💰 Total P&L: <code>{total_pnl:+.2f} USDT</code>\n"
+                f"❌ Failed: {failed}\n\n"
+                f"🤖 Бот снова может открывать новые позиции.\n"
+                f"Используй /scan для немедленного скана.")
+                
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка закрытия позиций: {e}")
 
     async def cmd_balance(self, args, reply_chat_id: str):
         """/balance — баланс BingX аккаунта."""
