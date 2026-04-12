@@ -195,8 +195,8 @@ async def lifespan(app: FastAPI):
             Config.USE_COINGLASS = False
 
     # Watchlist
-    symbols = await state.binance.get_all_symbols(min_volume_usdt=1_000_000)
-    state.watchlist = symbols[:100]
+    symbols = await state.binance.get_all_symbols(min_volume_usdt=500_000)
+    state.watchlist = symbols[:150]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
 
     state.redis.update_bot_state(Config.BOT_TYPE, {
