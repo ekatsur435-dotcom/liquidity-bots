@@ -290,8 +290,9 @@ class TelegramCommandHandler:
     ALLOWED_COMMANDS = {
         "/start", "/help", "/ping", "/status",
         "/signals", "/stats", "/scan",
-        "/pause", "/resume", "/setscore", "/closeall",
+        "/pause", "/resume", "/setscore", "/closeall", "/close_all",
         "/clearpos", "/balance", "/positions",
+        "/emergency_stop", "/reset_stats", "/cleanup", "/clean", "/logs",
     }
 
     def __init__(self,
@@ -390,8 +391,14 @@ class TelegramCommandHandler:
                 "/setscore": self.cmd_set_min_score,
                 "/clearpos": self.cmd_clearpos,
                 "/closeall": self.cmd_closeall,
+                "/close_all": self.cmd_closeall,
                 "/balance":  self.cmd_balance,
                 "/positions": self.cmd_positions,
+                "/emergency_stop": self.cmd_emergency_stop,
+                "/reset_stats": self.cmd_reset_stats,
+                "/cleanup": self.cmd_cleanup,
+                "/clean": self.cmd_clean,
+                "/logs": self.cmd_logs,
             }
             await handlers[cmd](args, reply_chat_id)
             return True
@@ -797,6 +804,204 @@ class TelegramCommandHandler:
             await self._reply(reply_chat_id, msg)
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+
+    async def cmd_emergency_stop(self, args, reply_chat_id: str):
+        """
+        /emergency_stop — экстренная остановка всех новых сигналов.
+        Алиас для /pause с более чётким сообщением.
+        """
+        try:
+            if not self.state:
+                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
+                return
+
+            self.state.is_paused = True
+
+            bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
+            bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
+
+            await self._reply(reply_chat_id,
+                f"🛑 <b>ЭКСТРЕННАЯ ОСТАНОВКА {bot_emoji} {bot_name} Bot</b>\n\n"
+                "⏸️ Новые сигналы ОСТАНОВЛЕНЫ\n"
+                "📊 Позиции продолжают отслеживаться\n"
+                "🔄 Сканирование приостановлено\n\n"
+                "Используй /resume для возобновления")
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+
+    async def cmd_reset_stats(self, args, reply_chat_id: str):
+        """
+        /reset_stats — сбросить статистику (daily_trades, daily_pnl).
+        """
+        try:
+            if not self.state or not hasattr(self.state, 'auto_trader') or not self.state.auto_trader:
+                await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
+                return
+
+            # Сбрасываем статистику
+            self.state.auto_trader.daily_trades = 0
+            self.state.auto_trader.daily_pnl = 0.0
+            self.state.auto_trader.total_pnl = 0.0
+            self.state.auto_trader.win_count = 0
+            self.state.auto_trader.loss_count = 0
+
+            # Сбрасываем в Redis
+            if self.redis:
+                self.redis.client.delete(f"{self.bot_type}:daily_trades")
+                self.redis.client.delete(f"{self.bot_type}:daily_pnl")
+
+            await self._reply(reply_chat_id,
+                "🔄 <b>Статистика сброшена</b>\n\n"
+                "📊 Daily trades: 0\n"
+                "📈 Daily P&L: 0.00%\n"
+                "🎯 Win/Loss: 0/0\n\n"
+                "Счётчики обнулены ✅")
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка сброса: {e}")
+
+    async def cmd_cleanup(self, args, reply_chat_id: str):
+        """
+        /cleanup — удалить зависшие сделки из Redis.
+        Очистка signals и проверка синхронизации с биржей.
+        """
+        try:
+            if not self.state:
+                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
+                return
+
+            # Получаем реальные позиции с биржи
+            real_positions = []
+            if self.state.auto_trader:
+                real_positions = await self.state.auto_trader.bingx.get_positions()
+            real_symbols = {p.symbol for p in real_positions}
+
+            # Чистим Redis
+            cleaned = 0
+            pattern = f"{self.bot_type}:signals:*"
+            keys = self.redis.client.keys(pattern) if self.redis else []
+
+            for key in keys:
+                try:
+                    # Проверяем есть ли эта позиция на бирже
+                    symbol = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
+                    if symbol not in real_symbols:
+                        self.redis.client.delete(key)
+                        cleaned += 1
+                except:
+                    pass
+
+            # Сбрасываем счётчик
+            self.state.active_signals = len(real_positions)
+
+            await self._reply(reply_chat_id,
+                f"🧹 <b>Cleanup завершён</b>\n\n"
+                f"📊 Реальных позиций на бирже: {len(real_positions)}\n"
+                f"🗑 Очищено записей из Redis: {cleaned}\n"
+                f"✅ Счётчик активных сигналов: {self.state.active_signals}\n\n"
+                "Бот синхронизирован с биржей ✅")
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка cleanup: {e}")
+
+    async def cmd_clean(self, args, reply_chat_id: str):
+        """
+        /clean — полная очистка: trades + positions + Redis.
+        Комбинация /reset_stats + /cleanup + /clearpos.
+        """
+        try:
+            if not self.state:
+                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
+                return
+
+            # 1. Сброс статистики
+            if self.state.auto_trader:
+                self.state.auto_trader.daily_trades = 0
+                self.state.auto_trader.daily_pnl = 0.0
+
+            # 2. Очистка Redis signals
+            pattern = f"{self.bot_type}:signals:*"
+            keys = self.redis.client.keys(pattern) if self.redis else []
+            cleaned_signals = len(keys)
+            for key in keys:
+                self.redis.client.delete(key)
+
+            # 3. Очистка других ключей
+            if self.redis:
+                self.redis.client.delete(f"{self.bot_type}:daily_trades")
+                self.redis.client.delete(f"{self.bot_type}:daily_pnl")
+                self.redis.client.delete(f"{self.bot_type}:last_scan")
+
+            # 4. Сброс счётчиков
+            self.state.active_signals = 0
+            self.state.is_paused = False
+
+            await self._reply(reply_chat_id,
+                "🧼 <b>Полная очистка завершена</b>\n\n"
+                f"🗑 Очищено сигналов: {cleaned_signals}\n"
+                "📊 Статистика сброшена\n"
+                "⏸️ Пауза снята\n"
+                "🔄 Сканирование активно\n\n"
+                "Бот готов к работе! ✅")
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка очистки: {e}")
+
+    async def cmd_logs(self, args, reply_chat_id: str):
+        """
+        /logs — показать последние строки лога (для Render).
+        """
+        try:
+            import subprocess
+            import os
+
+            # Пытаемся получить логи (работает если есть доступ к файловой системе)
+            lines = 20
+            if args and args[0].isdigit():
+                lines = min(int(args[0]), 50)
+
+            # Читаем из файла лога если он есть
+            log_lines = []
+            log_files = ["/var/log/render.log", "/app/logs/app.log", "app.log", "bot.log"]
+
+            for log_file in log_files:
+                if os.path.exists(log_file):
+                    try:
+                        with open(log_file, 'r') as f:
+                            log_lines = f.readlines()[-lines:]
+                        break
+                    except:
+                        pass
+
+            if not log_lines:
+                # Если нет файла — показываем информацию о боте
+                uptime = getattr(self.state, 'start_time', None) if self.state else None
+                uptime_str = "N/A"
+                if uptime:
+                    from datetime import datetime
+                    delta = datetime.utcnow() - uptime
+                    uptime_str = f"{delta.days}d {delta.seconds//3600}h"
+
+                await self._reply(reply_chat_id,
+                    f"📋 <b>Статус бота</b>\n\n"
+                    f"🤖 Тип: {self.bot_type.upper()}\n"
+                    f"⏸️ Пауза: {'Да' if self.state and getattr(self.state, 'is_paused', False) else 'Нет'}\n"
+                    f"📊 Активных сигналов: {getattr(self.state, 'active_signals', 0)}\n"
+                    f"🔄 AutoTrader: {'✅' if self.state and getattr(self.state, 'auto_trader', None) else '❌'}\n\n"
+                    "💡 Подробные логи в Render Dashboard → Logs")
+                return
+
+            # Формируем сообщение с логами
+            msg = f"📜 <b>Последние {len(log_lines)} строк лога:</b>\n\n<code>"
+            for line in log_lines:
+                msg += line.replace('<', '&lt;').replace('>', '&gt;')[:200] + "\n"
+            msg += "</code>"
+
+            await self._reply(reply_chat_id, msg)
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка получения логов: {e}")
 
 
 # ============================================================================
