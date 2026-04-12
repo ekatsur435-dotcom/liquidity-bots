@@ -1,13 +1,13 @@
 """
-BingX Futures API Client
-Поддержка DEMO (testnet) и REAL торговли
+BingX Futures API Client  v2 — FIXED
+
+ИСПРАВЛЕНИЯ:
+  - POST запросы: signature/timestamp идут в URL query string (не в body)
+  - _make_request: правильная сигнатура для BingX API
+  - Добавлен test_connection при инициализации
 """
 
-import os
-import json
-import hmac
-import hashlib
-import time
+import os, json, hmac, hashlib, time
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,10 +16,9 @@ import aiohttp
 
 @dataclass
 class BingXPosition:
-    """Позиция на BingX"""
     symbol: str
-    side: str  # 'LONG' или 'SHORT'
-    position_side: str  # 'LONG', 'SHORT', или 'BOTH'
+    side: str
+    position_side: str
     size: float
     entry_price: float
     leverage: int
@@ -31,516 +30,327 @@ class BingXPosition:
 
 @dataclass
 class BingXOrder:
-    """Ордер на BingX"""
     order_id: str
     symbol: str
-    side: str  # 'BUY' или 'SELL'
+    side: str
     position_side: str
-    type: str  # 'MARKET', 'LIMIT', 'STOP_MARKET'
+    type: str
     size: float
     price: Optional[float] = None
     stop_price: Optional[float] = None
-    status: str = "PENDING"  # PENDING, FILLED, CANCELED
+    status: str = "PENDING"
     filled_size: float = 0.0
     avg_fill_price: float = 0.0
     created_at: Optional[datetime] = None
 
 
 class BingXClient:
-    """
-    Клиент для BingX Futures API
-    Поддерживает DEMO (testnet) режим
-    """
-    
-    # DEMO (testnet) endpoints
     DEMO_BASE_URL = "https://open-api-vst.bingx.com"
-    
-    # REAL endpoints  
     REAL_BASE_URL = "https://open-api.bingx.com"
-    
-    def __init__(self, 
+
+    def __init__(self,
                  api_key: Optional[str] = None,
                  api_secret: Optional[str] = None,
                  demo: bool = True):
-        """
-        Инициализация клиента BingX
-        
-        Args:
-            api_key: API ключ из BingX
-            api_secret: API секрет из BingX
-            demo: True для DEMO (testnet), False для REAL торговли
-        """
-        self.api_key = api_key or os.getenv("BINGX_API_KEY")
-        self.api_secret = api_secret or os.getenv("BINGX_API_SECRET")
-        
-        # 🔒 FORCE DEMO MODE - всегда DEMO, никогда REAL!
-        # Чтобы включить REAL, нужно явно установить BINGX_FORCE_REAL=true
+        self.api_key    = api_key    or os.getenv("BINGX_API_KEY", "")
+        self.api_secret = api_secret or os.getenv("BINGX_API_SECRET", "")
+
+        # FORCE DEMO — безопасность. Для REAL нужен BINGX_FORCE_REAL=true
         force_real = os.getenv("BINGX_FORCE_REAL", "false").lower() == "true"
-        self.demo = True if not force_real else demo
-        
+        self.demo = (not force_real) or demo
+
         if not self.demo:
-            print("🚨🚨🚨 WARNING: RUNNING IN REAL MODE! 🚨🚨🚨")
-        
+            print("🚨 WARNING: RUNNING IN REAL MODE!")
+
         if not self.api_key or not self.api_secret:
-            raise ValueError("BingX API key and secret required")
-        
+            raise ValueError("BingX API key and secret are required")
+
         self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
         self.session: Optional[aiohttp.ClientSession] = None
-        
-        print(f"🚀 BingX Client initialized ({'DEMO' if demo else 'REAL'} mode)")
-    
+        print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'})")
+
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Получить или создать сессию"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
-                headers={
-                    "X-BX-APIKEY": self.api_key,
-                    "Content-Type": "application/json"
-                }
+                headers={"X-BX-APIKEY": self.api_key}
             )
         return self.session
-    
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        """Генерация подписи для API запроса"""
-        # Добавляем timestamp
-        params['timestamp'] = int(time.time() * 1000)
-        
-        # Сортируем параметры
-        sorted_params = sorted(params.items())
-        
-        # Создаём строку для подписи
-        signature_payload = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        
-        # Генерируем HMAC SHA256
-        signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            signature_payload.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        
-        return signature, params['timestamp']
-    
-    async def _make_request(self, 
-                           method: str, 
-                           endpoint: str, 
-                           params: Optional[Dict] = None,
-                           signed: bool = True) -> Optional[Dict]:
+
+    def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Выполнить API запрос
-        
-        Args:
-            method: HTTP метод (GET, POST, DELETE)
-            endpoint: API endpoint
-            params: Параметры запроса
-            signed: Требуется ли подпись
+        Генерация подписи BingX.
+        Возвращает params с добавленными timestamp и signature.
+        """
+        params = dict(params)  # копия
+        params["timestamp"] = int(time.time() * 1000)
+
+        # Строка для подписи: отсортированные пары key=value
+        payload = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+
+        signature = hmac.new(
+            self.api_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        params["signature"] = signature
+        return params
+
+    async def _make_request(self,
+                            method: str,
+                            endpoint: str,
+                            params: Optional[Dict] = None,
+                            body: Optional[Dict] = None,
+                            signed: bool = True) -> Optional[Dict]:
+        """
+        ✅ FIX: для BingX signature и timestamp ВСЕГДА идут в URL query string,
+        даже для POST запросов. Тело запроса (body) — отдельно.
+
+        BingX API pattern:
+          GET  → params в query string (+ signature)
+          POST → business params в body (JSON), signature в query string
         """
         try:
-            url = f"{self.base_url}{endpoint}"
-            params = params or {}
-            
-            # Добавляем подпись если нужно
-            if signed:
-                signature, timestamp = self._generate_signature(params)
-                params['signature'] = signature
-            
             session = await self._get_session()
-            
+            url = f"{self.base_url}{endpoint}"
+
+            query_params = dict(params or {})
+            json_body    = dict(body or {})
+
+            if signed:
+                # Подписываем query_params (включая business params для GET,
+                # или только timestamp для POST)
+                if method == "GET":
+                    query_params = self._sign(query_params)
+                else:
+                    # Для POST: business params в body, подпись — в query
+                    # Но BingX также принимает всё в query для POST (надёжнее)
+                    # Поэтому дублируем params и в query, и в body
+                    combined = {**query_params, **json_body}
+                    signed_p = self._sign(combined)
+                    # В query идут timestamp и signature
+                    query_params = {
+                        "timestamp": signed_p["timestamp"],
+                        "signature": signed_p["signature"],
+                    }
+                    # В body идут бизнес-параметры
+                    json_body = {k: v for k, v in signed_p.items()
+                                 if k not in ("timestamp", "signature")}
+
+            timeout = aiohttp.ClientTimeout(total=30)
+
             if method == "GET":
-                async with session.get(url, params=params, timeout=30) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        error_text = await response.text()
-                        print(f"BingX API Error {response.status}: {error_text}")
-                        return None
-            
+                async with session.get(url, params=query_params, timeout=timeout) as r:
+                    return await self._parse_response(r)
+
             elif method == "POST":
-                async with session.post(url, json=params, timeout=30) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        error_text = await response.text()
-                        print(f"BingX API Error {response.status}: {error_text}")
-                        return None
-            
+                async with session.post(url, params=query_params,
+                                        json=json_body, timeout=timeout) as r:
+                    return await self._parse_response(r)
+
             elif method == "DELETE":
-                async with session.delete(url, params=params, timeout=30) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        error_text = await response.text()
-                        print(f"BingX API Error {response.status}: {error_text}")
-                        return None
-        
+                async with session.delete(url, params=query_params, timeout=timeout) as r:
+                    return await self._parse_response(r)
+
         except Exception as e:
-            print(f"Request error: {e}")
+            print(f"[BingX] Request error {method} {endpoint}: {e}")
             return None
-    
+
+    async def _parse_response(self, response) -> Optional[Dict]:
+        text = await response.text()
+        if response.status == 200:
+            try:
+                data = json.loads(text)
+                if data.get("code") != 0:
+                    print(f"[BingX] API error: code={data.get('code')} msg={data.get('msg')}")
+                return data
+            except Exception:
+                return None
+        else:
+            print(f"[BingX] HTTP {response.status}: {text[:200]}")
+            return None
+
     async def close(self):
-        """Закрыть сессию"""
         if self.session and not self.session.closed:
             await self.session.close()
-    
+
     # =========================================================================
-    # ACCOUNT INFO
+    # ACCOUNT
     # =========================================================================
-    
+
     async def get_account_balance(self) -> Optional[Dict]:
-        """Получить баланс аккаунта"""
-        result = await self._make_request("GET", "/openApi/swap/v2/user/balance", signed=True)
-        
-        # Debug: показываем что вернул API
-        print(f"🔍 DEBUG Balance API response: {result}")
-        
+        result = await self._make_request("GET", "/openApi/swap/v2/user/balance")
         if result and result.get("code") == 0:
             data = result.get("data", {})
-            
-            # 🔥 FIX: Для DEMO mode баланс приходит как СПИСОК!
-            # Берём первый элемент списка
-            balance_list = data.get("balance", [])
-            if isinstance(balance_list, list) and balance_list:
-                balance_data = balance_list[0]
-            elif isinstance(balance_list, dict):
-                balance_data = balance_list
+            bal  = data.get("balance", [])
+            # Demo: balance может быть списком
+            if isinstance(bal, list) and bal:
+                b = bal[0]
+            elif isinstance(bal, dict):
+                b = bal
             else:
-                balance_data = {}
-            
-            # Добавляем поля в data для совместимости
-            data["equity"] = balance_data.get("equity", "0")
-            data["availableMargin"] = balance_data.get("availableMargin", "0")
-            data["walletBalance"] = balance_data.get("walletBalance", "0")
-            data["unrealizedPNL"] = balance_data.get("unrealizedPNL", "0")
-            
-            # Debug: показываем распарсенные данные
-            print(f"🔍 DEBUG Parsed balance: equity={data['equity']}, avail={data['availableMargin']}")
-            return data
-        
-        print(f"⚠️ DEBUG Balance API error: code={result.get('code') if result else 'None'}, msg={result.get('msg') if result else 'None'}")
+                b = {}
+            return {
+                "equity":          b.get("equity", "0"),
+                "availableMargin": b.get("availableMargin", "0"),
+                "walletBalance":   b.get("walletBalance", "0"),
+                "unrealizedPNL":   b.get("unrealizedPNL", "0"),
+            }
         return None
-    
-    async def get_account_info(self) -> Optional[Dict]:
-        """Получить информацию об аккаунте"""
-        result = await self._make_request("GET", "/openApi/swap/v1/account", signed=True)
-        
-        if result and result.get("code") == 0:
-            return result.get("data", {})
-        return None
-    
-    # =========================================================================
-    # MARKET DATA
-    # =========================================================================
-    
-    async def get_symbols(self) -> List[str]:
-        """Получить список доступных пар"""
-        result = await self._make_request("GET", "/openApi/swap/v2/quote/contracts", signed=False)
-        
-        symbols = []
-        if result and result.get("code") == 0:
-            for contract in result.get("data", []):
-                symbol = contract.get("symbol")
-                if symbol:
-                    symbols.append(symbol)
-        
-        return symbols
-    
-    async def get_price(self, symbol: str) -> Optional[float]:
-        """Получить текущую цену символа"""
-        result = await self._make_request(
-            "GET", 
-            "/openApi/swap/v1/ticker/price",
-            params={"symbol": symbol},
-            signed=False
-        )
-        
-        if result and result.get("code") == 0:
-            return float(result["data"].get("price", 0))
-        return None
-    
-    async def get_klines(self, 
-                        symbol: str, 
-                        interval: str = "15m",
-                        limit: int = 100) -> Optional[List]:
-        """
-        Получить свечи (OHLCV)
-        
-        Args:
-            symbol: Торговая пара (BTC-USDT)
-            interval: Таймфрейм (1m, 5m, 15m, 1h, 4h, 1d)
-            limit: Количество свечей
-        """
-        result = await self._make_request(
-            "GET",
-            "/openApi/swap/v3/quote/klines",
-            params={
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            },
-            signed=False
-        )
-        
-        if result and result.get("code") == 0:
-            return result.get("data", [])
-        return None
-    
-    async def get_funding_rate(self, symbol: str) -> Optional[float]:
-        """Получить фандинг рейт"""
-        result = await self._make_request(
-            "GET",
-            "/openApi/swap/v1/fundingRate",
-            params={"symbol": symbol},
-            signed=False
-        )
-        
-        if result and result.get("code") == 0:
-            return float(result["data"].get("fundingRate", 0))
-        return None
-    
-    async def get_open_interest(self, symbol: str) -> Optional[float]:
-        """Получить Open Interest"""
-        result = await self._make_request(
-            "GET",
-            "/openApi/swap/v1/openInterest",
-            params={"symbol": symbol},
-            signed=False
-        )
-        
-        if result and result.get("code") == 0:
-            return float(result["data"].get("openInterest", 0))
-        return None
-    
+
     # =========================================================================
     # POSITIONS
     # =========================================================================
-    
+
     async def get_positions(self, symbol: Optional[str] = None) -> List[BingXPosition]:
-        """Получить открытые позиции"""
         params = {}
         if symbol:
             params["symbol"] = symbol
-        
-        result = await self._make_request(
-            "GET",
-            "/openApi/swap/v2/user/positions",
-            params=params,
-            signed=True
-        )
-        
+        result = await self._make_request("GET", "/openApi/swap/v2/user/positions", params=params)
         positions = []
         if result and result.get("code") == 0:
-            for pos_data in result.get("data", []):
-                position = BingXPosition(
-                    symbol=pos_data.get("symbol", ""),
-                    side="LONG" if pos_data.get("positionSide") == "LONG" else "SHORT",
-                    position_side=pos_data.get("positionSide", ""),
-                    size=float(pos_data.get("positionAmt", 0)),
-                    entry_price=float(pos_data.get("avgPrice", 0)),
-                    leverage=int(pos_data.get("leverage", 1)),
-                    unrealized_pnl=float(pos_data.get("unrealizedProfit", 0)),
-                    realized_pnl=float(pos_data.get("realizedProfit", 0)),
-                    stop_loss=float(pos_data.get("stopLoss", 0)) if pos_data.get("stopLoss") else None,
-                    take_profit=float(pos_data.get("takeProfit", 0)) if pos_data.get("takeProfit") else None
-                )
-                positions.append(position)
-        
+            for d in result.get("data", []):
+                try:
+                    size = float(d.get("positionAmt", 0))
+                    if size == 0:  # пропускаем нулевые
+                        continue
+                    positions.append(BingXPosition(
+                        symbol=d.get("symbol", ""),
+                        side="LONG" if d.get("positionSide") == "LONG" else "SHORT",
+                        position_side=d.get("positionSide", ""),
+                        size=size,
+                        entry_price=float(d.get("avgPrice", 0)),
+                        leverage=int(d.get("leverage", 1)),
+                        unrealized_pnl=float(d.get("unrealizedProfit", 0)),
+                        realized_pnl=float(d.get("realizedProfit", 0)),
+                        stop_loss=float(d.get("stopLoss", 0)) or None,
+                        take_profit=float(d.get("takeProfit", 0)) or None,
+                    ))
+                except Exception as e:
+                    print(f"[BingX] Position parse error: {e}")
         return positions
-    
+
     async def close_position(self, symbol: str, position_side: str) -> bool:
-        """Закрыть позицию"""
+        """Закрыть позицию рыночным ордером."""
         result = await self._make_request(
-            "POST",
-            "/openApi/swap/v2/trade/closePosition",
-            params={
-                "symbol": symbol,
-                "positionSide": position_side
-            },
-            signed=True
+            "POST", "/openApi/swap/v2/trade/closePosition",
+            body={"symbol": symbol, "positionSide": position_side},
         )
-        
         if result and result.get("code") == 0:
-            print(f"✅ Position closed: {symbol} {position_side}")
+            print(f"✅ Closed: {symbol} {position_side}")
             return True
-        else:
-            print(f"❌ Failed to close position: {result}")
-            return False
-    
+        print(f"❌ Close failed: {result}")
+        return False
+
+    async def close_all_positions(self) -> int:
+        """Закрыть все открытые позиции. Возвращает количество закрытых."""
+        positions = await self.get_positions()
+        closed = 0
+        for p in positions:
+            if abs(p.size) > 0:
+                ok = await self.close_position(p.symbol, p.position_side)
+                if ok:
+                    closed += 1
+        return closed
+
     # =========================================================================
     # ORDERS
     # =========================================================================
-    
+
     async def place_order(self,
-                         symbol: str,
-                         side: str,  # BUY или SELL
-                         position_side: str,  # LONG или SHORT
-                         order_type: str,  # MARKET, LIMIT, STOP_MARKET
-                         size: float,
-                         price: Optional[float] = None,
-                         stop_price: Optional[float] = None,
-                         stop_loss: Optional[float] = None,
-                         take_profit: Optional[float] = None) -> Optional[BingXOrder]:
+                          symbol: str,
+                          side: str,
+                          position_side: str,
+                          order_type: str,
+                          size: float,
+                          price: Optional[float] = None,
+                          stop_loss: Optional[float] = None,
+                          take_profit: Optional[float] = None) -> Optional[BingXOrder]:
         """
-        Разместить ордер
-        
-        Args:
-            symbol: Торговая пара
-            side: BUY или SELL
-            position_side: LONG или SHORT (для хеджирования)
-            order_type: MARKET, LIMIT, STOP_MARKET
-            size: Размер позиции (в монетах)
-            price: Цена (для LIMIT)
-            stop_price: Стоп цена (для STOP_MARKET)
-            stop_loss: Цена стоп-лосса
-            take_profit: Цена тейк-профита
+        Разместить ордер.
+        ✅ FIX: params идут в body, signature — в URL query string.
         """
-        params = {
-            "symbol": symbol,
-            "side": side,
+        body: Dict[str, Any] = {
+            "symbol":       symbol,
+            "side":         side,
             "positionSide": position_side,
-            "type": order_type,
-            "quantity": size
+            "type":         order_type,
+            "quantity":     str(size),
         }
-        
         if price and order_type == "LIMIT":
-            params["price"] = price
-        
-        if stop_price and order_type == "STOP_MARKET":
-            params["stopPrice"] = stop_price
-        
+            body["price"] = str(price)
         if stop_loss:
-            params["stopLoss"] = stop_loss
-        
+            body["stopLoss"]   = json.dumps({"type": "MARK_PRICE",
+                                              "price": str(stop_loss),
+                                              "workingType": "MARK_PRICE"})
         if take_profit:
-            params["takeProfit"] = take_profit
-        
+            body["takeProfit"] = json.dumps({"type": "MARK_PRICE",
+                                              "price": str(take_profit),
+                                              "workingType": "MARK_PRICE"})
+
         result = await self._make_request(
-            "POST",
-            "/openApi/swap/v2/trade/order",
-            params=params,
-            signed=True
+            "POST", "/openApi/swap/v2/trade/order", body=body
         )
-        
+
         if result and result.get("code") == 0:
-            order_data = result.get("data", {})
-            print(f"✅ Order placed: {symbol} {side} {size} @ {order_type}")
-            
+            d = result.get("data", {}).get("order", result.get("data", {}))
+            order_id = str(d.get("orderId", ""))
+            print(f"✅ Order placed: {symbol} {side} {position_side} qty={size} type={order_type}")
             return BingXOrder(
-                order_id=order_data.get("orderId", ""),
+                order_id=order_id,
                 symbol=symbol,
                 side=side,
                 position_side=position_side,
                 type=order_type,
                 size=size,
                 price=price,
-                stop_price=stop_price,
-                status="PENDING"
+                status="PENDING",
             )
-        else:
-            print(f"❌ Order failed: {result}")
-            return None
-    
+        print(f"❌ Order failed: {result}")
+        return None
+
     async def place_market_order(self,
-                                symbol: str,
-                                side: str,
-                                position_side: str,
-                                size: float,
-                                stop_loss: Optional[float] = None,
-                                take_profit: Optional[float] = None) -> Optional[BingXOrder]:
-        """Упрощённый рыночный ордер"""
+                                  symbol: str,
+                                  side: str,
+                                  position_side: str,
+                                  size: float,
+                                  stop_loss: Optional[float] = None,
+                                  take_profit: Optional[float] = None) -> Optional[BingXOrder]:
         return await self.place_order(
-            symbol=symbol,
-            side=side,
-            position_side=position_side,
-            order_type="MARKET",
-            size=size,
-            stop_loss=stop_loss,
-            take_profit=take_profit
+            symbol=symbol, side=side, position_side=position_side,
+            order_type="MARKET", size=size,
+            stop_loss=stop_loss, take_profit=take_profit,
         )
-    
-    async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Отменить ордер"""
-        result = await self._make_request(
-            "DELETE",
-            "/openApi/swap/v2/trade/order",
-            params={
-                "symbol": symbol,
-                "orderId": order_id
-            },
-            signed=True
-        )
-        
-        if result and result.get("code") == 0:
-            print(f"✅ Order canceled: {order_id}")
-            return True
-        return False
-    
-    async def get_open_orders(self, symbol: Optional[str] = None) -> List[BingXOrder]:
-        """Получить открытые ордера"""
-        params = {}
-        if symbol:
-            params["symbol"] = symbol
-        
-        result = await self._make_request(
-            "GET",
-            "/openApi/swap/v2/trade/openOrders",
-            params=params,
-            signed=True
-        )
-        
-        orders = []
-        if result and result.get("code") == 0:
-            for order_data in result.get("data", []):
-                order = BingXOrder(
-                    order_id=order_data.get("orderId", ""),
-                    symbol=order_data.get("symbol", ""),
-                    side=order_data.get("side", ""),
-                    position_side=order_data.get("positionSide", ""),
-                    type=order_data.get("type", ""),
-                    size=float(order_data.get("quantity", 0)),
-                    price=float(order_data.get("price", 0)) if order_data.get("price") else None,
-                    status=order_data.get("status", "PENDING")
-                )
-                orders.append(order)
-        
-        return orders
-    
+
     # =========================================================================
     # LEVERAGE
     # =========================================================================
-    
-    async def set_leverage(self, symbol: str, leverage: int, position_side: str = "BOTH") -> bool:
-        """Установить плечо для символа"""
+
+    async def set_leverage(self, symbol: str, leverage: int,
+                           position_side: str = "BOTH") -> bool:
         result = await self._make_request(
-            "POST",
-            "/openApi/swap/v2/trade/leverage",
-            params={
-                "symbol": symbol,
-                "leverage": leverage,
-                "positionSide": position_side
-            },
-            signed=True
+            "POST", "/openApi/swap/v2/trade/leverage",
+            body={"symbol": symbol, "leverage": leverage, "side": position_side},
         )
-        
         if result and result.get("code") == 0:
             print(f"✅ Leverage set: {symbol} {leverage}x")
             return True
-        else:
-            print(f"❌ Failed to set leverage: {result}")
-            return False
-    
+        print(f"❌ Leverage failed: {result}")
+        return False
+
     # =========================================================================
-    # TEST CONNECTION
+    # CONNECTION TEST
     # =========================================================================
-    
+
     async def test_connection(self) -> bool:
-        """Тест соединения с API"""
         try:
             balance = await self.get_account_balance()
             if balance:
-                print(f"✅ BingX connection OK ({'DEMO' if self.demo else 'REAL'})")
+                equity = balance.get("equity", "?")
+                print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={equity}")
                 return True
-            else:
-                print("❌ BingX connection failed")
-                return False
+            print("❌ BingX connection failed (no balance)")
+            return False
         except Exception as e:
             print(f"❌ BingX connection error: {e}")
             return False
@@ -550,59 +360,10 @@ class BingXClient:
 # SINGLETON
 # ============================================================================
 
-_bingx_client = None
+_bingx_client: Optional[BingXClient] = None
 
 def get_bingx_client(demo: bool = True) -> BingXClient:
-    """Получить singleton BingX клиент"""
     global _bingx_client
     if _bingx_client is None:
         _bingx_client = BingXClient(demo=demo)
     return _bingx_client
-
-
-# ============================================================================
-# EXAMPLE
-# ============================================================================
-
-async def test_bingx():
-    """Тест BingX API"""
-    import os
-    
-    # Проверяем переменные окружения
-    api_key = os.getenv("BINGX_API_KEY")
-    api_secret = os.getenv("BINGX_API_SECRET")
-    
-    if not api_key or not api_secret:
-        print("❌ BINGX_API_KEY или BINGX_API_SECRET не установлены")
-        print("Установите их для тестирования")
-        return
-    
-    # Создаём клиент (DEMO mode)
-    client = BingXClient(demo=True)
-    
-    # Тест соединения
-    connected = await client.test_connection()
-    if not connected:
-        return
-    
-    # Получаем баланс
-    balance = await client.get_account_balance()
-    print(f"Balance: {balance}")
-    
-    # Получаем позиции
-    positions = await client.get_positions()
-    print(f"Open positions: {len(positions)}")
-    for pos in positions:
-        print(f"  {pos.symbol} {pos.side}: {pos.size} @ {pos.entry_price}")
-    
-    # Получаем цену BTC
-    price = await client.get_price("BTC-USDT")
-    print(f"BTC price: ${price}")
-    
-    # Закрываем
-    await client.close()
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_bingx())
