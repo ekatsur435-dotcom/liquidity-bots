@@ -456,7 +456,7 @@ class TelegramCommandHandler:
         paused   = "⏸ На паузе" if self.state.is_paused else ""
         redis_ok = "✅" if (self.redis and self.redis.health_check()) else "❌"
         min_score = getattr(self.config, "MIN_SCORE", 65) if self.config else 65
-        max_pos   = getattr(self.config, "MAX_POSITIONS", 5) if self.config else 5
+        max_pos   = getattr(self.config, "MAX_POSITIONS", 10) if self.config else 10
 
         await self._reply(reply_chat_id,
             f"🤖 <b>Статус бота</b>\n\n"
