@@ -7,28 +7,30 @@ services:
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: "3.11.0"
       - key: REDIS_URL
-        sync: false  # Заполни из Upstash
+        sync: false
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
+      - key: SHORT_TELEGRAM_BOT_TOKEN
         sync: false
-      - key: TELEGRAM_CHAT_ID
+      - key: SHORT_TELEGRAM_CHAT_ID
         sync: false
-      - key: TELEGRAM_TOPIC_ID
-        sync: false  # Опционально
+      - key: SHORT_TELEGRAM_TOPIC_ID
+        sync: false
+      - key: COINGLASS_API_KEY
+        sync: false
       - key: SCAN_INTERVAL
-        value: 60
+        value: "60"
       - key: MIN_SHORT_SCORE
-        value: 65
+        value: "65"
       - key: SHORT_LEVERAGE
-        value: 5-10
+        value: "5-10"
       - key: SHORT_SL_BUFFER
-        value: 0.5
+        value: "0.5"
       - key: MAX_SHORT_POSITIONS
-        value: 5
+        value: "5"
     healthCheckPath: /health
     autoDeploy: true
