@@ -138,9 +138,9 @@ class CoinMarketCapClient:
         if not symbols:
             return {}
         
-        # CMC принимает до 100 символов за раз
-        if len(symbols) > 100:
-            symbols = symbols[:100]
+        # CMC принимает до 150 символов за раз
+        if len(symbols) > 150:
+            symbols = symbols[:150]
         
         result = await self._make_request(
             "/v1/cryptocurrency/quotes/latest",
@@ -285,11 +285,11 @@ class CoinMarketCapClient:
             limit: Количество
             period: Период (1h, 24h, 7d, 30d)
         """
-        # Получаем топ 100 по капитализации
+        # Получаем топ 150 по капитализации
         result = await self._make_request(
             "/v1/cryptocurrency/listings/latest",
             params={
-                "limit": 100,
+                "limit": 150,
                 "convert": "USD",
                 "sort": "market_cap"
             }
