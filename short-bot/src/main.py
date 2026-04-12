@@ -117,8 +117,8 @@ async def lifespan(app: FastAPI):
         print("⚠️ RENDER_EXTERNAL_URL not set — webhook not registered")
     
     # Load watchlist
-    symbols = await state.binance.get_all_symbols(min_volume_usdt=50_000_000)
-    state.watchlist = symbols[:50]  # Топ-50 по объёму
+    symbols = await state.binance.get_all_symbols(min_volume_usdt=1_000_000)
+    state.watchlist = symbols[:100]  # Топ-100 по объёму
     print(f"📊 Watchlist loaded: {len(state.watchlist)} symbols")
     
     # Update state in Redis
@@ -130,30 +130,29 @@ async def lifespan(app: FastAPI):
     
     state.is_running = True
     state.last_scan = datetime.utcnow()
-    
-    print("✅ SHORT Bot started successfully!")
-    
-    yield
-    
-    # Shutdown
-    print("🛑 Shutting down SHORT Bot...")
+ 
+    # ✅ ГЛАВНЫЙ ФИК: запускаем фоновый сканер!
+    scanner_task = asyncio.create_task(background_scanner())
+ 
+    print("✅ SHORT Bot started successfully!")  # или LONG Bot
+ 
+    yield  # ← тут бот работает
+ 
+    # Shutdown:
+    print("🛑 Shutting down...")
     state.is_running = False
-    
-    # Update state
-    if state.redis:
-        state.redis.update_bot_state(Config.BOT_TYPE, {
-            "status": "stopped",
-            "stopped_at": datetime.utcnow().isoformat()
-        })
-    
-    # Close connections
+    scanner_task.cancel()  # останавливаем сканер
+    try:
+        await scanner_task
+    except asyncio.CancelledError:
+        pass
+ 
     if state.binance:
         await state.binance.close()
     if state.telegram:
         await state.telegram.close()
-    
-    print("👋 SHORT Bot stopped")
-
+ 
+    print("👋 Bot stopped")
 
 # ============================================================================
 # FASTAPI APP
@@ -326,7 +325,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             return None
         
         # Получаем 15m свечи для паттернов
-        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 50)
+        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
         
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
