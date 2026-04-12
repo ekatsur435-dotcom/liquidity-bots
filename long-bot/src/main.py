@@ -591,7 +591,15 @@ async def scan_market():
                 # BingX AutoTrader
                 if state.auto_trader and Config.AUTO_TRADING:
                     try:
-                        await state.auto_trader.execute_signal(signal)
+                        await state.auto_trader.open_position(
+                        symbol=signal["symbol"],
+                        direction="long",
+                        entry_price=signal["entry_price"],
+                        stop_loss=signal["stop_loss"],
+                        take_profits=signal["take_profits"],
+                        signal_score=signal["score"],
+                        smc_data=signal.get("smc"),
+                    )
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
 
