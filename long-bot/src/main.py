@@ -21,7 +21,8 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 import uvicorn
 
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+# 🔧 FIX: Правильный путь к shared (в той же папке что и main файл)
+sys.path.append(os.path.join(os.path.dirname(__file__), 'shared'))
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
