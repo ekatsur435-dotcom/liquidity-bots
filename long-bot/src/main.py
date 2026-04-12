@@ -102,8 +102,8 @@ async def lifespan(app: FastAPI):
         print("⚠️ RENDER_EXTERNAL_URL not set — webhook not registered")
     
     # Load watchlist
-    symbols = await state.binance.get_all_symbols(min_volume_usdt=50_000_000)
-    state.watchlist = symbols[:50]
+    symbols = await state.binance.get_all_symbols(min_volume_usdt=1_000_000)
+    state.watchlist = symbols[:100]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
     
     # Update state
@@ -115,26 +115,28 @@ async def lifespan(app: FastAPI):
     
     state.is_running = True
     state.last_scan = datetime.utcnow()
-    
-    print("✅ LONG Bot started!")
-    
+ 
+    scanner_task = asyncio.create_task(background_scanner())
+ 
+    print("✅ LONG Bot started successfully!")
+ 
     yield
-    
-    print("🛑 Shutting down LONG Bot...")
+ 
+    # Shutdown:
+    print("🛑 Shutting down...")
     state.is_running = False
-    
-    if state.redis:
-        state.redis.update_bot_state(Config.BOT_TYPE, {
-            "status": "stopped",
-            "stopped_at": datetime.utcnow().isoformat()
-        })
-    
+    scanner_task.cancel()
+    try:
+        await scanner_task
+    except asyncio.CancelledError:
+        pass
+ 
     if state.binance:
         await state.binance.close()
     if state.telegram:
         await state.telegram.close()
-    
-    print("👋 LONG Bot stopped")
+ 
+    print("👋 Long Bot stopped")
 
 
 # ============================================================================
@@ -287,7 +289,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if not market_data:
             return None
         
-        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 50)
+        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
         
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
