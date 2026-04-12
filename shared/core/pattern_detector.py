@@ -77,6 +77,49 @@ class BasePatternDetector:
         else:
             return 'stable'
 
+    # =========================================================================
+    # HELPER METHODS — общие для SHORT и LONG детекторов
+    # =========================================================================
+
+    def _get_candle(self, data: List[Any], idx: int) -> Optional[Any]:
+        """Безопасно получить свечу по индексу"""
+        if 0 <= idx < len(data):
+            return data[idx]
+        return None
+
+    def _get_open(self, candle: Any) -> float:
+        return candle['open'] if isinstance(candle, dict) else candle.open
+
+    def _get_high(self, candle: Any) -> float:
+        return candle['high'] if isinstance(candle, dict) else candle.high
+
+    def _get_low(self, candle: Any) -> float:
+        return candle['low'] if isinstance(candle, dict) else candle.low
+
+    def _get_close(self, candle: Any) -> float:
+        return candle['close'] if isinstance(candle, dict) else candle.close
+
+    def _get_volume(self, candle: Any) -> float:
+        return candle['volume'] if isinstance(candle, dict) else candle.volume
+
+    def _get_timestamp(self, candle: Any) -> datetime:
+        ts = candle.get('timestamp', datetime.now()) if isinstance(candle, dict) else getattr(candle, 'timestamp', datetime.now())
+        if isinstance(ts, int):
+            return datetime.fromtimestamp(ts / 1000)
+        return ts
+
+    def _is_bullish(self, candle: Any) -> bool:
+        return self._get_close(candle) > self._get_open(candle)
+
+    def _is_bearish(self, candle: Any) -> bool:
+        return self._get_close(candle) < self._get_open(candle)
+
+    def _get_body(self, candle: Any) -> float:
+        return abs(self._get_close(candle) - self._get_open(candle))
+
+    def _get_range(self, candle: Any) -> float:
+        return self._get_high(candle) - self._get_low(candle)
+
 
 class ShortPatternDetector(BasePatternDetector):
     """Детектор паттернов для SHORT позиций"""
@@ -409,45 +452,6 @@ class LongPatternDetector(BasePatternDetector):
             confidence=confidence,
             description=f'Price rejected low with {"engulfing" if is_bullish_engulfing else "hammer"} pattern'
         )
-    
-    def _get_candle(self, data: List[Any], idx: int) -> Optional[Any]:
-        """Безопасно получить свечу по индексу"""
-        if 0 <= idx < len(data):
-            return data[idx]
-        return None
-    
-    def _get_open(self, candle: Any) -> float:
-        return candle['open'] if isinstance(candle, dict) else candle.open
-    
-    def _get_high(self, candle: Any) -> float:
-        return candle['high'] if isinstance(candle, dict) else candle.high
-    
-    def _get_low(self, candle: Any) -> float:
-        return candle['low'] if isinstance(candle, dict) else candle.low
-    
-    def _get_close(self, candle: Any) -> float:
-        return candle['close'] if isinstance(candle, dict) else candle.close
-    
-    def _get_volume(self, candle: Any) -> float:
-        return candle['volume'] if isinstance(candle, dict) else candle.volume
-    
-    def _get_timestamp(self, candle: Any) -> datetime:
-        ts = candle.get('timestamp', datetime.now()) if isinstance(candle, dict) else getattr(candle, 'timestamp', datetime.now())
-        if isinstance(ts, int):
-            return datetime.fromtimestamp(ts / 1000)
-        return ts
-    
-    def _is_bullish(self, candle: Any) -> bool:
-        return self._get_close(candle) > self._get_open(candle)
-    
-    def _is_bearish(self, candle: Any) -> bool:
-        return self._get_close(candle) < self._get_open(candle)
-    
-    def _get_body(self, candle: Any) -> float:
-        return abs(self._get_close(candle) - self._get_open(candle))
-    
-    def _get_range(self, candle: Any) -> float:
-        return self._get_high(candle) - self._get_low(candle)
     
     def detect_trap_short(self, data: List[Any], 
                          delta_data: List[float]) -> Optional[Pattern]:
