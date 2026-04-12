@@ -87,7 +87,7 @@ class BingXClient:
         self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'} mode)")
+        print(f"🚀 BingX Client initialized ({'DEMO' if demo else 'REAL'} mode)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
