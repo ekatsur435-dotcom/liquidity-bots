@@ -72,15 +72,22 @@ class BingXClient:
         """
         self.api_key = api_key or os.getenv("BINGX_API_KEY")
         self.api_secret = api_secret or os.getenv("BINGX_API_SECRET")
-        self.demo = demo
+        
+        # 🔒 FORCE DEMO MODE - всегда DEMO, никогда REAL!
+        # Чтобы включить REAL, нужно явно установить BINGX_FORCE_REAL=true
+        force_real = os.getenv("BINGX_FORCE_REAL", "false").lower() == "true"
+        self.demo = True if not force_real else demo
+        
+        if not self.demo:
+            print("🚨🚨🚨 WARNING: RUNNING IN REAL MODE! 🚨🚨🚨")
         
         if not self.api_key or not self.api_secret:
             raise ValueError("BingX API key and secret required")
         
-        self.base_url = self.DEMO_BASE_URL if demo else self.REAL_BASE_URL
+        self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        print(f"🚀 BingX Client initialized ({'DEMO' if demo else 'REAL'} mode)")
+        print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'} mode)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
