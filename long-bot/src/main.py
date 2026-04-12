@@ -20,7 +20,6 @@ from utils.binance_client import get_binance_client
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector
 from bot.telegram import TelegramBot, TelegramCommandHandler
-from utils.coinglass_client import CoinglassClient
 
 
 # ============================================================================
@@ -57,7 +56,7 @@ class BotState:
         self.pattern_detector = None
         self.telegram = None
         self.cmd_handler = None
-        self.coinglass: Optional[CoinglassClient] = None
+        self.coinglass = None  # CoinglassClient, loaded lazily
 
 state = BotState()
 
@@ -81,10 +80,15 @@ async def lifespan(app: FastAPI):
     )
 
     if Config.USE_COINGLASS:
-        state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
-        print("✅ CoinGlass client initialized")
+        try:
+            from coinglass_client import CoinglassClient
+            state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
+            print("✅ CoinGlass client initialized")
+        except ImportError:
+            print("⚠️ CoinGlass: coinglass_client.py not found in src/")
+            Config.USE_COINGLASS = False
     else:
-        print("⚠️ CoinGlass disabled (no COINGLASS_API_KEY)")
+        print("ℹ️ CoinGlass disabled (COINGLASS_API_KEY not set — paid plan required)")
 
     redis_ok = state.redis.health_check()
     telegram_ok = await state.telegram.send_test_message()
