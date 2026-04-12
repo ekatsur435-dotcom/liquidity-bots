@@ -77,6 +77,11 @@ class Config:
     USE_SMC       = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
 
+    # Watchlist — настраивается через Render Environment Variables:
+    #   MIN_VOLUME_USDT = минимальный суточный объём (500_000 = $500K)
+    #   MAX_WATCHLIST   = сколько монет сканировать (200)
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "500000"))
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
 
 # ============================================================================
 # GLOBAL STATE
@@ -195,8 +200,8 @@ async def lifespan(app: FastAPI):
             Config.USE_COINGLASS = False
 
     # Watchlist
-    symbols = await state.binance.get_all_symbols(min_volume_usdt=500_000)
-    state.watchlist = symbols[:200]
+    symbols = await state.binance.get_all_symbols(min_volume_usdt=Config.MIN_VOLUME_USDT)
+    state.watchlist = symbols[:Config.MAX_WATCHLIST]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
 
     state.redis.update_bot_state(Config.BOT_TYPE, {
