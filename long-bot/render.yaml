@@ -7,28 +7,30 @@ services:
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: "3.11.0"
       - key: REDIS_URL
         sync: false
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
+      - key: LONG_TELEGRAM_BOT_TOKEN
         sync: false
-      - key: TELEGRAM_CHAT_ID
+      - key: LONG_TELEGRAM_CHAT_ID
         sync: false
-      - key: TELEGRAM_TOPIC_ID
+      - key: LONG_TELEGRAM_TOPIC_ID
+        sync: false
+      - key: COINGLASS_API_KEY
         sync: false
       - key: SCAN_INTERVAL
-        value: 60
+        value: "60"
       - key: MIN_LONG_SCORE
-        value: 65
+        value: "65"
       - key: LONG_LEVERAGE
-        value: 3-5
+        value: "3-5"
       - key: LONG_SL_BUFFER
-        value: 0.8
+        value: "0.8"
       - key: MAX_LONG_POSITIONS
-        value: 5
+        value: "5"
     healthCheckPath: /health
     autoDeploy: true
