@@ -132,31 +132,45 @@ async def lifespan(app: FastAPI):
         print("⚠️ RENDER_EXTERNAL_URL not set")
 
     # BingX AutoTrader
+    print(f"🔧 AUTO_TRADING check: AUTO_TRADING_ENABLED={os.getenv('AUTO_TRADING_ENABLED', 'NOT_SET')}")
+    print(f"🔧 Config.AUTO_TRADING={Config.AUTO_TRADING}")
+    print(f"🔧 BINGX_API_KEY exists: {bool(os.getenv('BINGX_API_KEY'))}")
+    print(f"🔧 BINGX_API_SECRET exists: {bool(os.getenv('BINGX_API_SECRET'))}")
+    
     if Config.AUTO_TRADING:
         try:
+            print("🔧 Importing BingXClient...")
             from api.bingx_client import BingXClient
+            print("🔧 Importing AutoTrader...")
             from execution.auto_trader import AutoTrader, TradeConfig
+            
+            print("🔧 Creating BingXClient...")
             bingx = BingXClient(
                 api_key=os.getenv("BINGX_API_KEY"),
                 api_secret=os.getenv("BINGX_API_SECRET"),
                 demo=Config.BINGX_DEMO,
             )
+            print(f"🔧 BingXClient created, demo={Config.BINGX_DEMO}")
+            
             trade_cfg = TradeConfig(
                 enabled=True,
                 demo_mode=Config.BINGX_DEMO,
                 risk_per_trade=Config.RISK_PER_TRADE,
                 max_positions=Config.MAX_POSITIONS,
-                min_score_for_trade=Config.MIN_SCORE,  # синхронизируем с MIN_SCORE бота
+                min_score_for_trade=Config.MIN_SCORE,
             )
+            print("🔧 Creating AutoTrader...")
             state.auto_trader = AutoTrader(
                 bingx_client=bingx,
                 config=trade_cfg,
-                telegram=state.telegram,   # ← передаём для уведомлений
+                telegram=state.telegram,
             )
             mode = "DEMO" if Config.BINGX_DEMO else "REAL"
             print(f"✅ BingX AutoTrader initialized ({mode})")
         except Exception as e:
-            print(f"⚠️ AutoTrader init failed: {e}")
+            print(f"❌ AutoTrader init FAILED: {e}")
+            import traceback
+            traceback.print_exc()
             state.auto_trader = None
     else:
         print("ℹ️ AutoTrader disabled (AUTO_TRADING_ENABLED=false)")
