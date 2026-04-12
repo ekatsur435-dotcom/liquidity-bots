@@ -716,7 +716,7 @@ class TelegramCommandHandler:
                     await bingx.place_market_order(
                         symbol=symbol,
                         side=side,
-                        quantity=qty,
+                        size=qty,
                         position_side=pos.side
                     )
                     
