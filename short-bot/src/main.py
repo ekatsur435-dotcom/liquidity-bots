@@ -59,7 +59,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "short"
     MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "5"))
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-10")
     # SL НИЖЕ входа для LONG
