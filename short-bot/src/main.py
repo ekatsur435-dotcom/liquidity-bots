@@ -48,6 +48,7 @@ from utils.binance_client import get_binance_client
 from core.scorer import get_short_scorer
 from core.pattern_detector import ShortPatternDetector
 from core.position_tracker import PositionTracker
+from core.realtime_scorer import get_realtime_scorer
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -432,8 +433,28 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if not score_result.is_valid:
             return None
 
+        # Realtime Scorer для динамической оценки
+        rt = get_realtime_scorer()
+        rt_result = rt.score(
+            direction     = "short",
+            market_data   = md,
+            base_score    = score_result.total_score,
+            hourly_deltas = hourly_deltas,
+        )
+        final_score = rt_result.final_score
+
+        # EARLY сигнал — в Telegram но без сделки
+        if rt_result.early_only:
+            await state.telegram.send_message(
+                f"⚡ <b>EARLY SHORT сигнал</b>\n"
+                f"Symbol: {symbol}\n"
+                f"Score: {final_score:.1f} (базовый: {score_result.total_score:.1f})\n"
+                f"Цена: {md.price:.4f}\n"
+                f"Слишком рано для входа — ждём подтверждения"
+            )
+            return None
+
         price       = md.price
-        final_score = score_result.total_score
         reasons     = list(score_result.reasons)
 
         # SL ниже входа (LONG)
