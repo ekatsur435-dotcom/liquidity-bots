@@ -1,6 +1,6 @@
 """
 🟢 LONG BOT v2.2 — FastAPI Application
- 
+
 FIXES v2.2:
   - sys.path: надёжный поиск shared/ (работает на Render и локально)
   - AutoTrader: убран лишний параметр telegram (был TypeError)
@@ -9,12 +9,12 @@ FIXES v2.2:
   - scan_market: вызывает auto_trader.execute_signal(signal)
   - SL НИЖЕ входа (LONG), TP ВЫШЕ входа (LONG)
 """
- 
+
 import os, asyncio, sys
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
- 
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 import uvicorn
 
@@ -55,7 +55,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
- 
+
 class Config:
     BOT_TYPE      = "long"
     MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
@@ -64,29 +64,29 @@ class Config:
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-10")
     # SL НИЖЕ входа для LONG
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))
- 
+
     TP_LEVELS  = [1.5, 3.0, 5.0, 6.3, 8.5, 12.2]
     TP_WEIGHTS = [20,  20,  20,  15,  15,  10]
- 
+
     SIGNAL_TTL_HOURS = 24
- 
+
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "false").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
     RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
- 
+
     USE_SMC       = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
- 
+
     # Watchlist — настраивается через Render Environment Variables:
     #   MIN_VOLUME_USDT = минимальный суточный объём (500_000 = $500K)
     #   MAX_WATCHLIST   = сколько монет сканировать (200)
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "500000"))
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
- 
+
 # ============================================================================
 # GLOBAL STATE
 # ============================================================================
- 
+
 class BotState:
     def __init__(self):
         self.is_running    = False
@@ -105,18 +105,18 @@ class BotState:
         self.tracker: Optional[PositionTracker] = None
         self.coinglass     = None
         self._min_score    = Config.MIN_SCORE
- 
+
 state = BotState()
- 
- 
+
+
 # ============================================================================
 # LIFESPAN
 # ============================================================================
- 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Starting LONG Bot v2.2...")
- 
+
     state.redis   = get_redis_client()
     state.binance = get_binance_client()
     state.scorer  = get_long_scorer(Config.MIN_SCORE)
@@ -126,11 +126,11 @@ async def lifespan(app: FastAPI):
         chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID"),
         topic_id=os.getenv("LONG_TELEGRAM_TOPIC_ID"),
     )
- 
+
     redis_ok    = state.redis.health_check()
     telegram_ok = await state.telegram.send_test_message()
     print(f"{'✅' if redis_ok else '❌'} Redis | {'✅' if telegram_ok else '❌'} Telegram")
- 
+
     state.cmd_handler = TelegramCommandHandler(
         bot=state.telegram,
         redis_client=state.redis,
@@ -139,27 +139,27 @@ async def lifespan(app: FastAPI):
         scan_callback=scan_market,
         config=Config,
     )
- 
+
     # Webhook — один раз
     render_url = os.getenv("RENDER_EXTERNAL_URL", "")
     if render_url:
         await state.telegram.setup_webhook(f"{render_url}/webhook")
     else:
         print("⚠️ RENDER_EXTERNAL_URL not set")
- 
+
     # ── BingX AutoTrader ───────────────────────────────────────────────────
     print(f"🔧 AUTO_TRADING={Config.AUTO_TRADING} | DEMO={Config.BINGX_DEMO}")
     if Config.AUTO_TRADING:
         try:
             from api.bingx_client import BingXClient
             from execution.auto_trader import AutoTrader, TradeConfig
- 
+
             bingx = BingXClient(
                 api_key=os.getenv("BINGX_API_KEY"),
                 api_secret=os.getenv("BINGX_API_SECRET"),
                 demo=Config.BINGX_DEMO,
             )
- 
+
             # Тест соединения
             connected = await bingx.test_connection()
             if not connected:
@@ -180,7 +180,7 @@ async def lifespan(app: FastAPI):
                 )
                 mode = "DEMO" if Config.BINGX_DEMO else "REAL"
                 print(f"✅ BingX AutoTrader ready ({mode})")
- 
+
         except Exception as e:
             print(f"❌ AutoTrader init FAILED: {e}")
             import traceback
@@ -188,7 +188,7 @@ async def lifespan(app: FastAPI):
             state.auto_trader = None
     else:
         print("ℹ️ AutoTrader disabled (AUTO_TRADING_ENABLED=false)")
- 
+
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
@@ -198,12 +198,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
- 
+
     # Watchlist
     symbols = await state.binance.get_all_symbols(min_volume_usdt=Config.MIN_VOLUME_USDT)
     state.watchlist = symbols[:Config.MAX_WATCHLIST]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
- 
+
     state.redis.update_bot_state(Config.BOT_TYPE, {
         "status": "running",
         "watchlist_count": len(state.watchlist),
@@ -212,10 +212,10 @@ async def lifespan(app: FastAPI):
         "auto_trading": Config.AUTO_TRADING,
         "auto_trader_ready": state.auto_trader is not None,
     })
- 
+
     state.is_running = True
     state.last_scan  = datetime.utcnow()
- 
+
     scanner_task = asyncio.create_task(background_scanner())
     state.tracker = PositionTracker(
         bot_type=Config.BOT_TYPE,
@@ -225,7 +225,7 @@ async def lifespan(app: FastAPI):
         config=Config,
     )
     tracker_task = asyncio.create_task(state.tracker.run())
- 
+
     trader_status = f"✅ {'DEMO' if Config.BINGX_DEMO else 'REAL'}" if state.auto_trader else "❌ OFF"
     print(f"✅ LONG Bot started! AutoTrader: {trader_status}")
     await state.telegram.send_message(
@@ -234,9 +234,9 @@ async def lifespan(app: FastAPI):
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}\n"
         f"🤖 AutoTrader: {trader_status}"
     )
- 
+
     yield
- 
+
     print("🛑 Shutting down LONG Bot...")
     state.is_running = False
     if state.tracker:
@@ -257,19 +257,19 @@ async def lifespan(app: FastAPI):
     if state.telegram:
         await state.telegram.close()
     print("👋 LONG Bot stopped")
- 
- 
+
+
 # ============================================================================
 # APP
 # ============================================================================
- 
+
 app = FastAPI(title="Liquidity Long Bot", version="2.2.0", lifespan=lifespan)
- 
- 
+
+
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
- 
+
 @app.get("/health")
 async def health_check():
     return {
@@ -284,7 +284,7 @@ async def health_check():
         "sl_buffer_pct": Config.SL_BUFFER,
         "timestamp": datetime.utcnow().isoformat(),
     }
- 
+
 @app.get("/status")
 async def get_status():
     bot_state = state.redis.get_bot_state(Config.BOT_TYPE)
@@ -304,24 +304,24 @@ async def get_status():
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
         "bot_state": bot_state,
     }
- 
+
 @app.post("/api/scan")
 async def trigger_scan(background_tasks: BackgroundTasks):
     if not state.is_running:
         raise HTTPException(status_code=503, detail="Bot not running")
     background_tasks.add_task(scan_market)
     return {"message": "Scan triggered", "timestamp": datetime.utcnow().isoformat()}
- 
+
 @app.get("/api/signals")
 async def get_active_signals():
     signals = state.redis.get_active_signals(Config.BOT_TYPE)
     return {"bot_type": Config.BOT_TYPE, "count": len(signals), "signals": signals}
- 
+
 @app.get("/api/signals/{symbol}")
 async def get_symbol_signals(symbol: str):
     return {"symbol": symbol.upper(),
             "signals": state.redis.get_signals(Config.BOT_TYPE, symbol.upper())}
- 
+
 @app.get("/api/stats")
 async def get_stats(days: int = 7):
     bot_st = state.redis.get_bot_state(Config.BOT_TYPE) or {}
@@ -340,7 +340,7 @@ async def get_stats(days: int = 7):
         "total_pnl_pct": total_pnl,
         "daily": result,
     }
- 
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     try:
@@ -351,14 +351,14 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         print(f"Webhook error: {e}")
         return {"ok": False}
- 
+
 @app.get("/webhook/info")
 async def webhook_info():
     if state.telegram:
         return {"webhook": await state.telegram.get_webhook_info()}
     return {"error": "Telegram not initialized"}
- 
- 
+
+
 # ============================================================================
 # CORE LOGIC
 # ============================================================================
@@ -483,20 +483,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                             "score_bonus": smc.score_bonus}
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
- 
+
         if final_score < Config.MIN_SCORE:
             return None
- 
+
         # Минимальный SL 1%
         if (price - stop_loss) / price < 0.01:
             stop_loss = price * 0.99
- 
+
         # TP ВЫШЕ входа (LONG)
         take_profits = [
             (round(price * (1 + tp / 100), 8), Config.TP_WEIGHTS[i])
             for i, tp in enumerate(Config.TP_LEVELS)
         ]
- 
+
         sl_pct = round((price - stop_loss) / price * 100, 2)
         return {
             "symbol": symbol, "direction": "long",
@@ -521,20 +521,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
     except Exception as e:
         print(f"Error scanning {symbol}: {e}")
         return None
- 
- 
+
+
 async def scan_market():
     if state.is_paused:
         return
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
- 
+
     active_count = await _count_real_positions()
     if active_count >= Config.MAX_POSITIONS:
         print(f"⏸ Max positions ({active_count}/{Config.MAX_POSITIONS})")
         state.last_scan = datetime.utcnow()
         return
- 
+
     new_signals = 0
     for symbol in state.watchlist:
         if new_signals + active_count >= Config.MAX_POSITIONS:
@@ -563,7 +563,7 @@ async def scan_market():
             await asyncio.sleep(0.5)
         except Exception as e:
             print(f"Error {symbol}: {e}")
- 
+
     state.daily_signals += new_signals
     state.last_scan      = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))
@@ -574,8 +574,8 @@ async def scan_market():
         "active_signals": state.active_signals,
     })
     print(f"✅ Scan done. New: {new_signals} | Active: {state.active_signals}")
- 
- 
+
+
 async def background_scanner():
     while state.is_running:
         if not state.is_paused:
@@ -584,7 +584,7 @@ async def background_scanner():
             except Exception as e:
                 print(f"Scanner error: {e}")
         await asyncio.sleep(Config.SCAN_INTERVAL)
- 
- 
+
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)
