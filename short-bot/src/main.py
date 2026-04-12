@@ -263,7 +263,7 @@ async def lifespan(app: FastAPI):
 # APP
 # ============================================================================
 
-app = FastAPI(title="Liquidity Long Bot", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="Liquidity Short Bot", version="2.2.0", lifespan=lifespan)
 
 
 # ============================================================================
