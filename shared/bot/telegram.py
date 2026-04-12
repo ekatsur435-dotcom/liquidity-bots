@@ -14,6 +14,35 @@ from datetime import datetime, timedelta
 import aiohttp
 
 
+# ============================================================================
+# SMART PRICE FORMATTER
+# ============================================================================
+
+def fmt_price(price: float) -> str:
+    """
+    Умное форматирование цены — количество знаков зависит от величины:
+      >= 1000       →  $1,234.56        (2 знака)
+      >= 1          →  $1.3350          (4 знака)
+      >= 0.01       →  $0.013350        (6 знаков)
+      >= 0.0001     →  $0.00013350      (8 знаков)
+      < 0.0001      →  $0.000000001335  (12 знаков, для PEPE/SHIB)
+    """
+    if price == 0:
+        return "$0"
+    abs_p = abs(price)
+    if abs_p >= 1000:
+        return f"${price:,.2f}"
+    elif abs_p >= 1:
+        return f"${price:,.4f}"
+    elif abs_p >= 0.01:
+        return f"${price:,.6f}"
+    elif abs_p >= 0.0001:
+        return f"${price:,.8f}"
+    else:
+        return f"${price:,.12f}"
+
+
+
 class TelegramBot:
     """Telegram бот для отправки сигналов и приёма команд."""
 
@@ -184,7 +213,7 @@ class TelegramBot:
         tp_lines = ""
         for i, (tp_price, tp_weight) in enumerate(take_profits, 1):
             pct = abs(self._calc_pct(entry, tp_price))
-            tp_lines += f"   TP{i}: <b>${tp_price:,.4f}</b>  (-{pct:.1f}%)  [{tp_weight}%]\n"
+            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (-{pct:.1f}%)  [{tp_weight}%]\n"
 
         ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
 
@@ -195,8 +224,8 @@ class TelegramBot:
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
-            f"   Entry: <b>${entry:,.4f}</b>\n"
-            f"   Stop:  <b>${stop_loss:,.4f}</b>  (+{abs(sl_pct):.2f}%)\n"
+            f"   Entry: <b>{fmt_price(entry)}</b>\n"
+            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  (+{abs(sl_pct):.2f}%)\n"
             f"{tp_lines}\n"
             f"<b>⚡ Leverage:</b> {leverage}x\n"
             f"<b>💰 Risk:</b> {risk}\n"
@@ -230,7 +259,7 @@ class TelegramBot:
         tp_lines = ""
         for i, (tp_price, tp_weight) in enumerate(take_profits, 1):
             pct = abs(self._calc_pct(entry, tp_price))
-            tp_lines += f"   TP{i}: <b>${tp_price:,.4f}</b>  (+{pct:.1f}%)  [{tp_weight}%]\n"
+            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (+{pct:.1f}%)  [{tp_weight}%]\n"
 
         ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
 
@@ -241,8 +270,8 @@ class TelegramBot:
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
-            f"   Entry: <b>${entry:,.4f}</b>\n"
-            f"   Stop:  <b>${stop_loss:,.4f}</b>  (-{abs(sl_pct):.2f}%)\n"
+            f"   Entry: <b>{fmt_price(entry)}</b>\n"
+            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  (-{abs(sl_pct):.2f}%)\n"
             f"{tp_lines}\n"
             f"<b>⚡ Leverage:</b> {leverage}x\n"
             f"<b>💰 Risk:</b> {risk}\n"
@@ -261,7 +290,7 @@ class TelegramCommandHandler:
     ALLOWED_COMMANDS = {
         "/start", "/help", "/ping", "/status",
         "/signals", "/stats", "/scan",
-        "/pause", "/resume", "/setscore",
+        "/pause", "/resume", "/setscore", "/clearpos",
     }
 
     def __init__(self,
@@ -334,6 +363,7 @@ class TelegramCommandHandler:
                 "/pause":    self.cmd_pause,
                 "/resume":   self.cmd_resume,
                 "/setscore": self.cmd_set_min_score,
+                "/clearpos": self.cmd_clearpos,
             }
             await handlers[cmd](args, reply_chat_id)
             return True
@@ -425,7 +455,7 @@ class TelegramCommandHandler:
 
                 msg += (
                     f"{d} <code>{symbol}</code> — Score: {score}%\n"
-                    f"   Вход: ${entry:,.4f}  |  TP: {taken}/{total_tp}  |  ⏱ {time_s}\n\n"
+                    f"   Вход: {fmt_price(entry)}  |  TP: {taken}/{total_tp}  |  ⏱ {time_s}\n\n"
                 )
 
             await self._reply(reply_chat_id, msg)
@@ -544,6 +574,66 @@ class TelegramCommandHandler:
             await self._reply(reply_chat_id,
                 "⚙️ Использование: <code>/setscore 75</code>\n"
                 "Диапазон: 50–95")
+
+
+    async def cmd_clearpos(self, args, reply_chat_id: str):
+        """
+        /clearpos — очистить active-сигналы из Redis.
+        Нужно когда бот пишет "Max positions reached" хотя реальных позиций нет.
+        Опционально: /clearpos BTCUSDT — только одну пару
+                     /clearpos all    — все сигналы бота
+        """
+        try:
+            target = args[0].upper() if args else "all"
+
+            if target != "ALL" and target != "":
+                # Очищаем один символ
+                symbol = target
+                key = f"{self.bot_type}:signals:{symbol}"
+                # Помечаем все сигналы как expired
+                signals = self.redis.client.lrange(key, 0, -1)
+                if not signals:
+                    await self._reply(reply_chat_id, f"❓ Сигналов по {symbol} не найдено")
+                    return
+                import json
+                for i, s_json in enumerate(signals):
+                    sig = json.loads(s_json)
+                    if sig.get("status") == "active":
+                        sig["status"] = "expired"
+                        sig["cleared_at"] = "manual"
+                        self.redis.client.lset(key, i, json.dumps(sig))
+                await self._reply(reply_chat_id,
+                    f"✅ Сигнал {symbol} помечен как expired\n"
+                    f"Бот возобновит поиск по этой паре.")
+            else:
+                # Очищаем все active сигналы
+                import json
+                pattern = f"{self.bot_type}:signals:*"
+                keys = self.redis.client.keys(pattern)
+                cleared = 0
+                for key in keys:
+                    signals = self.redis.client.lrange(key, 0, -1)
+                    for i, s_json in enumerate(signals):
+                        try:
+                            sig = json.loads(s_json)
+                            if sig.get("status") == "active":
+                                sig["status"] = "expired"
+                                sig["cleared_at"] = "manual"
+                                self.redis.client.lset(key, i, json.dumps(sig))
+                                cleared += 1
+                        except Exception:
+                            pass
+
+                if self.state:
+                    self.state.active_signals = 0
+
+                await self._reply(reply_chat_id,
+                    f"✅ <b>Очищено {cleared} активных сигналов</b>\n\n"
+                    f"Бот снова начнёт открывать новые позиции.\n"
+                    f"Используй /scan для немедленного скана.\n\n"
+                    f"<i>Подсказка: /clearpos BTCUSDT — очистить одну пару</i>")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
 
 # ============================================================================
