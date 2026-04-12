@@ -147,7 +147,11 @@ async def lifespan(app: FastAPI):
                 max_positions=Config.MAX_POSITIONS,
                 min_score_for_trade=Config.MIN_SCORE,  # синхронизируем с MIN_SCORE бота
             )
-            state.auto_trader = AutoTrader(bingx_client=bingx, config=trade_cfg)
+            state.auto_trader = AutoTrader(
+                bingx_client=bingx,
+                config=trade_cfg,
+                telegram=state.telegram,   # ← передаём для уведомлений
+            )
             mode = "DEMO" if Config.BINGX_DEMO else "REAL"
             print(f"✅ BingX AutoTrader initialized ({mode})")
         except Exception as e:
@@ -543,6 +547,40 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         return None
 
 
+async def _count_real_positions() -> int:
+    """
+    Считает РЕАЛЬНЫЕ открытые позиции:
+    1. Если AutoTrader активен — спрашиваем BingX напрямую (точно)
+    2. Иначе — считаем сигналы из Redis созданные менее SIGNAL_TTL_HOURS назад
+
+    Это исправляет баг "Max positions reached (23/5)" — старые сигналы
+    в Redis не должны блокировать новые торги.
+    """
+    # Способ 1: считаем живые позиции на бирже
+    if state.auto_trader and Config.AUTO_TRADING:
+        try:
+            positions = await state.auto_trader.bingx.get_positions()
+            return len(positions)
+        except Exception as e:
+            print(f"[count_positions] BingX error: {e}, falling back to Redis")
+
+    # Способ 2: только свежие сигналы (< SIGNAL_TTL_HOURS)
+    try:
+        all_active = state.redis.get_active_signals(Config.BOT_TYPE)
+        cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
+        fresh = []
+        for s in all_active:
+            try:
+                ts = datetime.fromisoformat(s.get("timestamp", ""))
+                if ts > cutoff:
+                    fresh.append(s)
+            except Exception:
+                pass
+        return len(fresh)
+    except Exception:
+        return 0
+
+
 async def scan_market():
     """Полное сканирование рынка."""
     if state.is_paused:
@@ -552,9 +590,10 @@ async def scan_market():
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
-    active_count = len(state.redis.get_active_signals(Config.BOT_TYPE))
+    # FIX: считаем реальные позиции, не накопившиеся Redis-сигналы
+    active_count = await _count_real_positions()
     if active_count >= Config.MAX_POSITIONS:
-        print(f"⚠️ Max positions ({Config.MAX_POSITIONS}) reached")
+        print(f"⏸️ Max positions reached ({active_count}/{Config.MAX_POSITIONS})")
         state.last_scan = datetime.utcnow()
         return
 
