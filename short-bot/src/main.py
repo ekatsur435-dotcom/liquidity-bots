@@ -116,6 +116,7 @@ async def lifespan(app: FastAPI):
         redis_client=state.redis,
         bot_state=state,
         bot_type=Config.BOT_TYPE,
+        scan_callback=scan_market,
     )
 
     # Webhook — один раз
