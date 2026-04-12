@@ -87,7 +87,7 @@ class BingXClient:
         self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'} mode)")
+        print(f"🚀 BingX Client initialized ({'DEMO' if demo else 'REAL'} mode)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
@@ -189,8 +189,16 @@ class BingXClient:
         """Получить баланс аккаунта"""
         result = await self._make_request("GET", "/openApi/swap/v2/user/balance", signed=True)
         
+        # Debug: показываем что вернул API
+        print(f"🔍 DEBUG Balance API response: {result}")
+        
         if result and result.get("code") == 0:
-            return result.get("data", {})
+            data = result.get("data", {})
+            # Debug: показываем структуру данных
+            print(f"🔍 DEBUG Balance data: {data}")
+            return data
+        
+        print(f"⚠️ DEBUG Balance API error: code={result.get('code') if result else 'None'}, msg={result.get('msg') if result else 'None'}")
         return None
     
     async def get_account_info(self) -> Optional[Dict]:
