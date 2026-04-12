@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 import uvicorn
 
-# Добавляем путь к shared модулям
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
 
@@ -21,6 +20,7 @@ from utils.binance_client import get_binance_client
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector
 from bot.telegram import TelegramBot, TelegramCommandHandler
+from utils.coinglass_client import CoinglassClient
 
 
 # ============================================================================
@@ -28,15 +28,16 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 # ============================================================================
 
 class Config:
-    """Конфигурация бота"""
     BOT_TYPE = "long"
     MIN_SCORE = int(os.getenv("MIN_LONG_SCORE", "65"))
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))
     MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "5"))
     LEVERAGE = os.getenv("LONG_LEVERAGE", "3-5")
-    
+
     TP_LEVELS = [1.5, 3.0, 5.0, 6.3, 8.5, 12.2]
     SL_BUFFER = float(os.getenv("LONG_SL_BUFFER", "0.8"))
+
+    USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
 
 
 # ============================================================================
@@ -56,6 +57,7 @@ class BotState:
         self.pattern_detector = None
         self.telegram = None
         self.cmd_handler = None
+        self.coinglass: Optional[CoinglassClient] = None
 
 state = BotState()
 
@@ -67,7 +69,7 @@ state = BotState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Starting LONG Bot...")
-    
+
     state.redis = get_redis_client()
     state.binance = get_binance_client()
     state.scorer = get_long_scorer(Config.MIN_SCORE)
@@ -77,22 +79,27 @@ async def lifespan(app: FastAPI):
         chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID"),
         topic_id=os.getenv("LONG_TELEGRAM_TOPIC_ID")
     )
-    
-    # Test connections
+
+    if Config.USE_COINGLASS:
+        state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
+        print("✅ CoinGlass client initialized")
+    else:
+        print("⚠️ CoinGlass disabled (no COINGLASS_API_KEY)")
+
     redis_ok = state.redis.health_check()
     telegram_ok = await state.telegram.send_test_message()
-    
     print(f"✅ Redis: {redis_ok}, Telegram: {telegram_ok}")
-    
-    # Initialize command handler
+
+    # ✅ ИСПРАВЛЕНО: передаём scan_market и Config напрямую
     state.cmd_handler = TelegramCommandHandler(
         bot=state.telegram,
         redis_client=state.redis,
         bot_state=state,
-        bot_type=Config.BOT_TYPE        # ← добавить это
+        bot_type=Config.BOT_TYPE,
+        scan_callback=scan_market,   # ← функция, а не строка модуля
+        config=Config                # ← класс Config напрямую
     )
-    
-    # Register webhook in Telegram
+
     render_url = os.getenv("RENDER_EXTERNAL_URL", "")
     if render_url:
         webhook_url = f"{render_url}/webhook"
@@ -100,29 +107,26 @@ async def lifespan(app: FastAPI):
         print(f"✅ Webhook registered: {webhook_url}")
     else:
         print("⚠️ RENDER_EXTERNAL_URL not set — webhook not registered")
-    
-    # Load watchlist
+
     symbols = await state.binance.get_all_symbols(min_volume_usdt=1_000_000)
     state.watchlist = symbols[:100]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
-    
-    # Update state
+
     state.redis.update_bot_state(Config.BOT_TYPE, {
         "status": "running",
         "watchlist_count": len(state.watchlist),
         "started_at": datetime.utcnow().isoformat()
     })
-    
+
     state.is_running = True
     state.last_scan = datetime.utcnow()
- 
+
     scanner_task = asyncio.create_task(background_scanner())
- 
+
     print("✅ LONG Bot started successfully!")
- 
+
     yield
- 
-    # Shutdown:
+
     print("🛑 Shutting down...")
     state.is_running = False
     scanner_task.cancel()
@@ -130,12 +134,14 @@ async def lifespan(app: FastAPI):
         await scanner_task
     except asyncio.CancelledError:
         pass
- 
+
     if state.binance:
         await state.binance.close()
     if state.telegram:
         await state.telegram.close()
- 
+    if state.coinglass:
+        await state.coinglass.close()
+
     print("👋 Long Bot stopped")
 
 
@@ -164,6 +170,7 @@ async def health_check():
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
         "watchlist_count": len(state.watchlist),
         "active_signals": state.active_signals,
+        "coinglass_enabled": Config.USE_COINGLASS,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -172,9 +179,7 @@ async def health_check():
 async def get_status():
     if not state.is_running:
         raise HTTPException(status_code=503, detail="Bot is not running")
-    
     bot_state = state.redis.get_bot_state(Config.BOT_TYPE)
-    
     return {
         "status": "running",
         "bot_type": Config.BOT_TYPE,
@@ -182,7 +187,8 @@ async def get_status():
             "min_score": Config.MIN_SCORE,
             "scan_interval": Config.SCAN_INTERVAL,
             "max_positions": Config.MAX_POSITIONS,
-            "leverage": Config.LEVERAGE
+            "leverage": Config.LEVERAGE,
+            "coinglass_enabled": Config.USE_COINGLASS
         },
         "watchlist_count": len(state.watchlist),
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
@@ -194,54 +200,34 @@ async def get_status():
 async def trigger_scan(background_tasks: BackgroundTasks):
     if not state.is_running:
         raise HTTPException(status_code=503, detail="Bot is not running")
-    
     background_tasks.add_task(scan_market)
-    
-    return {
-        "message": "Scan triggered",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    return {"message": "Scan triggered", "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.get("/api/signals")
 async def get_active_signals():
     if not state.redis:
         raise HTTPException(status_code=503, detail="Redis not connected")
-    
     signals = state.redis.get_active_signals(Config.BOT_TYPE)
-    
-    return {
-        "bot_type": Config.BOT_TYPE,
-        "count": len(signals),
-        "signals": signals
-    }
+    return {"bot_type": Config.BOT_TYPE, "count": len(signals), "signals": signals}
 
 
 @app.get("/api/signals/{symbol}")
 async def get_symbol_signals(symbol: str):
     if not state.redis:
         raise HTTPException(status_code=503, detail="Redis not connected")
-    
     signals = state.redis.get_signals(Config.BOT_TYPE, symbol.upper())
-    
-    return {
-        "symbol": symbol.upper(),
-        "count": len(signals),
-        "signals": signals
-    }
+    return {"symbol": symbol.upper(), "count": len(signals), "signals": signals}
 
 
 @app.get("/api/stats")
 async def get_stats(days: int = 7):
     if not state.redis:
         raise HTTPException(status_code=503, detail="Redis not connected")
-    
     stats = state.redis.get_stats_range(Config.BOT_TYPE, days)
-    
     total_signals = sum(s.get("signals", 0) for s in stats)
     total_trades = sum(s.get("trades", 0) for s in stats)
     total_pnl = sum(s.get("pnl", 0) for s in stats)
-    
     return {
         "bot_type": Config.BOT_TYPE,
         "period_days": days,
@@ -254,10 +240,6 @@ async def get_stats(days: int = 7):
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    """
-    Endpoint для приёма команд от Telegram.
-    Telegram будет слать сюда все сообщения пользователей.
-    """
     try:
         update = await request.json()
         if state.cmd_handler:
@@ -270,7 +252,6 @@ async def telegram_webhook(request: Request):
 
 @app.get("/webhook/info")
 async def webhook_info():
-    """Проверить статус webhook"""
     if state.telegram:
         info = await state.telegram.get_webhook_info()
         return {"webhook": info}
@@ -281,26 +262,51 @@ async def webhook_info():
 # CORE LOGIC
 # ============================================================================
 
+async def _get_coinglass_boost(symbol: str, direction: str) -> tuple[int, str]:
+    """Получить буст/штраф скора от CoinGlass"""
+    if not state.coinglass or not Config.USE_COINGLASS:
+        return 0, ""
+    try:
+        cg_symbol = symbol.replace("USDT", "").replace("PERP", "")
+        liq_signal = await state.coinglass.get_liquidation_signal(cg_symbol)
+
+        if not liq_signal or liq_signal["signal"] == "neutral":
+            return 0, ""
+
+        cg_direction = liq_signal["signal"]
+        strength = liq_signal["strength"]
+        reason = liq_signal["reason"]
+
+        if direction == "long" and cg_direction == "long":
+            # Ликвидации лонгов → выбили слабых рук → хороший момент для входа в лонг
+            delta = min(10, strength // 5)
+            return delta, f"CoinGlass: {reason}"
+        elif direction == "long" and cg_direction == "short":
+            # Ликвидации шортов → цена уже выросла → против нашего лонга
+            delta = -min(8, strength // 5)
+            return delta, f"CoinGlass contra: {reason}"
+
+        return 0, ""
+    except Exception as e:
+        print(f"CoinGlass boost error for {symbol}: {e}")
+        return 0, ""
+
+
 async def scan_symbol(symbol: str) -> Optional[Dict]:
     """Сканировать одну пару для LONG"""
     try:
         market_data = await state.binance.get_complete_market_data(symbol)
-        
         if not market_data:
             return None
-        
+
         ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
-        
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
-        
+
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend = state.pattern_detector._get_price_trend(ohlcv_15m)
-        
-        # Детектируем LONG паттерны
         patterns = state.pattern_detector.detect_all(ohlcv_15m, hourly_deltas)
-        
-        # Расчёт Long Score
+
         score_result = state.scorer.calculate_score(
             rsi_1h=market_data.rsi_1h or 50,
             funding_current=market_data.funding_rate / 100,
@@ -312,15 +318,34 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             price_trend=price_trend,
             patterns=patterns
         )
-        
+
         if not score_result.is_valid:
             return None
-        
-        # Формируем сигнал
+
+        # ✅ CoinGlass буст/штраф
+        cg_delta, cg_reason = await _get_coinglass_boost(symbol, "long")
+        final_score = score_result.total_score + cg_delta
+
+        if final_score < Config.MIN_SCORE:
+            return None
+
+        reasons = list(score_result.reasons)
+        if cg_reason:
+            reasons.append(cg_reason)
+
+        indicators = {
+            "RSI": f"{market_data.rsi_1h:.1f}" if market_data.rsi_1h else "N/A",
+            "Funding": f"{market_data.funding_rate:+.3f}%",
+            "L/S Ratio": f"{market_data.long_short_ratio:.0f}% longs",
+            "OI Change": f"{market_data.oi_change_4d:+.1f}% (4d)"
+        }
+        if cg_delta != 0:
+            indicators["CoinGlass"] = f"{'+' if cg_delta > 0 else ''}{cg_delta} pts"
+
         signal = {
             "symbol": symbol,
             "direction": "long",
-            "score": score_result.total_score,
+            "score": final_score,
             "grade": score_result.grade,
             "confidence": score_result.confidence.value,
             "price": market_data.price,
@@ -332,19 +357,15 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 (market_data.price * (1 + tp / 100), 25 if i < 2 else 20 if i < 3 else 15 if i < 4 else 10 if i < 5 else 5)
                 for i, tp in enumerate(Config.TP_LEVELS)
             ],
-            "indicators": {
-                "RSI": f"{market_data.rsi_1h:.1f}" if market_data.rsi_1h else "N/A",
-                "Funding": f"{market_data.funding_rate:+.3f}%",
-                "L/S Ratio": f"{market_data.long_short_ratio:.0f}% longs",
-                "OI Change": f"{market_data.oi_change_4d:+.1f}% (4d)"
-            },
-            "reasons": score_result.reasons,
+            "indicators": indicators,
+            "reasons": reasons,
+            "coinglass_delta": cg_delta,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active"
         }
-        
+
         return signal
-    
+
     except Exception as e:
         print(f"Error scanning {symbol}: {e}")
         return None
@@ -353,20 +374,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 async def scan_market():
     """Полное сканирование рынка"""
     print(f"\n🔍 LONG Bot scan at {datetime.utcnow().isoformat()}")
-    
+
     new_signals = 0
-    
+
     for symbol in state.watchlist:
         try:
             existing = state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)
             if existing and existing[0].get("status") == "active":
                 continue
-            
+
             signal = await scan_symbol(symbol)
-            
+
             if signal:
                 state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-                
+
                 await state.telegram.send_signal(
                     direction="long",
                     symbol=signal["symbol"],
@@ -380,28 +401,37 @@ async def scan_market():
                     leverage=Config.LEVERAGE,
                     risk="≤1% deposit"
                 )
-                
+
                 print(f"✅ LONG Signal: {symbol} - Score: {signal['score']}%")
                 new_signals += 1
-            
+
             await asyncio.sleep(0.5)
-        
+
         except Exception as e:
             print(f"Error processing {symbol}: {e}")
             continue
-    
+
     state.daily_signals += new_signals
     state.last_scan = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))
-    
+
     state.redis.update_bot_state(Config.BOT_TYPE, {
         "status": "running",
         "last_scan": state.last_scan.isoformat(),
         "daily_signals": state.daily_signals,
         "active_signals": state.active_signals
     })
-    
+
     print(f"✅ Scan complete. New signals: {new_signals}")
+
+
+async def background_scanner():
+    while state.is_running:
+        try:
+            await scan_market()
+        except Exception as e:
+            print(f"Error in background scanner: {e}")
+        await asyncio.sleep(Config.SCAN_INTERVAL)
 
 
 # ============================================================================
