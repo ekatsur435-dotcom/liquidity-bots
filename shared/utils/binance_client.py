@@ -230,7 +230,7 @@ class BinanceFuturesClient:
             # Сортируем по объёму (самые ликвидные первые)
             vols = {t["symbol"]: float(t.get("turnover24h", 0)) for t in tickers}
             syms.sort(key=lambda s: vols.get(s, 0), reverse=True)
-            result_list = syms[:50]
+            result_list = syms[:200]
             print(f"✅ Bybit watchlist: {len(result_list)} symbols")
             return result_list if result_list else FALLBACK_WATCHLIST
         except Exception as e:
