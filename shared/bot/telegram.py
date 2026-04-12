@@ -5,7 +5,7 @@ Telegram Bot Integration
 
 import os
 import asyncio
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable
 from datetime import datetime
 
 import aiohttp
@@ -44,13 +44,6 @@ class TelegramBot:
     # =========================================================================
 
     async def setup_webhook(self, webhook_url: str) -> bool:
-        """
-        Зарегистрировать webhook в Telegram.
-        Вызывать один раз при старте бота.
-        
-        Args:
-            webhook_url: Полный URL вида https://your-bot.onrender.com/webhook
-        """
         try:
             session = await self._get_session()
             url = f"{self.base_url}/setWebhook"
@@ -72,7 +65,6 @@ class TelegramBot:
             return False
 
     async def delete_webhook(self) -> bool:
-        """Удалить webhook (для переключения на polling)"""
         try:
             session = await self._get_session()
             async with session.post(
@@ -87,7 +79,6 @@ class TelegramBot:
             return False
 
     async def get_webhook_info(self) -> Optional[Dict]:
-        """Получить информацию о текущем webhook"""
         try:
             session = await self._get_session()
             async with session.get(
@@ -364,11 +355,16 @@ class TelegramCommandHandler:
     """
 
     def __init__(self, bot: TelegramBot, redis_client=None, bot_state=None,
-                 bot_type: str = "short"):
+                 bot_type: str = "short",
+                 scan_callback: Optional[Callable] = None,
+                 config=None):
         self.bot = bot
         self.redis = redis_client
         self.state = bot_state
-        self.bot_type = bot_type  # "short" или "long" — передаётся из Config.BOT_TYPE
+        self.bot_type = bot_type
+        # ✅ ИСПРАВЛЕНО: получаем scan_market и Config напрямую — без importlib
+        self.scan_callback = scan_callback
+        self.config = config
         self.commands = {
             '/start':    self.cmd_start,
             '/help':     self.cmd_help,
@@ -385,8 +381,7 @@ class TelegramCommandHandler:
     async def _reply(self, chat_id: str, text: str) -> bool:
         """
         Отправить ответ в конкретный chat_id.
-        Это ключевой метод — отвечает ТУДА откуда пришла команда,
-        а не в захардкоженный self.bot.chat_id.
+        Отвечает ТУДА откуда пришла команда, а не в захардкоженный chat_id.
         """
         try:
             url = f"{self.bot.base_url}/sendMessage"
@@ -407,11 +402,7 @@ class TelegramCommandHandler:
             return False
 
     async def handle_update(self, update: Dict) -> bool:
-        """
-        Обработать входящий update от Telegram webhook.
-        Извлекаем chat_id из сообщения — отвечаем туда же.
-        Работает и в личке и в группе.
-        """
+        """Обработать входящий update от Telegram webhook."""
         try:
             message = update.get("message") or update.get("edited_message")
             if not message:
@@ -421,14 +412,12 @@ class TelegramCommandHandler:
             if not text.startswith("/"):
                 return False
 
-            # ✅ Берём chat_id из самого сообщения — не из конфига!
             reply_chat_id = str(message.get("chat", {}).get("id", ""))
             if not reply_chat_id:
                 return False
 
-            # Парсим команду
             parts = text.split()
-            cmd = parts[0].split("@")[0].lower()  # /start@BotName → /start
+            cmd = parts[0].split("@")[0].lower()
             args = parts[1:] if len(parts) > 1 else []
 
             print(f"📨 Command: {cmd} from chat {reply_chat_id}")
@@ -450,7 +439,7 @@ class TelegramCommandHandler:
             return False
 
     # =========================================================================
-    # COMMANDS — все принимают reply_chat_id и отвечают туда
+    # COMMANDS
     # =========================================================================
 
     async def cmd_start(self, args, reply_chat_id: str):
@@ -482,13 +471,14 @@ class TelegramCommandHandler:
             last = self.state.last_scan.strftime("%H:%M UTC") if self.state.last_scan else "никогда"
             running = "✅ Работает" if self.state.is_running else "❌ Остановлен"
             redis_ok = "✅" if (self.redis and self.redis.health_check()) else "❌"
-            score = getattr(self.state, '_min_score', 65)
+            min_score = getattr(self.config, 'MIN_SCORE', 65) if self.config else 65
             await self._reply(reply_chat_id,
                 f"🤖 <b>Статус бота</b>\n\n"
                 f"Состояние: {running}\n"
                 f"Watchlist: {wl} монет\n"
                 f"Последний скан: {last}\n"
                 f"Активных сигналов: {self.state.active_signals}\n"
+                f"Мин. скор: {min_score}%\n"
                 f"Redis: {redis_ok}\n"
                 f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
             )
@@ -528,12 +518,21 @@ class TelegramCommandHandler:
         await self._reply(reply_chat_id, "📉 Статистика пока пуста")
 
     async def cmd_scan(self, args, reply_chat_id: str):
+        """
+        ✅ ИСПРАВЛЕНО: используем scan_callback переданный при инициализации.
+        Раньше было importlib.import_module("main") — падало с
+        'No module named main' потому что реальный модуль src.main.
+        """
         await self._reply(reply_chat_id, "🔍 Запускаю скан рынка...")
         try:
-            # Импортируем scan_market из main через динамический импорт
-            import importlib
-            main_mod = importlib.import_module("main")
-            asyncio.create_task(main_mod.scan_market())
+            if self.scan_callback is None:
+                await self._reply(reply_chat_id,
+                    "❌ scan_callback не настроен.\n"
+                    "Передай scan_market при создании TelegramCommandHandler."
+                )
+                return
+            asyncio.create_task(self.scan_callback())
+            await self._reply(reply_chat_id, "✅ Скан запущен! Сигналы придут автоматически.")
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка запуска скана: {e}")
 
@@ -548,14 +547,15 @@ class TelegramCommandHandler:
         await self._reply(reply_chat_id, "▶️ Бот возобновил работу!\nСканирование активно.")
 
     async def cmd_set_min_score(self, args, reply_chat_id: str):
+        """
+        ✅ ИСПРАВЛЕНО: используем self.config вместо importlib.import_module("main").
+        """
         if args and args[0].isdigit():
             score = int(args[0])
             if 50 <= score <= 95:
                 try:
-                    import importlib
-                    main_mod = importlib.import_module("main")
-                    main_mod.Config.MIN_SCORE = score
-                    # Сохраняем для /status
+                    if self.config:
+                        self.config.MIN_SCORE = score
                     if self.state:
                         self.state._min_score = score
                     await self._reply(reply_chat_id,
