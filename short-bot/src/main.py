@@ -131,17 +131,16 @@ async def lifespan(app: FastAPI):
     state.is_running = True
     state.last_scan = datetime.utcnow()
  
-    # ✅ ГЛАВНЫЙ ФИК: запускаем фоновый сканер!
     scanner_task = asyncio.create_task(background_scanner())
  
-    print("✅ SHORT Bot started successfully!")  # или LONG Bot
+    print("✅ SHORT Bot started successfully!")
  
     yield  # ← тут бот работает
  
     # Shutdown:
     print("🛑 Shutting down...")
     state.is_running = False
-    scanner_task.cancel()  # останавливаем сканер
+    scanner_task.cancel()
     try:
         await scanner_task
     except asyncio.CancelledError:
@@ -152,7 +151,7 @@ async def lifespan(app: FastAPI):
     if state.telegram:
         await state.telegram.close()
  
-    print("👋 Bot stopped")
+    print("👋 SHORT Bot stopped")
 
 # ============================================================================
 # FASTAPI APP
