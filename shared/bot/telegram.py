@@ -290,7 +290,8 @@ class TelegramCommandHandler:
     ALLOWED_COMMANDS = {
         "/start", "/help", "/ping", "/status",
         "/signals", "/stats", "/scan",
-        "/pause", "/resume", "/setscore", "/clearpos",
+        "/pause", "/resume", "/setscore",
+        "/clearpos", "/balance", "/positions",
     }
 
     def __init__(self,
@@ -308,6 +309,11 @@ class TelegramCommandHandler:
         self.config        = config
 
     async def _reply(self, chat_id: str, text: str) -> bool:
+        """
+        Отправить ответ в любой чат.
+        FIX: message_thread_id добавляется ТОЛЬКО если отвечаем в группу бота.
+        В личке (другой chat_id) topic_id не нужен — Telegram отклоняет такие запросы.
+        """
         try:
             payload = {
                 "chat_id": chat_id,
@@ -315,14 +321,20 @@ class TelegramCommandHandler:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
-            if self.bot.topic_id:
+            # Добавляем topic только когда пишем в ГРУППУ (chat_id совпадает с ботовым)
+            is_group_chat = str(chat_id) == str(self.bot.chat_id)
+            if self.bot.topic_id and is_group_chat:
                 payload["message_thread_id"] = int(self.bot.topic_id)
+
             session = await self.bot._get_session()
             async with session.post(
                 f"{self.bot.base_url}/sendMessage",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    print(f"[Telegram reply] Error {resp.status}: {err[:120]}")
                 return resp.status == 200
         except Exception as e:
             print(f"Error sending reply: {e}")
@@ -334,8 +346,10 @@ class TelegramCommandHandler:
             if not message:
                 return False
 
-            text         = message.get("text", "").strip()
+            text          = message.get("text", "").strip()
             reply_chat_id = str(message.get("chat", {}).get("id", ""))
+            user_id       = str(message.get("from", {}).get("id", ""))
+            chat_type     = message.get("chat", {}).get("type", "private")
 
             if not text.startswith("/"):
                 return False
@@ -344,7 +358,18 @@ class TelegramCommandHandler:
             cmd   = parts[0].split("@")[0].lower()
             args  = parts[1:]
 
-            print(f"📨 Command: {cmd} from chat {reply_chat_id}")
+            print(f"📨 Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
+
+            # ── Безопасность: в личке отвечаем только ADMIN_USER_ID ──────────
+            # В группе — всем (группа защищена самим фактом наличия invite)
+            if chat_type == "private":
+                admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
+                if admin_ids_raw:
+                    allowed = {s.strip() for s in admin_ids_raw.split(",")}
+                    if user_id not in allowed:
+                        print(f"⛔ Unauthorized private access from user {user_id}")
+                        return False
+                # Если ADMIN_USER_IDS не задан — пропускаем всех (обратная совместимость)
 
             if cmd not in self.ALLOWED_COMMANDS:
                 await self._reply(reply_chat_id,
@@ -364,6 +389,8 @@ class TelegramCommandHandler:
                 "/resume":   self.cmd_resume,
                 "/setscore": self.cmd_set_min_score,
                 "/clearpos": self.cmd_clearpos,
+                "/balance":  self.cmd_balance,
+                "/positions": self.cmd_positions,
             }
             await handlers[cmd](args, reply_chat_id)
             return True
@@ -380,18 +407,22 @@ class TelegramCommandHandler:
         bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
-            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.0</b>\n\n"
-            "<b>Команды:</b>\n"
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.1</b>\n\n"
+            "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
             "📉 /stats — Статистика + P&L\n"
-            "🔍 /scan — Сканировать рынок сейчас\n"
-            "⏸ /pause — Остановить сигналы\n"
+            "🔍 /scan — Сканировать рынок сейчас\n\n"
+            "<b>💰 Биржа:</b>\n"
+            "💳 /balance — Баланс BingX\n"
+            "📈 /positions — Открытые позиции\n\n"
+            "<b>⚙️ Управление:</b>\n"
+            "⏸ /pause — Остановить новые сигналы\n"
             "▶️ /resume — Возобновить\n"
+            "🗑 /clearpos — Сбросить застрявшие позиции\n"
             "⚙️ /setscore 75 — Мин. скор\n"
             "🏓 /ping — Проверка связи\n\n"
-            "Сигналы приходят автоматически!\n"
-            "TP/SL/экспирация — тоже автоматически 📍"
+            "Сигналы + TP/SL уведомления — автоматически 📍"
         )
 
     async def cmd_help(self, args, reply_chat_id: str):
@@ -584,30 +615,29 @@ class TelegramCommandHandler:
                      /clearpos all    — все сигналы бота
         """
         try:
-            target = args[0].upper() if args else "all"
+            target = args[0].upper() if args else "ALL"
 
-            if target != "ALL" and target != "":
+            if target != "ALL":
                 # Очищаем один символ
                 symbol = target
                 key = f"{self.bot_type}:signals:{symbol}"
-                # Помечаем все сигналы как expired
+                import json as _json
                 signals = self.redis.client.lrange(key, 0, -1)
                 if not signals:
                     await self._reply(reply_chat_id, f"❓ Сигналов по {symbol} не найдено")
                     return
-                import json
                 for i, s_json in enumerate(signals):
-                    sig = json.loads(s_json)
+                    sig = _json.loads(s_json)
                     if sig.get("status") == "active":
                         sig["status"] = "expired"
                         sig["cleared_at"] = "manual"
-                        self.redis.client.lset(key, i, json.dumps(sig))
+                        self.redis.client.lset(key, i, _json.dumps(sig))
                 await self._reply(reply_chat_id,
                     f"✅ Сигнал {symbol} помечен как expired\n"
                     f"Бот возобновит поиск по этой паре.")
             else:
                 # Очищаем все active сигналы
-                import json
+                import json as _json
                 pattern = f"{self.bot_type}:signals:*"
                 keys = self.redis.client.keys(pattern)
                 cleared = 0
@@ -615,11 +645,11 @@ class TelegramCommandHandler:
                     signals = self.redis.client.lrange(key, 0, -1)
                     for i, s_json in enumerate(signals):
                         try:
-                            sig = json.loads(s_json)
+                            sig = _json.loads(s_json)
                             if sig.get("status") == "active":
                                 sig["status"] = "expired"
                                 sig["cleared_at"] = "manual"
-                                self.redis.client.lset(key, i, json.dumps(sig))
+                                self.redis.client.lset(key, i, _json.dumps(sig))
                                 cleared += 1
                         except Exception:
                             pass
@@ -632,6 +662,66 @@ class TelegramCommandHandler:
                     f"Бот снова начнёт открывать новые позиции.\n"
                     f"Используй /scan для немедленного скана.\n\n"
                     f"<i>Подсказка: /clearpos BTCUSDT — очистить одну пару</i>")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+
+    async def cmd_balance(self, args, reply_chat_id: str):
+        """/balance — баланс BingX аккаунта."""
+        try:
+            auto_trader = getattr(self.state, "auto_trader", None) if self.state else None
+            if not auto_trader:
+                await self._reply(reply_chat_id,
+                    "❌ AutoTrader не подключён\n"
+                    "Установи <code>AUTO_TRADING_ENABLED=true</code> в Render → Environment")
+                return
+
+            summary = await auto_trader.get_account_summary()
+            balance = summary.get("balance", {})
+            avail   = float(balance.get("availableMargin", 0))
+            equity  = float(balance.get("equity", avail))
+            pnl     = summary.get("unrealized_pnl", 0)
+            mode    = summary.get("mode", "DEMO")
+            n_pos   = summary.get("open_positions", 0)
+
+            mode_str = "🟡 DEMO (торговля не реальная)" if mode == "DEMO" else "🟢 REAL"
+
+            await self._reply(reply_chat_id,
+                f"💰 <b>BingX Аккаунт</b>  [{mode_str}]\n\n"
+                f"Equity:     <b>${equity:,.2f}</b>\n"
+                f"Свободно:  <b>${avail:,.2f}</b>\n"
+                f"Unrealized PnL: <b>{'+' if pnl >= 0 else ''}{pnl:.2f} USDT</b>\n\n"
+                f"Открытых позиций: {n_pos}\n"
+                f"Сделок сегодня: {summary.get('daily_trades', 0)}\n"
+                f"P&L сегодня: {summary.get('daily_pnl', 0):.2f}%\n"
+                f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+            )
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка получения баланса: {e}")
+
+    async def cmd_positions(self, args, reply_chat_id: str):
+        """/positions — открытые позиции на BingX."""
+        try:
+            auto_trader = getattr(self.state, "auto_trader", None) if self.state else None
+            if not auto_trader:
+                await self._reply(reply_chat_id, "❌ AutoTrader не подключён")
+                return
+
+            positions = await auto_trader.bingx.get_positions()
+            if not positions:
+                await self._reply(reply_chat_id, "📭 Нет открытых позиций на BingX")
+                return
+
+            msg = f"📊 <b>Открытые позиции BingX ({len(positions)}):</b>\n\n"
+            for p in positions:
+                d_emoji = "🟢" if p.side == "LONG" else "🔴"
+                pnl_str = f"+{p.unrealized_pnl:.2f}" if p.unrealized_pnl >= 0 else f"{p.unrealized_pnl:.2f}"
+                msg += (
+                    f"{d_emoji} <code>{p.symbol}</code>  {p.side}\n"
+                    f"   Вход: <b>${p.entry_price:,.4f}</b>  |  Плечо: {p.leverage}x\n"
+                    f"   Размер: {p.size:.4f}  |  PnL: <b>{pnl_str} USDT</b>\n\n"
+                )
+
+            await self._reply(reply_chat_id, msg)
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
