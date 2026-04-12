@@ -196,7 +196,7 @@ async def lifespan(app: FastAPI):
 
     # Watchlist
     symbols = await state.binance.get_all_symbols(min_volume_usdt=500_000)
-    state.watchlist = symbols[:150]
+    state.watchlist = symbols[:200]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
 
     state.redis.update_bot_state(Config.BOT_TYPE, {
