@@ -140,6 +140,7 @@ async def lifespan(app: FastAPI):
                 demo_mode=Config.BINGX_DEMO,
                 risk_per_trade=Config.RISK_PER_TRADE,
                 max_positions=Config.MAX_POSITIONS,
+                min_score_for_trade=Config.MIN_SCORE,  # синхронизируем с MIN_SCORE бота
             )
             state.auto_trader = AutoTrader(bingx_client=bingx, config=trade_cfg)
             mode = "DEMO" if Config.BINGX_DEMO else "REAL"
@@ -150,7 +151,7 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
@@ -421,7 +422,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         if Config.USE_SMC:
             try:
-                from utils.smc_ict_detector import get_smc_result
+                from core.smc_ict_detector import get_smc_result
                 smc = get_smc_result(
                     _ohlcv_list(ohlcv_15m), "short",
                     base_sl_pct=Config.SL_BUFFER,
