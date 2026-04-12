@@ -87,7 +87,7 @@ class BingXClient:
         self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        print(f"🚀 BingX Client initialized ({'DEMO' if demo else 'REAL'} mode)")
+        print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'} mode)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
@@ -194,8 +194,25 @@ class BingXClient:
         
         if result and result.get("code") == 0:
             data = result.get("data", {})
-            # Debug: показываем структуру данных
-            print(f"🔍 DEBUG Balance data: {data}")
+            
+            # 🔥 FIX: Для DEMO mode баланс приходит как СПИСОК!
+            # Берём первый элемент списка
+            balance_list = data.get("balance", [])
+            if isinstance(balance_list, list) and balance_list:
+                balance_data = balance_list[0]
+            elif isinstance(balance_list, dict):
+                balance_data = balance_list
+            else:
+                balance_data = {}
+            
+            # Добавляем поля в data для совместимости
+            data["equity"] = balance_data.get("equity", "0")
+            data["availableMargin"] = balance_data.get("availableMargin", "0")
+            data["walletBalance"] = balance_data.get("walletBalance", "0")
+            data["unrealizedPNL"] = balance_data.get("unrealizedPNL", "0")
+            
+            # Debug: показываем распарсенные данные
+            print(f"🔍 DEBUG Parsed balance: equity={data['equity']}, avail={data['availableMargin']}")
             return data
         
         print(f"⚠️ DEBUG Balance API error: code={result.get('code') if result else 'None'}, msg={result.get('msg') if result else 'None'}")
