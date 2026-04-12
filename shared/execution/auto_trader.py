@@ -59,26 +59,28 @@ class AutoTrader:
     
     def __init__(self, 
                  bingx_client: Optional[BingXClient] = None,
-                 config: Optional[TradeConfig] = None):
+                 config: Optional[TradeConfig] = None,
+                 telegram=None):
         """
-        Инициализация авто-трейдера
-        
         Args:
-            bingx_client: Клиент BingX (создаётся автоматически если None)
+            bingx_client: Клиент BingX
             config: Конфигурация торговли
+            telegram: TelegramBot для уведомлений об открытии сделки
         """
         self.config = config or TradeConfig()
         self.bingx = bingx_client or BingXClient(demo=self.config.demo_mode)
         self.redis = get_redis_client()
+        self.telegram = telegram   # ← NEW: уведомления в Telegram
         
         # Статистика
         self.daily_pnl = 0.0
         self.daily_trades = 0
         self.last_reset = datetime.utcnow().date()
         
-        print(f"🤖 AutoTrader initialized ({'DEMO' if self.config.demo_mode else 'REAL'} mode)")
+        mode = "DEMO" if self.config.demo_mode else "REAL 🔴"
+        print(f"🤖 AutoTrader initialized ({mode} mode)")
         print(f"   Max positions: {self.config.max_positions}")
-        print(f"   Risk per trade: {self.config.risk_per_trade*100}%")
+        print(f"   Risk per trade: {self.config.risk_per_trade*100:.1f}%")
     
     async def can_open_position(self, symbol: str, direction: str, signal_score: int) -> bool:
         """
@@ -133,134 +135,147 @@ class AutoTrader:
                            signal_score: int,
                            smc_data: Optional[Dict] = None) -> Optional[Dict]:
         """
-        Открыть позицию на BingX
-        
-        Args:
-            symbol: Торговая пара (BTCUSDT)
-            direction: 'long' или 'short'
-            entry_price: Цена входа
-            stop_loss: Стоп-лосс
-            take_profits: Список (цена, процент_закрытия)
-            signal_score: Score сигнала
-            smc_data: Данные SMC (опционально)
-        
-        Returns:
-            Информация об открытой позиции или None
+        Открыть позицию на BingX.
+        Размер = POSITION_SIZE_PCT% от баланса (по умолчанию 5%).
+        После открытия — уведомление в Telegram.
         """
         try:
-            # Проверяем можно ли открыть
             if not await self.can_open_position(symbol, direction, signal_score):
                 return None
             
-            # Получаем баланс
+            # ── Баланс ──────────────────────────────────────────────────────
             balance_data = await self.bingx.get_account_balance()
             if not balance_data:
                 print("❌ Failed to get balance")
                 return None
             
-            # Рассчитываем размер позиции
-            available_balance = float(balance_data.get("availableMargin", 1000))
-            
-            # Smart position sizing на основе Score
-            if signal_score >= 85:
-                risk_mult = 2.0  # 3% риска на снайперские сигналы
-            elif signal_score >= 75:
-                risk_mult = 1.5  # 2.25% риска
-            else:
-                risk_mult = 1.0  # 1.5% риска
-            
-            actual_risk = self.config.risk_per_trade * risk_mult
-            risk_amount = available_balance * actual_risk
-            
-            # Рассчитываем размер позиции
-            price_distance = abs(entry_price - stop_loss) / entry_price
-            if price_distance == 0:
-                print("❌ Invalid SL distance")
+            available_balance = float(balance_data.get("availableMargin", 0))
+            if available_balance < 10:
+                print(f"❌ Insufficient balance: ${available_balance:.2f}")
                 return None
-            
-            position_value = risk_amount / price_distance
-            
-            # Определяем плечо
-            leverage = self._calculate_leverage(signal_score, smc_data)
-            
-            # Рассчитываем количество монет
-            size = position_value / entry_price
-            
-            # Корректируем под минимальный размер BingX
-            min_size = 0.001  # Минимум 0.001 BTC
-            if size < min_size:
-                print(f"⚠️ Position size {size:.4f} < min {min_size}, adjusting...")
-                size = min_size
-            
-            # Устанавливаем плечо
-            bingx_symbol = symbol.replace('USDT', '-USDT')
-            await self.bingx.set_leverage(bingx_symbol, leverage, position_side="BOTH")
-            
-            # Определяем стороны
-            bingx_side = "BUY" if direction == "long" else "SELL"
+
+            # ── Размер позиции: % от баланса с fallback ──────────────────────
+            # Пытаемся открыть 5%, если BingX отказывает — уменьшаем
+            position_pct = float(os.getenv("POSITION_SIZE_PCT", str(self.config.risk_per_trade)))
+
+            # Масштабируем по качеству сигнала
+            if signal_score >= 85:
+                size_mult = 1.0       # полный %
+            elif signal_score >= 75:
+                size_mult = 0.7       # 70%
+            else:
+                size_mult = 0.5       # 50%
+
+            # Пробуем разные размеры, от желаемого до минимального
+            size_candidates_pct = [
+                position_pct * size_mult,   # желаемый (напр. 5%)
+                0.02,                        # 2% fallback
+                0.005,                       # 0.5% fallback
+                0.001,                       # 0.1% — минимальный fallback
+            ]
+
+            position_usdt = 0.0
+            size = 0.0
+            for candidate_pct in size_candidates_pct:
+                candidate_usdt = available_balance * candidate_pct
+                candidate_size = round(candidate_usdt * leverage / entry_price, 4)
+                if candidate_usdt >= 5.0 and candidate_size > 0:  # BingX мин. ~5 USDT
+                    position_usdt = candidate_usdt
+                    size = candidate_size
+                    if candidate_pct < position_pct * size_mult:
+                        print(f"⚠️ Position reduced to {candidate_pct*100:.1f}% (${candidate_usdt:.2f}) due to BingX min size")
+                    break
+
+            if size <= 0 or position_usdt < 5.0:
+                print(f"❌ Balance too low for any position: ${available_balance:.2f}")
+                return None
+
+            bingx_symbol        = symbol.replace('USDT', '-USDT')
+            bingx_side          = "BUY" if direction == "long" else "SELL"
             bingx_position_side = "LONG" if direction == "long" else "SHORT"
-            
-            # Используем лимитный или рыночный ордер
+
+            # ── Установить плечо ─────────────────────────────────────────────
+            await self.bingx.set_leverage(bingx_symbol, leverage, position_side="BOTH")
+
+            # ── Ордер ─────────────────────────────────────────────────────────
             if self.config.use_limit_orders and smc_data and smc_data.get('entry_zone'):
-                # Лимитный ордер в зоне OB/FVG
                 entry_zone = smc_data['entry_zone']
                 limit_price = entry_zone[1] if direction == "short" else entry_zone[0]
-                
                 order = await self.bingx.place_order(
-                    symbol=bingx_symbol,
-                    side=bingx_side,
+                    symbol=bingx_symbol, side=bingx_side,
                     position_side=bingx_position_side,
-                    order_type="LIMIT",
-                    size=size,
-                    price=limit_price,
-                    stop_loss=stop_loss
+                    order_type="LIMIT", size=size,
+                    price=limit_price, stop_loss=stop_loss,
                 )
             else:
-                # Рыночный ордер
                 order = await self.bingx.place_market_order(
-                    symbol=bingx_symbol,
-                    side=bingx_side,
+                    symbol=bingx_symbol, side=bingx_side,
                     position_side=bingx_position_side,
-                    size=size,
-                    stop_loss=stop_loss
+                    size=size, stop_loss=stop_loss,
                 )
             
             if not order:
                 print("❌ Failed to place order")
                 return None
-            
-            # Сохраняем позицию в Redis
+
+            # ── Сохраняем в Redis ─────────────────────────────────────────────
             position_data = {
-                "symbol": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "size": size,
-                "leverage": leverage,
-                "stop_loss": stop_loss,
+                "symbol":       symbol,
+                "direction":    direction,
+                "entry_price":  entry_price,
+                "size":         size,
+                "position_usdt": round(position_usdt, 2),
+                "leverage":     leverage,
+                "stop_loss":    stop_loss,
                 "take_profits": take_profits,
                 "signal_score": signal_score,
-                "smc_data": smc_data,
-                "order_id": order.order_id,
-                "opened_at": datetime.utcnow().isoformat(),
-                "status": "open"
+                "smc_data":     smc_data,
+                "order_id":     order.order_id,
+                "opened_at":    datetime.utcnow().isoformat(),
+                "status":       "open",
+                "mode":         "DEMO" if self.config.demo_mode else "REAL",
             }
-            
-            # Сохраняем в Redis
             bot_type = "short" if direction == "short" else "long"
             self.redis.save_position(bot_type, symbol, position_data)
-            
-            # Обновляем статистику
             self.daily_trades += 1
-            
-            print(f"✅ Position opened: {symbol} {direction.upper()}")
-            print(f"   Size: {size:.4f}, Leverage: {leverage}x")
-            print(f"   Entry: ${entry_price:.2f}, SL: ${stop_loss:.2f}")
-            print(f"   Risk: {actual_risk*100:.2f}% of balance")
-            
+
+            sl_pct  = abs(entry_price - stop_loss) / entry_price * 100
+            d_emoji = "🟢" if direction == "long" else "🔴"
+            mode_str = "🟡 DEMO" if self.config.demo_mode else "✅ REAL"
+
+            print(f"✅ Position opened: {symbol} {direction.upper()} {mode_str}")
+            print(f"   Size: {size:.4f} ({position_usdt:.2f} USDT)  Leverage: {leverage}x")
+            print(f"   Entry: ${entry_price:.4f}  SL: ${stop_loss:.4f} ({sl_pct:.2f}%)")
+
+            # ── Telegram уведомление ──────────────────────────────────────────
+            if self.telegram:
+                tp_lines = ""
+                for i, (tp_price, tp_w) in enumerate(take_profits[:3], 1):
+                    tp_pct = abs(tp_price - entry_price) / entry_price * 100
+                    sign = "+" if direction == "long" else "-"
+                    tp_lines += f"   TP{i}: ${tp_price:,.4f}  ({sign}{tp_pct:.1f}%)  [{tp_w}%]\n"
+
+                msg = (
+                    f"{d_emoji} <b>Сделка открыта на BingX</b>  {mode_str}\n\n"
+                    f"<code>{symbol}</code>  {direction.upper()}\n\n"
+                    f"💰 Размер: <b>${position_usdt:.2f} USDT</b>  ({position_pct*100*size_mult:.1f}% депозита)\n"
+                    f"⚡ Плечо:  <b>{leverage}x</b>\n"
+                    f"📍 Вход:   <b>${entry_price:,.4f}</b>\n"
+                    f"🛑 Стоп:   <b>${stop_loss:,.4f}</b>  (-{sl_pct:.2f}%)\n\n"
+                    f"🎯 Тейки:\n{tp_lines}\n"
+                    f"📊 Score: {signal_score}%\n"
+                    f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+                )
+                try:
+                    await self.telegram.send_message(msg)
+                except Exception as te:
+                    print(f"Telegram notify error: {te}")
+
             return position_data
         
         except Exception as e:
             print(f"❌ Error opening position: {e}")
+            import traceback; traceback.print_exc()
             return None
     
     async def close_position(self, symbol: str, position_side: str) -> bool:
@@ -350,22 +365,32 @@ class AutoTrader:
             return {}
     
     def _calculate_leverage(self, signal_score: int, smc_data: Optional[Dict]) -> int:
-        """Рассчитать оптимальное плечо"""
-        base_leverage = self.config.default_leverage
-        
-        # Увеличиваем плечо на сильные сигналы
+        """
+        Рассчитать плечо из диапазона LEVERAGE env (напр. '5-20').
+        Score >= 85 → верхний предел, < 75 → нижний предел.
+        """
+        # Берём диапазон из env: LONG_LEVERAGE / SHORT_LEVERAGE = "5-20"
+        lev_env = os.getenv("LONG_LEVERAGE", os.getenv("SHORT_LEVERAGE", "5-10"))
+        try:
+            parts = lev_env.split("-")
+            min_lev = int(parts[0])
+            max_lev = int(parts[1]) if len(parts) > 1 else int(parts[0])
+        except Exception:
+            min_lev, max_lev = self.config.min_leverage, self.config.max_leverage
+
+        # Масштабируем по score
         if signal_score >= 85:
-            leverage = min(self.config.max_leverage, base_leverage + 3)
+            leverage = max_lev
         elif signal_score >= 75:
-            leverage = min(self.config.max_leverage, base_leverage + 1)
+            leverage = min_lev + (max_lev - min_lev) // 2
         else:
-            leverage = base_leverage
-        
-        # Уменьшаем если нет SMC подтверждения
-        if self.config.require_smc_confirmation and (not smc_data or smc_data.get('score', 0) < 50):
-            leverage = max(self.config.min_leverage, leverage - 2)
-        
-        return leverage
+            leverage = min_lev
+
+        # Уменьшаем без SMC подтверждения
+        if self.config.require_smc_confirmation and (not smc_data or not smc_data.get("has_ob")):
+            leverage = max(min_lev, leverage - 2)
+
+        return max(1, leverage)
     
     def _check_daily_reset(self):
         """Сбросить дневную статистику если новый день"""
