@@ -168,7 +168,7 @@ class AutoTrader:
             position_side = "LONG" if direction == "long"  else "SHORT"
 
             # Устанавливаем плечо
-            lev_ok = await self.bingx.set_leverage(bingx_symbol, leverage, position_side)
+            # lev_ok = await self.bingx.set_leverage(bingx_symbol, leverage, position_side)
             if not lev_ok:
                 print(f"❌ Leverage setup failed for {symbol}, skipping order")
                 if self.telegram:
