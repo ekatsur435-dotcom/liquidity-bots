@@ -1,5 +1,5 @@
 """
-🔴 SHORT BOT v2.1 — FastAPI Application
+🔴 SHORT BOT v2.2 — FastAPI Application
 
 ИСПРАВЛЕНО:
   - price_change_4d: .close атрибут (не [3])
@@ -127,7 +127,7 @@ state = BotState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v2.1...")
+    print("🚀 Starting SHORT Bot v2.2...")
 
     state.redis   = get_redis_client()
     state.binance = get_binance_client()
@@ -272,8 +272,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Liquidity Short Bot",
-    description="🔴 SHORT Bot v2.1",
-    version="2.1.0",
+    description="🔴 SHORT Bot v2.2",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
