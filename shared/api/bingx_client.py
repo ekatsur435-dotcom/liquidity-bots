@@ -76,25 +76,19 @@ class BingXClient:
             )
         return self.session
 
-    def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _sign(self, params: Dict[str, Any]) -> str:
         """
-        Генерация подписи BingX.
-        Возвращает params с добавленными timestamp и signature.
+        Генерация подписи BingX (по официальной документации).
+        Строка подписи = отсортированные пары key=value через &.
+        Возвращает только signature строку.
         """
-        params = dict(params)  # копия
-        params["timestamp"] = int(time.time() * 1000)
-
-        # Строка для подписи: отсортированные пары key=value
-        payload = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-
-        signature = hmac.new(
+        ordered = sorted(params.items())
+        query_string = "&".join(f"{k}={v}" for k, v in ordered)
+        return hmac.new(
             self.api_secret.encode("utf-8"),
-            payload.encode("utf-8"),
+            query_string.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-
-        params["signature"] = signature
-        return params
 
     async def _make_request(self,
                             method: str,
@@ -103,53 +97,42 @@ class BingXClient:
                             body: Optional[Dict] = None,
                             signed: bool = True) -> Optional[Dict]:
         """
-        ✅ FIX: для BingX signature и timestamp ВСЕГДА идут в URL query string,
-        даже для POST запросов. Тело запроса (body) — отдельно.
+        ✅ FIX (официальный способ BingX):
+        Все параметры объединяются и передаются ТОЛЬКО в URL query string.
+        Тело запроса (json body) не используется — это исключает расхождение
+        между тем что подписали и тем что отправили.
 
-        BingX API pattern:
-          GET  → params в query string (+ signature)
-          POST → business params в body (JSON), signature в query string
+        URL итоговый вид:
+          https://host/endpoint?param1=v1&param2=v2&timestamp=...&signature=...
         """
         try:
             session = await self._get_session()
             url = f"{self.base_url}{endpoint}"
 
-            query_params = dict(params or {})
-            json_body    = dict(body or {})
+            # Объединяем все параметры в один словарь
+            all_params: Dict[str, Any] = {}
+            if params:
+                all_params.update(params)
+            if body:
+                all_params.update(body)
 
             if signed:
-                # Подписываем query_params (включая business params для GET,
-                # или только timestamp для POST)
-                if method == "GET":
-                    query_params = self._sign(query_params)
-                else:
-                    # Для POST: business params в body, подпись — в query
-                    # Но BingX также принимает всё в query для POST (надёжнее)
-                    # Поэтому дублируем params и в query, и в body
-                    combined = {**query_params, **json_body}
-                    signed_p = self._sign(combined)
-                    # В query идут timestamp и signature
-                    query_params = {
-                        "timestamp": signed_p["timestamp"],
-                        "signature": signed_p["signature"],
-                    }
-                    # В body идут бизнес-параметры
-                    json_body = {k: v for k, v in signed_p.items()
-                                 if k not in ("timestamp", "signature")}
+                # Фиксируем timestamp один раз
+                all_params["timestamp"] = int(time.time() * 1000)
+                # Подписываем ВСЕ параметры (включая timestamp)
+                all_params["signature"] = self._sign(all_params)
 
             timeout = aiohttp.ClientTimeout(total=30)
 
+            # Все параметры — в URL query string (для GET, POST и DELETE)
             if method == "GET":
-                async with session.get(url, params=query_params, timeout=timeout) as r:
+                async with session.get(url, params=all_params, timeout=timeout) as r:
                     return await self._parse_response(r)
-
             elif method == "POST":
-                async with session.post(url, params=query_params,
-                                        json=json_body, timeout=timeout) as r:
+                async with session.post(url, params=all_params, timeout=timeout) as r:
                     return await self._parse_response(r)
-
             elif method == "DELETE":
-                async with session.delete(url, params=query_params, timeout=timeout) as r:
+                async with session.delete(url, params=all_params, timeout=timeout) as r:
                     return await self._parse_response(r)
 
         except Exception as e:
