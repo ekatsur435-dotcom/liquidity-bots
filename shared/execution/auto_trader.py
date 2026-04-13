@@ -167,17 +167,10 @@ class AutoTrader:
             side          = "BUY"  if direction == "long"  else "SELL"
             position_side = "LONG" if direction == "long"  else "SHORT"
 
-            # Устанавливаем плечо
-            # lev_ok = await self.bingx.set_leverage(bingx_symbol, leverage, position_side)
-            if not lev_ok:
-                print(f"❌ Leverage setup failed for {symbol}, skipping order")
-                if self.telegram:
-                    d_emoji = "🟢" if direction == "long" else "🔴"
-                    await self.telegram.send_message(
-                        f"❌ <b>Ошибка плеча</b> {d_emoji} <code>{symbol}</code>\n"
-                        f"Не удалось выставить {leverage}x на BingX"
-                    )
-                return None
+            # Плечо: используем то что стоит на бирже по умолчанию.
+            # set_leverage закомментирован — BingX Swap V2 требует особый формат
+            # и часто отклоняет запросы. Ордера открываются без явной установки плеча.
+            print(f"ℹ️ Using default leverage for {symbol} (set_leverage skipped)")
 
             # Ближайший TP1 для BingX take_profit параметра
             tp1_price = None
