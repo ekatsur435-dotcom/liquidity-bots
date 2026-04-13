@@ -22,7 +22,29 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 import uvicorn
 
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+
+# ─── надёжный поиск shared/ на Render и локально ─────────────────────────────
+def _find_shared() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "shared"),
+        os.path.join(here, "..", "shared"),
+        os.path.join(here, "..", "..", "shared"),
+        os.path.join(here, "..", "..", "..", "shared"),
+        "/opt/render/project/src/shared",
+    ]
+    for c in candidates:
+        c = os.path.normpath(c)
+        if os.path.isdir(c):
+            return c
+    return os.path.join(here, "..", "..", "shared")
+
+_SHARED = _find_shared()
+for _p in [_SHARED, os.path.dirname(_SHARED)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+print(f"📁 shared path: {_SHARED}")
+# ─────────────────────────────────────────────────────────────────────────────
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
@@ -67,6 +89,10 @@ class Config:
     # SMC и CoinGlass
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
+
+    # Watchlist — управляется через Render Environment Variables
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "500000"))
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
 
 
 # ============================================================================
@@ -122,6 +148,8 @@ async def lifespan(app: FastAPI):
         redis_client=state.redis,
         bot_state=state,
         bot_type=Config.BOT_TYPE,
+        scan_callback=scan_market,
+        config=Config,
     )
 
     # Webhook — один раз
@@ -132,6 +160,7 @@ async def lifespan(app: FastAPI):
         print("⚠️ RENDER_EXTERNAL_URL not set")
 
     # BingX AutoTrader
+    print(f"🔧 AUTO_TRADING={Config.AUTO_TRADING} | DEMO={Config.BINGX_DEMO}")
     if Config.AUTO_TRADING:
         try:
             from api.bingx_client import BingXClient
@@ -141,17 +170,31 @@ async def lifespan(app: FastAPI):
                 api_secret=os.getenv("BINGX_API_SECRET"),
                 demo=Config.BINGX_DEMO,
             )
-            trade_cfg = TradeConfig(
-                enabled=True,
-                demo_mode=Config.BINGX_DEMO,
-                risk_per_trade=Config.RISK_PER_TRADE,
-                max_positions=Config.MAX_POSITIONS,
-            )
-            state.auto_trader = AutoTrader(bingx_client=bingx, config=trade_cfg)
-            mode = "DEMO" if Config.BINGX_DEMO else "REAL"
-            print(f"✅ BingX AutoTrader ({mode})")
+            connected = await bingx.test_connection()
+            if not connected:
+                print("⚠️ BingX connection failed — AutoTrader disabled")
+            else:
+                trade_cfg = TradeConfig(
+                    enabled=True,
+                    demo_mode=Config.BINGX_DEMO,
+                    risk_per_trade=Config.RISK_PER_TRADE,
+                    max_positions=Config.MAX_POSITIONS,
+                    min_score_for_trade=Config.MIN_SCORE,
+                )
+                state.auto_trader = AutoTrader(
+                    bingx_client=bingx,
+                    config=trade_cfg,
+                    telegram=state.telegram,
+                )
+                mode = "DEMO" if Config.BINGX_DEMO else "REAL"
+                print(f"✅ BingX AutoTrader ready ({mode})")
         except Exception as e:
-            print(f"⚠️ AutoTrader: {e}")
+            print(f"❌ AutoTrader init FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+            state.auto_trader = None
+    else:
+        print("ℹ️ AutoTrader disabled (AUTO_TRADING_ENABLED=false)")
 
     # CoinGlass
     if Config.USE_COINGLASS:
@@ -164,8 +207,8 @@ async def lifespan(app: FastAPI):
             Config.USE_COINGLASS = False
 
     # Watchlist
-    symbols = await state.binance.get_all_symbols(min_volume_usdt=1_000_000)
-    state.watchlist = symbols[:100]
+    symbols = await state.binance.get_all_symbols(min_volume_usdt=Config.MIN_VOLUME_USDT)
+    state.watchlist = symbols[:Config.MAX_WATCHLIST]
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
 
     state.redis.update_bot_state(Config.BOT_TYPE, {
@@ -189,12 +232,14 @@ async def lifespan(app: FastAPI):
     )
     tracker_task = asyncio.create_task(state.tracker.run())
 
-    print("✅ SHORT Bot started!")
+    trader_status = f"✅ {'DEMO' if Config.BINGX_DEMO else 'REAL'}" if state.auto_trader else "❌ OFF"
+    print(f"✅ SHORT Bot started! AutoTrader: {trader_status}")
     await state.telegram.send_message(
-        f"🔴 <b>SHORT Bot запущен</b>\n"
+        f"🔴 <b>SHORT Bot v2.2 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
-        f"🛑 SL: {Config.SL_BUFFER}%  |  Score min: {Config.MIN_SCORE}%\n"
-        f"🤖 AutoTrader: {'✅ ' + ('DEMO' if Config.BINGX_DEMO else 'REAL') if Config.AUTO_TRADING else '❌ OFF'}"
+        f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
+        f"🤖 AutoTrader: {trader_status}\n"
+        f"🔍 ShortFilter: ✅ | RealtimeScorer: ✅"
     )
 
     yield
@@ -618,15 +663,7 @@ async def scan_market():
 
                 if state.auto_trader and Config.AUTO_TRADING:
                     try:
-                        await state.auto_trader.open_position(
-                            symbol=signal["symbol"],
-                            direction="short",
-                            entry_price=signal["entry_price"],
-                            stop_loss=signal["stop_loss"],
-                            take_profits=signal["take_profits"],
-                            signal_score=signal["score"],
-                            smc_data=signal.get("smc"),
-                        )
+                        await state.auto_trader.execute_signal(signal)
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
 
