@@ -328,15 +328,23 @@ class BingXClient:
 
     async def set_leverage(self, symbol: str, leverage: int,
                            position_side: str = "BOTH") -> bool:
-        result = await self._make_request(
-            "POST", "/openApi/swap/v2/trade/leverage",
-            body={"symbol": symbol, "leverage": leverage, "side": position_side},
-        )
-        if result and result.get("code") == 0:
-            print(f"✅ Leverage set: {symbol} {leverage}x")
-            return True
-        print(f"❌ Leverage failed: {result}")
-        return False
+        """
+        BingX требует устанавливать плечо отдельно для LONG и SHORT.
+        leverage передаётся как строка (BingX API требование).
+        """
+        sides = ["LONG", "SHORT"] if position_side == "BOTH" else [position_side]
+        all_ok = True
+        for side in sides:
+            result = await self._make_request(
+                "POST", "/openApi/swap/v2/trade/leverage",
+                body={"symbol": symbol, "leverage": str(leverage), "side": side},
+            )
+            if result and result.get("code") == 0:
+                print(f"✅ Leverage set: {symbol} {side} {leverage}x")
+            else:
+                print(f"❌ Leverage failed: {symbol} {side} | {result}")
+                all_ok = False
+        return all_ok
 
     # =========================================================================
     # CONNECTION TEST
