@@ -63,9 +63,9 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "short"
     MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))
-    MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "5"))
-    LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-10")
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
+    LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SL ВЫШЕ входа для SHORT (цена должна упасть)
     # 2.5% — разумный минимум для альткоинов (был 0.5% — выбивало мгновенно)
@@ -84,7 +84,7 @@ class Config:
     # BingX
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "false").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.001"))
 
     # SMC и CoinGlass
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
