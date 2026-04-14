@@ -645,9 +645,8 @@ async def scan_market():
             signal = await scan_symbol(symbol)
 
             if signal:
-                state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-
-                await state.telegram.send_signal(
+                # Отправляем сигнал и сохраняем tg_msg_id для тред-ответов
+                tg_msg_id = await state.telegram.send_signal(
                     direction="short",
                     symbol=signal["symbol"],
                     score=signal["score"],
@@ -660,6 +659,8 @@ async def scan_market():
                     leverage=Config.LEVERAGE,
                     risk="≤1% deposit",
                 )
+                signal["tg_msg_id"] = tg_msg_id
+                state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
                 if state.auto_trader and Config.AUTO_TRADING:
                     try:
