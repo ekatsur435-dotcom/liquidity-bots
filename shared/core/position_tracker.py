@@ -1,12 +1,16 @@
 """
-Position Tracker — shared/core/position_tracker.py
-Мониторинг активных сигналов: TP / SL / трейлинг / экспирация / P&L
+Position Tracker v2.2 — shared/core/position_tracker.py
 
-НОВОЕ в этой версии:
-  - Trailing stop: после +1.5% двигаем SL в безубыток, потом трейлим
-  - Уведомление "🔄 Стоп передвинут"
-  - Уведомление при ошибке открытия сделки
-  - Подключение к AutoTrader.record_trade_result()
+ИСПРАВЛЕНИЯ v2.2:
+  ✅ send_reply: правильный порядок аргументов
+     Было:  self.tg.send_reply(tg_msg_id, text)     ← НЕВЕРНО
+     Стало: self.tg.send_reply(text, tg_msg_id)     ← ВЕРНО
+  ✅ _record_pnl: пишет в ОБА места:
+     - bot_state["daily_trades"]           (для backward compat)
+     - redis.update_daily_stats(date, day) (для /stats команды)
+  ✅ История сделок: сохраняется в {bot_type}:history:{symbol}
+     с полями opened_at, closed_at, pnl, tp_level, direction, symbol
+     (нужно для /leaderswr, /daily_rep, /monthly_rep)
 """
 
 import asyncio
@@ -21,29 +25,17 @@ class PositionTracker:
       1. Берёт все active-сигналы из Redis
       2. Получает текущую цену через Binance
       3. Проверяет TP / SL / трейлинг-стоп
-      4. Отправляет уведомления в Telegram
-      5. Записывает P&L в дневную статистику
+      4. Отправляет уведомления в Telegram (ответом на исходный сигнал)
+      5. Записывает P&L в дневную статистику (в stats:daily:{date})
       6. Экспирирует сигналы старше MAX_AGE_HOURS
-
-    Использование в main.py:
-        state.tracker = PositionTracker(
-            bot_type       = Config.BOT_TYPE,
-            telegram       = state.telegram,
-            redis_client   = state.redis,
-            binance_client = state.binance,
-            config         = Config,
-            auto_trader    = state.auto_trader,   # ← передай для record_trade_result
-        )
-        tracker_task = asyncio.create_task(state.tracker.run())
     """
 
-    CHECK_INTERVAL = 30     # секунд между проходами
-    MAX_AGE_HOURS  = 24     # сигнал экспирируется через N часов
+    CHECK_INTERVAL = 30      # секунд между проходами
+    MAX_AGE_HOURS  = 24      # сигнал экспирируется через N часов
 
-    # Trailing stop settings
-    TRAIL_ACTIVATION = 0.015    # активируется при прибыли +1.5%
-    TRAIL_DISTANCE   = 0.008    # держим SL на 0.8% от текущей цены
-    BREAKEVEN_BUFFER = 0.001    # SL в безубыток = entry + 0.1%
+    TRAIL_ACTIVATION = 0.015   # активируется при прибыли +1.5%
+    TRAIL_DISTANCE   = 0.008   # держим SL на 0.8% от текущей цены
+    BREAKEVEN_BUFFER = 0.001   # SL в безубыток = entry + 0.1%
 
     def __init__(self, *,
                  bot_type:       str,
@@ -51,7 +43,7 @@ class PositionTracker:
                  redis_client,
                  binance_client,
                  config,
-                 auto_trader=None):         # ← опционально для record_trade_result
+                 auto_trader=None):
         self.bot_type    = bot_type
         self.tg          = telegram
         self.redis       = redis_client
@@ -128,7 +120,7 @@ class PositionTracker:
             return
         price = _f(md.price)
 
-        # --- Trailing stop (проверяем ДО SL hit) ---
+        # --- Trailing stop ---
         await self._check_trailing(signal, price)
 
         # --- Обновляем SL из сигнала (мог измениться при трейлинге) ---
@@ -156,41 +148,27 @@ class PositionTracker:
     # =========================================================================
 
     async def _check_trailing(self, signal: Dict, price: float):
-        """
-        Логика трейлинг-стопа:
-          1. Когда прибыль >= TRAIL_ACTIVATION (1.5%):
-             - Первый раз: двигаем SL в безубыток (entry + buffer)
-             - Сообщаем: "🔄 Стоп передвинут в безубыток"
-          2. Когда trailing уже активен:
-             - Трейлим SL на TRAIL_DISTANCE (0.8%) от текущей цены
-             - Сообщаем если SL существенно сдвинулся (>= 0.5%)
-        """
-        entry     = _f(signal.get("entry_price", 0))
-        direction = signal.get("direction", "short")
-        current_sl = _f(signal.get("stop_loss", 0))
-        trailing_active = signal.get("trailing_active", False)
+        entry            = _f(signal.get("entry_price", 0))
+        direction        = signal.get("direction", "short")
+        current_sl       = _f(signal.get("stop_loss", 0))
+        trailing_active  = signal.get("trailing_active", False)
 
         if not entry or not current_sl:
             return
 
         if direction == "long":
             profit_pct = (price - entry) / entry
-
             if profit_pct >= self.TRAIL_ACTIVATION:
                 if not trailing_active:
-                    # Шаг 1: безубыток
                     new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
                     if new_sl > current_sl:
                         await self._move_sl(signal, current_sl, new_sl, "безубыток")
                 else:
-                    # Шаг 2: трейлим
                     new_sl = price * (1 - self.TRAIL_DISTANCE)
-                    if new_sl > current_sl * 1.005:  # двигаем только если > 0.5%
+                    if new_sl > current_sl * 1.005:
                         await self._move_sl(signal, current_sl, new_sl, "трейлинг")
-
-        else:  # short
+        else:
             profit_pct = (entry - price) / entry
-
             if profit_pct >= self.TRAIL_ACTIVATION:
                 if not trailing_active:
                     new_sl = entry * (1 - self.BREAKEVEN_BUFFER)
@@ -202,12 +180,11 @@ class PositionTracker:
                         await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
     async def _move_sl(self, signal: Dict, old_sl: float, new_sl: float, move_type: str):
-        """Сдвинуть SL и уведомить в Telegram."""
         symbol    = signal["symbol"]
         direction = signal["direction"]
         entry     = _f(signal["entry_price"])
 
-        signal["stop_loss"]      = round(new_sl, 8)
+        signal["stop_loss"]       = round(new_sl, 8)
         signal["trailing_active"] = True
         self._save(symbol, signal)
 
@@ -219,25 +196,17 @@ class PositionTracker:
         lines = [
             f"{icon} <b>Стоп передвинут — {move_type.upper()}</b>",
             "",
-            f"{d_emoji} <code>{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
             f"📍 Вход:     <b>${entry:,.6f}</b>",
             f"🛑 Было SL:  <b>${old_sl:,.6f}</b>  ({old_pnl:+.2f}%)",
             f"✅ Теперь SL: <b>${new_sl:,.6f}</b>  ({sl_pnl:+.2f}%)",
             f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
         ]
-
         if move_type == "безубыток":
             lines.append("\n<i>Позиция теперь в безубытке. Риск = 0.</i>")
 
-        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
-        tg_msg_id = signal.get("tg_msg_id")
-        if tg_msg_id:
-            try:
-                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
-            except Exception:
-                await self._send("\n".join(lines))
-        else:
-            await self._send("\n".join(lines))
+        # ✅ ИСПРАВЛЕНО: send_reply(text, reply_to_message_id) — правильный порядок
+        await self._notify(signal, "\n".join(lines))
         print(f"[PositionTracker] SL moved {move_type}: {symbol} {old_sl:.6f} → {new_sl:.6f}")
 
     # =========================================================================
@@ -252,6 +221,7 @@ class PositionTracker:
         symbol    = signal["symbol"]
         total     = len(signal.get("take_profits", []))
         tp_num    = tp_idx + 1
+        tp_label  = f"TP{tp_num}"
 
         pnl_pct  = _pnl(direction, entry, tp_price)
         time_str = _time_in_trade(signal)
@@ -268,6 +238,7 @@ class PositionTracker:
             signal["close_price"] = current_price
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
+            signal["tp_level"]    = tp_label   # ← для отчётов /leaderswr
 
         self._save(symbol, signal)
 
@@ -275,11 +246,11 @@ class PositionTracker:
         icon    = "🏆" if is_last else "🎯"
 
         lines = [
-            f"{icon} <b>TP{tp_num}/{total} взят!</b>",
+            f"{icon} <b>{tp_label}/{total} взят!</b>",
             "",
-            f"{d_emoji} <code>{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
             f"📍 Вход:      <b>${entry:,.6f}</b>",
-            f"🎯 TP{tp_num}:     <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)",
+            f"🎯 {tp_label}:     <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)",
             f"📊 P&L:       <b>+{pnl_pct:.2f}%</b>",
             f"⏱ В сделке:  {time_str}",
         ]
@@ -291,26 +262,18 @@ class PositionTracker:
                 "🏆 <b>Все тейки взяты!</b>",
                 f"💰 Итоговый P&L: <b>+{total_pnl_w:.2f}%</b>",
             ]
-            await self._record_pnl(total_pnl_w, "tp")
+            await self._record_pnl(signal, total_pnl_w, "tp", tp_label)
         else:
             remaining = total - len(taken)
             lines.append(f"⏳ До следующего TP: {remaining} шт.")
 
-        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
-        tg_msg_id = signal.get("tg_msg_id")
-        if tg_msg_id:
-            try:
-                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
-            except Exception:
-                await self._send("\n".join(lines))
-        else:
-            await self._send("\n".join(lines))
+        await self._notify(signal, "\n".join(lines))
 
     async def _close_sl(self, signal: Dict, current_price: float):
-        direction = signal["direction"]
-        entry     = _f(signal["entry_price"])
-        sl_price  = _f(signal["stop_loss"])
-        symbol    = signal["symbol"]
+        direction    = signal["direction"]
+        entry        = _f(signal["entry_price"])
+        sl_price     = _f(signal["stop_loss"])
+        symbol       = signal["symbol"]
         was_trailing = signal.get("trailing_active", False)
 
         pnl_pct  = _pnl(direction, entry, current_price)
@@ -320,37 +283,30 @@ class PositionTracker:
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = round(pnl_pct, 4)
+        signal["tp_level"]    = "SL"
 
         self._save(symbol, signal)
 
-        d_emoji = "🔴" if direction == "short" else "🟢"
-        sl_type = "трейлинг-стоп" if was_trailing else "стоп-лосс"
+        d_emoji  = "🔴" if direction == "short" else "🟢"
+        sl_type  = "трейлинг-стоп" if was_trailing else "стоп-лосс"
+        pnl_sign = "+" if pnl_pct >= 0 else ""
 
         lines = [
             f"🛑 <b>Стоп выбит</b>  ({sl_type})",
             "",
-            f"{d_emoji} <code>{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
             f"📍 Вход:     <b>${entry:,.6f}</b>",
             f"🛑 Стоп:     <b>${sl_price:,.6f}</b>",
             f"💰 Закрыто:  <b>${current_price:,.6f}</b>",
-            f"📊 P&L:      <b>{pnl_pct:.2f}%</b>",
+            f"📊 P&L:      <b>{pnl_sign}{pnl_pct:.2f}%</b>",
             f"⏱ В сделке: {time_str}",
             f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
         ]
-
         if was_trailing and pnl_pct >= 0:
             lines.append("\n<i>Позиция закрыта без убытка (трейлинг-стоп).</i>")
 
-        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
-        tg_msg_id = signal.get("tg_msg_id")
-        if tg_msg_id:
-            try:
-                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
-            except Exception:
-                await self._send("\n".join(lines))
-        else:
-            await self._send("\n".join(lines))
-        await self._record_pnl(pnl_pct, "sl")
+        await self._notify(signal, "\n".join(lines))
+        await self._record_pnl(signal, pnl_pct, "sl", "SL")
 
     async def _expire(self, signal: Dict):
         symbol   = signal.get("symbol", "?")
@@ -359,55 +315,112 @@ class PositionTracker:
 
         signal["status"]     = "expired"
         signal["close_time"] = datetime.utcnow().isoformat()
-
         self._save(symbol, signal)
 
         d_emoji = "🔴" if signal.get("direction") == "short" else "🟢"
         await self._send(
             f"⏰ <b>Сигнал истёк (24ч)</b>\n"
-            f"{d_emoji} <code>{symbol}</code>\n"
+            f"{d_emoji} <code>#{symbol}</code>\n"
             f"📍 Вход: <b>${entry:,.6f}</b>  |  ⏱ {time_str}\n"
             "Ни TP, ни SL не были достигнуты."
         )
 
     # =========================================================================
-    # STATS
+    # STATS — ИСПРАВЛЕНО: пишем в stats:daily:{date}
     # =========================================================================
 
-    async def _record_pnl(self, pnl_pct: float, close_type: str):
+    async def _record_pnl(self, signal: Dict, pnl_pct: float,
+                          close_type: str, tp_level: str = ""):
+        """
+        ✅ v2.2: пишет статистику в ДВА места:
+          1. bot_state["daily_trades"]     — для backward compat
+          2. redis.update_daily_stats()    — для /stats, /daily_rep, /weekly_rep
+        ✅ Сохраняет запись в историю сделок для /leaderswr и отчётов.
+        """
         try:
-            today = datetime.utcnow().strftime("%Y-%m-%d")
-            state = self.redis.get_bot_state(self.bot_type) or {}
+            today  = datetime.utcnow().strftime("%Y-%m-%d")
+            symbol = signal.get("symbol", "?")
 
-            daily = state.get("daily_trades", {})
-            day   = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+            # ── Место 1: bot_state["daily_trades"] ───────────────────────────
+            try:
+                state_data = self.redis.get_bot_state(self.bot_type) or {}
+                daily      = state_data.get("daily_trades", {})
+                day        = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+                day["trades"] += 1
+                day["pnl"]     = round(day["pnl"] + pnl_pct, 4)
+                if pnl_pct > 0:
+                    day["wins"]   += 1
+                else:
+                    day["losses"] += 1
+                daily[today] = day
+                if len(daily) > 30:
+                    del daily[sorted(daily.keys())[0]]
+                state_data["daily_trades"] = daily
+                self.redis.update_bot_state(self.bot_type, state_data)
+            except Exception as e:
+                print(f"[PositionTracker] bot_state stats error: {e}")
 
-            day["trades"] += 1
-            day["pnl"]     = round(day["pnl"] + pnl_pct, 4)
-            if pnl_pct > 0:
-                day["wins"]   += 1
-            else:
-                day["losses"] += 1
+            # ── Место 2: stats:daily:{date} (читается /stats командой) ───────
+            try:
+                day2 = self.redis.get_daily_stats(self.bot_type, today) or \
+                       {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+                day2["trades"] += 1
+                day2["pnl"]     = round(day2.get("pnl", 0.0) + pnl_pct, 4)
+                if pnl_pct > 0:
+                    day2["wins"]   = day2.get("wins", 0) + 1
+                else:
+                    day2["losses"] = day2.get("losses", 0) + 1
+                self.redis.update_daily_stats(self.bot_type, today, day2)
+            except Exception as e:
+                print(f"[PositionTracker] daily_stats error: {e}")
 
-            daily[today] = day
+            # ── Место 3: история сделок для отчётов ──────────────────────────
+            try:
+                history_record = {
+                    "symbol":    symbol,
+                    "direction": signal.get("direction", "?"),
+                    "entry_price": signal.get("entry_price", 0),
+                    "close_price": signal.get("close_price", 0),
+                    "pnl":        round(pnl_pct, 4),
+                    "tp_level":   tp_level,       # "TP1", "TP2", ..., "SL"
+                    "close_type": close_type,     # "tp" | "sl"
+                    "opened_at":  signal.get("timestamp", ""),
+                    "closed_at":  signal.get("close_time", datetime.utcnow().isoformat()),
+                    "score":      signal.get("score", 0),
+                }
+                hkey = f"{self.bot_type}:history:{symbol}"
+                self.redis.client.lpush(hkey, json.dumps(history_record))
+                self.redis.client.ltrim(hkey, 0, 199)   # храним до 200 записей на символ
+                self.redis.client.expire(hkey, 2592000)  # TTL 30 дней
+            except Exception as e:
+                print(f"[PositionTracker] history save error: {e}")
 
-            if len(daily) > 30:
-                oldest = sorted(daily.keys())[0]
-                del daily[oldest]
-
-            state["daily_trades"] = daily
-            self.redis.update_bot_state(self.bot_type, state)
-
-            # Синхронизируем с AutoTrader если передан
+            # ── AutoTrader sync ───────────────────────────────────────────────
             if self.auto_trader:
                 self.auto_trader.record_trade_result(pnl_pct)
 
         except Exception as e:
-            print(f"[PositionTracker] stats error: {e}")
+            print(f"[PositionTracker] _record_pnl error: {e}")
 
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    async def _notify(self, signal: Dict, text: str):
+        """
+        ✅ ИСПРАВЛЕНО: правильный порядок аргументов send_reply.
+        Telegram: send_reply(text, reply_to_message_id)
+        """
+        tg_msg_id = signal.get("tg_msg_id")
+        if tg_msg_id:
+            try:
+                # ✅ text первый, tg_msg_id второй (как объявлено в telegram.py)
+                await self.tg.send_reply(text, reply_to_message_id=tg_msg_id)
+                return
+            except Exception as e:
+                print(f"[PositionTracker] send_reply failed: {e}")
+        # Fallback: обычное сообщение
+        await self._send(text)
 
     def _save(self, symbol: str, signal: Dict):
         try:
@@ -422,28 +435,18 @@ class PositionTracker:
             print(f"[PositionTracker] telegram error: {e}")
 
     # =========================================================================
-    # STATIC: уведомление об ошибке открытия (вызывается из main.py)
+    # STATIC HELPER
     # =========================================================================
 
     @staticmethod
     async def notify_trade_error(telegram, symbol: str, direction: str,
-                                  reason: str, score: int):
-        """
-        Отправить уведомление в Telegram если сделка не открылась.
-        Вызывается из scan_market() в main.py при ошибке AutoTrader.
-
-        Пример:
-            await PositionTracker.notify_trade_error(
-                state.telegram, symbol, "long",
-                "No available margin", signal["score"]
-            )
-        """
+                                  reason: str, score: float):
         d_emoji = "🟢" if direction == "long" else "🔴"
         try:
             await telegram.send_message(
                 f"⚠️ <b>Сделка не открыта</b>\n\n"
-                f"{d_emoji} <code>{symbol}</code>  {direction.upper()}\n"
-                f"🎯 Score: {score}%\n"
+                f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}\n"
+                f"🎯 Score: {score:.0f}%\n"
                 f"❌ Причина: {reason}\n"
                 f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
             )
