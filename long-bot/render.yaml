@@ -23,14 +23,14 @@ services:
       - key: COINGLASS_API_KEY
         sync: false
       - key: SCAN_INTERVAL
-        value: "120"
+        value: "180"
       - key: MIN_LONG_SCORE
         value: "65"
       - key: LONG_LEVERAGE
-        value: "5-10"
+        value: "5-50"
       - key: LONG_SL_BUFFER
         value: "1.5"
       - key: MAX_LONG_POSITIONS
-        value: "10"
+        value: "20"
     healthCheckPath: /health
     autoDeploy: true
