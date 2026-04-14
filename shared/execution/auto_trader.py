@@ -24,12 +24,12 @@ from upstash.redis_client import get_redis_client
 class TradeConfig:
     enabled:            bool  = True
     demo_mode:          bool  = True
-    max_positions:      int   = 5
-    risk_per_trade:     float = 0.01    # 1% от баланса
+    max_positions:      int   = 20
+    risk_per_trade:     float = 0.001    # 1% от баланса
     max_daily_risk:     float = 0.05    # 5% максимум в день
-    default_leverage:   int   = 10
+    default_leverage:   int   = 20
     min_leverage:       int   = 5
-    max_leverage:       int   = 20
+    max_leverage:       int   = 50
     min_score_for_trade: int  = 65
     use_trailing_stop:  bool  = True
     trailing_activation: float = 0.015
