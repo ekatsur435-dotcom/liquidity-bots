@@ -1,11 +1,12 @@
 """
-Auto Trader v2 — FIXED
+Auto Trader v2.1 — FULL LOGGING
 
-ИСПРАВЛЕНИЯ:
-  - __init__ принимает telegram (был TypeError при инициализации)
-  - open_position: правильный вызов BingX с stop_loss как JSON
-  - execute_signal: удобный метод для вызова из scan_symbol
-  - Добавлен Telegram notify при открытии/закрытии позиции
+ИЗМЕНЕНИЯ v2.1:
+  - open_position: детальный лог на каждом шаге (видно в Render)
+  - Telegram уведомление при ОТКАЗЕ открыть позицию (с причиной)
+  - execute_signal: ловит и логирует все исключения + Telegram
+  - _count_positions_log: показывает текущие позиции при отказе
+  - Убран silent except в scan_market вызове
 """
 
 import os, asyncio
@@ -22,36 +23,35 @@ from upstash.redis_client import get_redis_client
 
 @dataclass
 class TradeConfig:
-    enabled:            bool  = True
-    demo_mode:          bool  = True
-    max_positions:      int   = 20
-    risk_per_trade:     float = 0.001    # 1% от баланса
-    max_daily_risk:     float = 0.05    # 5% максимум в день
-    default_leverage:   int   = 20
-    min_leverage:       int   = 5
-    max_leverage:       int   = 50
-    min_score_for_trade: int  = 65
-    use_trailing_stop:  bool  = True
+    enabled:             bool  = True
+    demo_mode:           bool  = True
+    max_positions:       int   = 10        # ← ENV: MAX_LONG_POSITIONS / MAX_SHORT_POSITIONS
+    risk_per_trade:      float = 0.001     # 0.1% от баланса
+    max_daily_risk:      float = 0.05      # 5% максимум в день
+    default_leverage:    int   = 20
+    min_leverage:        int   = 5
+    max_leverage:        int   = 50
+    min_score_for_trade: int   = 65
+    use_trailing_stop:   bool  = True
     trailing_activation: float = 0.015
-    trailing_distance:  float = 0.008
+    trailing_distance:   float = 0.008
 
 
 class AutoTrader:
     """
     Авто-трейдер для исполнения сигналов через BingX.
-    Поддерживает DEMO и REAL режимы.
+    Все отказы логируются в Render + Telegram.
     """
 
     def __init__(self,
                  bingx_client: Optional[BingXClient] = None,
                  config: Optional[TradeConfig] = None,
-                 telegram=None):                        # ✅ FIX: принимаем telegram
+                 telegram=None):
         self.config   = config or TradeConfig()
         self.bingx    = bingx_client or BingXClient(demo=self.config.demo_mode)
         self.redis    = get_redis_client()
-        self.telegram = telegram                        # ✅ сохраняем для уведомлений
+        self.telegram = telegram
 
-        # Статистика
         self.daily_pnl    = 0.0
         self.daily_trades = 0
         self.total_pnl    = 0.0
@@ -61,9 +61,21 @@ class AutoTrader:
 
         mode = "DEMO" if self.config.demo_mode else "REAL"
         print(f"🤖 AutoTrader initialized ({mode})")
-        print(f"   Risk/trade: {self.config.risk_per_trade*100:.1f}% | "
+        print(f"   Risk/trade: {self.config.risk_per_trade*100:.2f}% | "
               f"Max pos: {self.config.max_positions} | "
               f"Min score: {self.config.min_score_for_trade}")
+
+    # =========================================================================
+    # TELEGRAM HELPER
+    # =========================================================================
+
+    async def _tg(self, msg: str):
+        """Отправить сообщение в Telegram (не бросает исключений)."""
+        if self.telegram:
+            try:
+                await self.telegram.send_message(msg)
+            except Exception as e:
+                print(f"⚠️ Telegram send failed: {e}")
 
     # =========================================================================
     # PUBLIC API
@@ -71,18 +83,38 @@ class AutoTrader:
 
     async def execute_signal(self, signal: Dict) -> Optional[Dict]:
         """
-        Удобная обёртка — вызывается из scan_market() после сигнала.
-        Извлекает нужные поля и передаёт в open_position.
+        Вызывается из scan_market() при каждом сигнале.
+        Логирует все отказы в Render и Telegram.
         """
-        return await self.open_position(
-            symbol=signal["symbol"],
-            direction=signal["direction"],
-            entry_price=signal["entry_price"],
-            stop_loss=signal["stop_loss"],
-            take_profits=signal["take_profits"],
-            signal_score=signal["score"],
-            smc_data=signal.get("smc"),
-        )
+        symbol = signal.get("symbol", "?")
+        score  = signal.get("score", 0)
+        print(f"\n🚀 [AutoTrader] execute_signal: {symbol} | score={score:.1f}")
+
+        try:
+            result = await self.open_position(
+                symbol=symbol,
+                direction=signal["direction"],
+                entry_price=signal["entry_price"],
+                stop_loss=signal["stop_loss"],
+                take_profits=signal["take_profits"],
+                signal_score=signal["score"],
+                smc_data=signal.get("smc"),
+            )
+            if result is None:
+                print(f"⚠️ [AutoTrader] {symbol}: position NOT opened (see reason above)")
+            return result
+
+        except KeyError as e:
+            msg = f"❌ [AutoTrader] {symbol}: missing field in signal: {e}"
+            print(msg)
+            await self._tg(f"⚠️ AutoTrader ошибка\n{symbol}: отсутствует поле {e}")
+            return None
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"❌ [AutoTrader] {symbol}: unexpected error: {e}\n{tb}")
+            await self._tg(f"⚠️ AutoTrader ошибка\n{symbol}: {e}")
+            return None
 
     async def open_position(self,
                             symbol: str,
@@ -90,56 +122,85 @@ class AutoTrader:
                             entry_price: float,
                             stop_loss: float,
                             take_profits: List,
-                            signal_score: int,
+                            signal_score: float,
                             smc_data: Optional[Dict] = None) -> Optional[Dict]:
         """
         Открыть позицию на BingX.
-
-        direction: "long" | "short"
-        take_profits: список (price, weight%) или [(price, weight), ...]
+        Каждый шаг логируется — причина отказа всегда видна.
         """
+        mode = "DEMO" if self.config.demo_mode else "REAL"
+        log_prefix = f"[AutoTrader][{symbol}][{direction.upper()}]"
+
         try:
+            # ── Шаг 1: AutoTrader включён? ─────────────────────────────────
             if not self.config.enabled:
-                print("⏸ AutoTrader disabled")
+                print(f"{log_prefix} ⏸ SKIP — AutoTrader disabled")
                 return None
 
-            # Проверяем Score
+            # ── Шаг 2: Score ───────────────────────────────────────────────
             if signal_score < self.config.min_score_for_trade:
-                print(f"⏸ Score {signal_score} < min {self.config.min_score_for_trade}")
+                print(f"{log_prefix} ⏸ SKIP — score {signal_score:.1f} < min {self.config.min_score_for_trade}")
                 return None
 
-            # Дневной лимит
+            # ── Шаг 3: Дневной лимит ───────────────────────────────────────
             self._check_daily_reset()
             if self.daily_pnl <= -self.config.max_daily_risk:
-                print(f"⏸ Daily risk limit reached ({self.daily_pnl:.2%})")
+                reason = f"daily risk limit reached ({self.daily_pnl:.2%})"
+                print(f"{log_prefix} ⏸ SKIP — {reason}")
+                await self._tg(f"⏸ <b>AutoTrader</b>\n{symbol}: {reason}")
                 return None
 
-            # Проверяем количество позиций на бирже
+            # ── Шаг 4: Количество позиций на BingX ────────────────────────
+            print(f"{log_prefix} 🔍 Checking open positions...")
             current_positions = await self.bingx.get_positions()
-            if len(current_positions) >= self.config.max_positions:
-                print(f"⏸ Max positions ({self.config.max_positions}) reached")
+            n_pos = len(current_positions)
+            print(f"{log_prefix} 📊 Open positions: {n_pos}/{self.config.max_positions}")
+
+            if current_positions:
+                pos_list = " | ".join(
+                    f"{p.symbol}({p.side})" for p in current_positions
+                )
+                print(f"{log_prefix} 📋 Positions: {pos_list}")
+
+            if n_pos >= self.config.max_positions:
+                reason = f"max positions reached ({n_pos}/{self.config.max_positions})"
+                print(f"{log_prefix} ⏸ SKIP — {reason}")
+                await self._tg(
+                    f"⏸ <b>AutoTrader [{mode}]</b>\n"
+                    f"{symbol}: {reason}\n"
+                    f"Открытые: {pos_list if current_positions else 'нет'}"
+                )
                 return None
 
-            # Проверяем нет ли уже позиции по этой паре
+            # ── Шаг 5: Дублирование позиции ───────────────────────────────
             bingx_symbol = self._to_bingx_symbol(symbol)
             existing = [p for p in current_positions
                         if p.symbol.replace("-", "") == symbol.replace("-", "")]
             if existing:
-                print(f"⏸ Position already exists for {symbol}")
+                reason = f"position already exists ({existing[0].side})"
+                print(f"{log_prefix} ⏸ SKIP — {reason}")
                 return None
 
-            # Получаем баланс
+            # ── Шаг 6: Баланс ─────────────────────────────────────────────
+            print(f"{log_prefix} 💰 Getting balance...")
             balance_data = await self.bingx.get_account_balance()
             if not balance_data:
-                print("❌ Failed to get balance")
+                reason = f"failed to get balance | BingX error: {self.bingx.last_error}"
+                print(f"{log_prefix} ❌ SKIP — {reason}")
+                await self._tg(f"❌ <b>AutoTrader [{mode}]</b>\n{symbol}: {reason}")
                 return None
 
             available = float(balance_data.get("availableMargin", 0))
+            equity    = float(balance_data.get("equity", 0))
+            print(f"{log_prefix} 💰 Equity={equity:.2f} | Available={available:.2f}")
+
             if available <= 0:
-                print("❌ No available margin")
+                reason = "no available margin"
+                print(f"{log_prefix} ❌ SKIP — {reason}")
+                await self._tg(f"❌ <b>AutoTrader [{mode}]</b>\n{symbol}: {reason}")
                 return None
 
-            # Smart position sizing по Score
+            # ── Шаг 7: Position sizing ────────────────────────────────────
             if signal_score >= 85:
                 risk_mult = 1.5
             elif signal_score >= 75:
@@ -150,29 +211,26 @@ class AutoTrader:
             actual_risk   = self.config.risk_per_trade * risk_mult
             risk_amount   = available * actual_risk
 
-            # Расстояние до SL
             sl_distance = abs(entry_price - stop_loss) / entry_price
+            print(f"{log_prefix} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
+
             if sl_distance < 0.001:
-                print(f"❌ SL distance too small ({sl_distance:.4%})")
+                reason = f"SL distance too small ({sl_distance:.4%}), min 0.1%"
+                print(f"{log_prefix} ❌ SKIP — {reason}")
+                await self._tg(f"❌ <b>AutoTrader [{mode}]</b>\n{symbol}: {reason}")
                 return None
 
             position_value = risk_amount / sl_distance
             leverage       = self._calc_leverage(signal_score)
             size           = position_value / entry_price
 
-            # Минимальный размер (BingX требует минимум)
-            size = max(size, 0.001)
+            print(f"{log_prefix} 📐 risk={actual_risk*100:.2f}% | risk_amt={risk_amount:.2f} | "
+                  f"pos_val={position_value:.2f} | size={size:.6f} | leverage={leverage}x")
 
-            # BingX side/positionSide
+            # ── Шаг 8: BingX параметры ────────────────────────────────────
             side          = "BUY"  if direction == "long"  else "SELL"
             position_side = "LONG" if direction == "long"  else "SHORT"
 
-            # Плечо: используем то что стоит на бирже по умолчанию.
-            # set_leverage закомментирован — BingX Swap V2 требует особый формат
-            # и часто отклоняет запросы. Ордера открываются без явной установки плеча.
-            print(f"ℹ️ Using default leverage for {symbol} (set_leverage skipped)")
-
-            # Ближайший TP1 для BingX take_profit параметра
             tp1_price = None
             if take_profits:
                 tp_item = take_profits[0]
@@ -181,26 +239,42 @@ class AutoTrader:
                 elif isinstance(tp_item, dict):
                     tp1_price = float(tp_item.get("price", 0)) or None
 
-            # Размещаем рыночный ордер
+            # ── Шаг 9: Размещаем ордер ───────────────────────────────────
+            print(f"{log_prefix} 📤 Sending order to BingX [{mode}]...")
             order = await self.bingx.place_market_order(
                 symbol=bingx_symbol,
                 side=side,
                 position_side=position_side,
-                size=round(size, 4),
-                stop_loss=round(stop_loss, 6),
-                take_profit=round(tp1_price, 6) if tp1_price else None,
+                size=size,          # bingx_client сам округлит
+                stop_loss=stop_loss,
+                take_profit=tp1_price,
             )
 
             if not order:
-                print(f"❌ Order placement failed for {symbol}")
+                # Детальная причина из bingx_client
+                bingx_err  = self.bingx.last_error or "unknown"
+                bingx_code = self.bingx.last_error_code
+                hint = BingXClient.ERROR_CODES.get(bingx_code, "") if bingx_code else ""
+                reason = f"BingX rejected order: code={bingx_code} msg={bingx_err}"
+                if hint:
+                    reason += f" ({hint})"
+
+                print(f"{log_prefix} ❌ ORDER FAILED — {reason}")
+                await self._tg(
+                    f"❌ <b>AutoTrader [{mode}] — ОРДЕР ОТКЛОНЁН</b>\n\n"
+                    f"<code>{symbol}</code> {direction.upper()}\n"
+                    f"Score: {signal_score:.1f}% | SL: {stop_loss}\n\n"
+                    f"🔴 Причина: <code>{bingx_err}</code>\n"
+                    + (f"💡 Hint: {hint}" if hint else "")
+                )
                 return None
 
-            # Сохраняем позицию в Redis
+            # ── Шаг 10: Успех ────────────────────────────────────────────
             position_data = {
                 "symbol":       symbol,
                 "direction":    direction,
                 "entry_price":  entry_price,
-                "size":         size,
+                "size":         order.size,
                 "leverage":     leverage,
                 "stop_loss":    stop_loss,
                 "take_profits": take_profits,
@@ -209,39 +283,34 @@ class AutoTrader:
                 "order_id":     order.order_id,
                 "opened_at":    datetime.utcnow().isoformat(),
                 "status":       "open",
-                "risk_pct":     round(actual_risk * 100, 2),
+                "risk_pct":     round(actual_risk * 100, 4),
             }
             bot_type = "long" if direction == "long" else "short"
             self.redis.save_position(bot_type, symbol, position_data)
-
             self.daily_trades += 1
 
-            mode = "DEMO" if self.config.demo_mode else "REAL"
-            print(f"✅ Position opened [{mode}]: {symbol} {direction.upper()}")
-            print(f"   Entry: {entry_price:.6f} | SL: {stop_loss:.6f} | "
-                  f"Size: {size:.4f} | Leverage: {leverage}x | Risk: {actual_risk*100:.1f}%")
+            print(f"✅ {log_prefix} Position opened [{mode}]!")
+            print(f"   Entry: {entry_price} | SL: {stop_loss} | "
+                  f"Size: {order.size} | Lev: {leverage}x | Risk: {actual_risk*100:.2f}%")
 
-            # Telegram уведомление
-            if self.telegram:
-                try:
-                    d_emoji = "🟢" if direction == "long" else "🔴"
-                    await self.telegram.send_message(
-                        f"🤖 <b>AUTO-TRADE [{mode}]</b>\n\n"
-                        f"{d_emoji} <code>{symbol}</code> {direction.upper()}\n"
-                        f"📍 Entry: <b>{entry_price:.6f}</b>\n"
-                        f"🛑 SL: <b>{stop_loss:.6f}</b>\n"
-                        f"📊 Size: {size:.4f}  |  {leverage}x  |  {actual_risk*100:.1f}% risk\n"
-                        f"🎯 Score: {signal_score}%"
-                    )
-                except Exception:
-                    pass
+            d_emoji = "🟢" if direction == "long" else "🔴"
+            await self._tg(
+                f"🤖 <b>AUTO-TRADE [{mode}]</b>\n\n"
+                f"{d_emoji} <code>{symbol}</code> {direction.upper()}\n"
+                f"📍 Entry: <b>{entry_price}</b>\n"
+                f"🛑 SL: <b>{stop_loss}</b>\n"
+                f"📊 Size: {order.size} | {leverage}x | {actual_risk*100:.2f}% risk\n"
+                f"🎯 Score: {signal_score:.1f}%\n"
+                f"🆔 OrderID: {order.order_id}"
+            )
 
             return position_data
 
         except Exception as e:
-            print(f"❌ open_position error for {symbol}: {e}")
             import traceback
-            traceback.print_exc()
+            tb = traceback.format_exc()
+            print(f"❌ {log_prefix} EXCEPTION in open_position: {e}\n{tb}")
+            await self._tg(f"❌ <b>AutoTrader [{mode}] EXCEPTION</b>\n{symbol}: {e}")
             return None
 
     async def close_position(self, symbol: str, position_side: str) -> bool:
@@ -253,7 +322,6 @@ class AutoTrader:
         return ok
 
     async def close_all_positions(self) -> int:
-        """Закрыть все позиции на BingX и очистить Redis."""
         positions = await self.bingx.get_positions()
         closed = 0
         for p in positions:
@@ -269,15 +337,15 @@ class AutoTrader:
             positions = await self.bingx.get_positions()
             unrealized = sum(p.unrealized_pnl for p in positions)
             return {
-                "balance":       balance,
+                "balance":        balance,
                 "open_positions": len(positions),
                 "unrealized_pnl": unrealized,
-                "daily_trades":  self.daily_trades,
-                "daily_pnl":     self.daily_pnl,
-                "total_pnl":     self.total_pnl,
-                "win_count":     self.win_count,
-                "loss_count":    self.loss_count,
-                "mode":          "DEMO" if self.config.demo_mode else "REAL",
+                "daily_trades":   self.daily_trades,
+                "daily_pnl":      self.daily_pnl,
+                "total_pnl":      self.total_pnl,
+                "win_count":      self.win_count,
+                "loss_count":     self.loss_count,
+                "mode":           "DEMO" if self.config.demo_mode else "REAL",
             }
         except Exception as e:
             print(f"❌ get_account_summary: {e}")
@@ -293,7 +361,7 @@ class AutoTrader:
             return symbol[:-4] + "-USDT"
         return symbol
 
-    def _calc_leverage(self, score: int) -> int:
+    def _calc_leverage(self, score: float) -> int:
         base = self.config.default_leverage
         if score >= 85:
             return min(self.config.max_leverage, base + 2)
@@ -310,7 +378,6 @@ class AutoTrader:
             print("📅 Daily stats reset")
 
     def record_trade_result(self, pnl_pct: float):
-        """Записать результат сделки (вызывается из PositionTracker)."""
         self.total_pnl    += pnl_pct
         self.daily_pnl    += pnl_pct
         self.daily_trades += 1
@@ -318,3 +385,11 @@ class AutoTrader:
             self.win_count  += 1
         else:
             self.loss_count += 1
+
+
+# ── Импорт ERROR_CODES для Telegram сообщений ─────────────────────────────
+try:
+    from api.bingx_client import BingXClient
+except ImportError:
+    class BingXClient:
+        ERROR_CODES = {}
