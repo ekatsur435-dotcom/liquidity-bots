@@ -8,29 +8,64 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
+
+      # ── Redis ──────────────────────────────────────────────────────────────
       - key: REDIS_URL
-        sync: false
+        sync: false   # вставь вручную в Render Dashboard
+
+      # ── Binance (для получения рыночных данных) ────────────────────────────
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
+
+      # ── BingX (для исполнения сделок) ─────────────────────────────────────
+      - key: BINGX_API_KEY
+        sync: false   # ← ОБЯЗАТЕЛЬНО добавь в Dashboard
+      - key: BINGX_API_SECRET
+        sync: false   # ← ОБЯЗАТЕЛЬНО добавь в Dashboard
+
+      # ── Telegram ──────────────────────────────────────────────────────────
       - key: LONG_TELEGRAM_BOT_TOKEN
         sync: false
       - key: LONG_TELEGRAM_CHAT_ID
         sync: false
       - key: LONG_TELEGRAM_TOPIC_ID
         sync: false
+
+      # ── CoinGlass (опционально) ────────────────────────────────────────────
       - key: COINGLASS_API_KEY
         sync: false
+
+      # ── Настройки сканера ─────────────────────────────────────────────────
       - key: SCAN_INTERVAL
-        value: "180"
+        value: "180"           # секунд между сканами (180 = 3 мин)
       - key: MIN_LONG_SCORE
-        value: "65"
+        value: "65"            # минимальный скор для сигнала
       - key: LONG_LEVERAGE
         value: "5-50"
       - key: LONG_SL_BUFFER
-        value: "1.5"
+        value: "1.5"           # SL = 1.5% ниже входа для LONG
+
+      # ── Позиции ───────────────────────────────────────────────────────────
       - key: MAX_LONG_POSITIONS
-        value: "20"
+        value: "20"            # максимум открытых позиций
+      - key: MIN_VOLUME_USDT
+        value: "1000000"       # мин. объём торгов за 24ч ($1M)
+      - key: MAX_WATCHLIST
+        value: "200"           # кол-во монет для сканирования
+
+      # ── BingX Trading ─────────────────────────────────────────────────────
+      - key: AUTO_TRADING_ENABLED
+        value: "true"          # включить автоторговлю
+      - key: BINGX_DEMO_MODE
+        value: "true"          # true = DEMO (VST), false = реальные деньги!
+      - key: RISK_PER_TRADE
+        value: "0.001"         # 0.1% баланса на сделку
+
+      # ── SMC ───────────────────────────────────────────────────────────────
+      - key: USE_SMC
+        value: "true"
+
     healthCheckPath: /health
     autoDeploy: true
