@@ -1,19 +1,18 @@
 """
-BingX Futures API Client  v2.2 — SIGNATURE FIX
+BingX Futures API Client  v2.3
 
-КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ v2.2:
-  ✅ "Signature verification failed" — ИСПРАВЛЕНО
-     Причина: aiohttp URL-кодировал {→%7B, "→%22 при params=dict,
-     а BingX проверяет подпись на RAW строке → mismatch.
-     Решение: строим URL вручную с raw query string, НЕ params=.
-  ✅ compact JSON для stopLoss/takeProfit (без пробелов, separators)
-  ✅ Точность цен/объёмов через get_symbol_info (tickSize/stepSize)
-  ✅ Полный лог ошибок BingX с кодами
-  ✅ last_error / last_error_code для Telegram уведомлений
+ИСПРАВЛЕНИЯ:
+  v2.1 — RAW URL query string (signature verification fix)
+  v2.2 — compact JSON separators для SL/TP
+  v2.3 ✅ КРИТИЧНО: "price" в stopLoss/takeProfit = FLOAT, не str!
+         Было: {"price": "9.317"} → Ошибка "Mismatch type float64 with value string"
+         Стало: {"price": 9.317}  → BingX принимает
+       ✅ Фильтр оффлайн символов: is_symbol_active()
+         Ошибка "XTZ-USDT is offline currently" → символ пропускается до запроса
 """
 
 import os, json, hmac, hashlib, time
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Set
 from dataclasses import dataclass
 from datetime import datetime
 import aiohttp
@@ -55,9 +54,9 @@ class BingXClient:
     ERROR_CODES = {
         80001: "Parameter error",
         80012: "Price precision error — цена не кратна tickSize пары",
-        80014: "Quantity precision/min error — объём ниже минимума или не кратен stepSize",
+        80014: "Quantity precision/min error — объём ниже минимума",
         80016: "Order does not exist",
-        80020: "Insufficient margin — недостаточно маржи",
+        80020: "Insufficient margin",
         80021: "Position does not exist",
         80022: "Max positions reached",
         80030: "Symbol does not exist",
@@ -82,10 +81,15 @@ class BingXClient:
             raise ValueError("BingX API key and secret are required")
 
         self.base_url = self.DEMO_BASE_URL if self.demo else self.REAL_BASE_URL
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session:  Optional[aiohttp.ClientSession] = None
+
         self._symbol_info_cache: Dict[str, Dict] = {}
-        self.last_error: Optional[str] = None
+        self._active_symbols:    Set[str]         = set()
+        self._symbols_loaded:    bool             = False
+
+        self.last_error:      Optional[str] = None
         self.last_error_code: Optional[int] = None
+
         print(f"🚀 BingX Client initialized ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -93,17 +97,20 @@ class BingXClient:
             self.session = aiohttp.ClientSession(headers={"X-BX-APIKEY": self.api_key})
         return self.session
 
-    def _sign(self, raw_query_string: str) -> str:
-        """Подписать RAW query string (не URL-encoded)."""
+    # ── Подпись ──────────────────────────────────────────────────────────────
+
+    def _sign(self, raw_qs: str) -> str:
         return hmac.new(
             self.api_secret.encode("utf-8"),
-            raw_query_string.encode("utf-8"),
+            raw_qs.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
 
     def _build_raw_qs(self, params: Dict[str, Any]) -> str:
-        """Построить RAW query string из sorted params (без URL-кодирования)."""
+        """RAW query string без URL-кодирования — критично для подписи!"""
         return "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+
+    # ── HTTP ─────────────────────────────────────────────────────────────────
 
     async def _make_request(self,
                             method: str,
@@ -112,14 +119,8 @@ class BingXClient:
                             body: Optional[Dict] = None,
                             signed: bool = True) -> Optional[Dict]:
         """
-        ✅ v2.2 FIX: строим URL вручную с RAW query string.
-
-        Старый подход (params=dict) → aiohttp URL-кодировал {→%7B и др.
-        → BingX получал закодированную строку, подписывал её,
-          но наша подпись была от RAW строки → Signature mismatch.
-
-        Новый подход: URL = base?raw_params&signature=...
-        Подпись и содержимое URL используют одну и ту же RAW строку.
+        ✅ RAW URL — строим вручную, НЕ используем params= в aiohttp.
+        aiohttp URL-кодирует специальные символы → подпись не совпадает.
         """
         try:
             session  = await self._get_session()
@@ -141,7 +142,6 @@ class BingXClient:
                 full_url = f"{base_url}?{raw_qs}" if raw_qs else base_url
 
             timeout = aiohttp.ClientTimeout(total=30)
-            # Отправляем БЕЗ params= — URL уже содержит все параметры
             if method == "GET":
                 async with session.get(full_url, timeout=timeout) as r:
                     return await self._parse_response(r, endpoint)
@@ -151,7 +151,6 @@ class BingXClient:
             elif method == "DELETE":
                 async with session.delete(full_url, timeout=timeout) as r:
                     return await self._parse_response(r, endpoint)
-
         except Exception as e:
             self.last_error = str(e)
             print(f"❌ [BingX] Request exception {method} {endpoint}: {e}")
@@ -171,11 +170,11 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error      = msg
                     self.last_error_code = code
-                    print(f"❌ [BingX] API Error [{endpoint}] code={code} | {msg}"
+                    print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f" | {hint}" if hint else ""))
                 return data
             except Exception as e:
-                self.last_error = f"JSON error: {e}"
+                self.last_error = f"JSON: {e}"
                 print(f"❌ [BingX] JSON parse: {e} | raw: {text[:200]}")
                 return None
         else:
@@ -188,35 +187,54 @@ class BingXClient:
             await self.session.close()
 
     # =========================================================================
-    # SYMBOL INFO & PRECISION
+    # SYMBOL INFO, PRECISION, ONLINE CHECK
     # =========================================================================
 
-    async def get_symbol_info(self, symbol: str) -> Dict:
-        """Получить точность цен/объёмов символа. Кэшируется."""
-        if symbol in self._symbol_info_cache:
-            return self._symbol_info_cache[symbol]
+    async def _load_contracts(self):
+        """Загрузить все контракты BingX. Кэшируется на весь сеанс."""
+        if self._symbols_loaded:
+            return
 
         result = await self._make_request(
             "GET", "/openApi/swap/v2/quote/contracts", params={}, signed=False
         )
         if result and result.get("code") == 0:
             for c in result.get("data", []):
-                sym = c.get("symbol", "")
-                self._symbol_info_cache[sym] = {
-                    "price_precision": int(c.get("pricePrecision", 4)),
-                    "qty_precision":   int(c.get("quantityPrecision", 3)),
-                    "min_qty":         float(c.get("tradeMinQuantity", 0.001)),
-                    "max_leverage":    int(c.get("maxLeverage", 50)),
-                }
+                sym    = c.get("symbol", "")
+                # status 0 = offline, 1 = online (по документации BingX)
+                status = c.get("status", 1)
+                if sym:
+                    self._symbol_info_cache[sym] = {
+                        "price_precision": int(c.get("pricePrecision", 4)),
+                        "qty_precision":   int(c.get("quantityPrecision", 3)),
+                        "min_qty":         float(c.get("tradeMinQuantity", 0.001)),
+                        "max_leverage":    int(c.get("maxLeverage", 50)),
+                        "online":          (status != 0),
+                    }
+                    if status != 0:
+                        self._active_symbols.add(sym)
+            self._symbols_loaded = True
+            print(f"📋 [BingX] Loaded {len(self._symbol_info_cache)} contracts, "
+                  f"{len(self._active_symbols)} active")
+        else:
+            print(f"⚠️ [BingX] Failed to load contracts | {self.last_error}")
 
+    async def get_symbol_info(self, symbol: str) -> Dict:
+        """Получить точность символа. Кэшируется."""
+        await self._load_contracts()
         if symbol in self._symbol_info_cache:
-            info = self._symbol_info_cache[symbol]
-            print(f"📐 [{symbol}] price_prec={info['price_precision']} "
-                  f"qty_prec={info['qty_precision']} min_qty={info['min_qty']}")
-            return info
+            return self._symbol_info_cache[symbol]
+        print(f"⚠️ [BingX] Symbol not found: {symbol} (offline or delisted)")
+        return {"price_precision": 4, "qty_precision": 3, "min_qty": 0.001,
+                "max_leverage": 50, "online": False}
 
-        print(f"⚠️ [BingX] No symbol info for {symbol}, using defaults")
-        return {"price_precision": 4, "qty_precision": 3, "min_qty": 0.001, "max_leverage": 50}
+    async def is_symbol_active(self, symbol: str) -> bool:
+        """Проверить торгуется ли символ на BingX сейчас."""
+        await self._load_contracts()
+        info = self._symbol_info_cache.get(symbol)
+        if info is None:
+            return False   # не нашли в списке контрактов → оффлайн/делистинг
+        return info.get("online", True)
 
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
@@ -297,7 +315,7 @@ class BingXClient:
         return closed
 
     # =========================================================================
-    # ORDERS — с правильным округлением и compact JSON для SL/TP
+    # ORDERS  ← v2.3 CRITICAL FIX: price = float, не str
     # =========================================================================
 
     async def place_order(self,
@@ -310,20 +328,35 @@ class BingXClient:
                           stop_loss: Optional[float] = None,
                           take_profit: Optional[float] = None) -> Optional[BingXOrder]:
         """
-        ✅ compact JSON для SL/TP (separators без пробелов).
-        ✅ Округление по tickSize/stepSize символа.
-        ✅ RAW URL (через _make_request) — подпись верная.
-        """
-        rounded_size = await self._round_qty(symbol, size)
-        rounded_sl   = await self._round_price(symbol, stop_loss)   if stop_loss   else None
-        rounded_tp   = await self._round_price(symbol, take_profit)  if take_profit else None
-        rounded_px   = await self._round_price(symbol, price)        if price       else None
+        ✅ v2.3: "price" в stopLoss/takeProfit JSON = FLOAT (не str).
 
-        print(f"📤 Order: {symbol} {side} {position_side} {order_type} | "
+        Ошибка "Mismatch type float64 with value string":
+          Было:  json.dumps({"price": str(9.317)}) → {"price":"9.317"}
+          Стало: json.dumps({"price": 9.317})      → {"price":9.317}
+
+        BingX Go-backend ожидает number, получал string → type mismatch.
+
+        ✅ Проверка is_symbol_active перед запросом (фильтр оффлайн).
+        """
+        # ── 1. Проверяем онлайн статус ───────────────────────────────────────
+        bingx_sym = symbol   # уже в формате BTC-USDT (конвертация в auto_trader)
+        active = await self.is_symbol_active(bingx_sym)
+        if not active:
+            self.last_error = f"{bingx_sym} is offline or delisted on BingX"
+            print(f"⏭ [BingX] SKIP — {self.last_error}")
+            return None
+
+        # ── 2. Округление ────────────────────────────────────────────────────
+        rounded_size = await self._round_qty(bingx_sym, size)
+        rounded_sl   = await self._round_price(bingx_sym, stop_loss)   if stop_loss   else None
+        rounded_tp   = await self._round_price(bingx_sym, take_profit)  if take_profit else None
+        rounded_px   = await self._round_price(bingx_sym, price)        if price       else None
+
+        print(f"📤 Order: {bingx_sym} {side} {position_side} {order_type} | "
               f"qty={rounded_size} | SL={rounded_sl} | TP={rounded_tp}")
 
         body: Dict[str, Any] = {
-            "symbol":       symbol,
+            "symbol":       bingx_sym,
             "side":         side,
             "positionSide": position_side,
             "type":         order_type,
@@ -332,16 +365,15 @@ class BingXClient:
         if rounded_px and order_type == "LIMIT":
             body["price"] = str(rounded_px)
 
-        # ✅ separators=(',',':') — compact JSON без пробелов!
-        # Пробелы в JSON вызывали проблемы с URL-encoding в старой версии
-        if rounded_sl:
+        # ✅ "price": rounded_sl — float, НЕ str(rounded_sl)!
+        if rounded_sl is not None:
             body["stopLoss"] = json.dumps(
-                {"type": "MARK_PRICE", "price": str(rounded_sl), "workingType": "MARK_PRICE"},
+                {"type": "MARK_PRICE", "price": rounded_sl, "workingType": "MARK_PRICE"},
                 separators=(',', ':')
             )
-        if rounded_tp:
+        if rounded_tp is not None:
             body["takeProfit"] = json.dumps(
-                {"type": "MARK_PRICE", "price": str(rounded_tp), "workingType": "MARK_PRICE"},
+                {"type": "MARK_PRICE", "price": rounded_tp, "workingType": "MARK_PRICE"},
                 separators=(',', ':')
             )
 
@@ -351,16 +383,16 @@ class BingXClient:
             d        = result.get("data", {})
             order    = d.get("order", d)
             order_id = str(order.get("orderId", ""))
-            print(f"✅ Order placed: {symbol} {side} qty={rounded_size} id={order_id}")
+            print(f"✅ Order placed: {bingx_sym} {side} qty={rounded_size} id={order_id}")
             return BingXOrder(
-                order_id=order_id, symbol=symbol, side=side,
+                order_id=order_id, symbol=bingx_sym, side=side,
                 position_side=position_side, type=order_type,
                 size=rounded_size, price=rounded_px, status="PENDING",
             )
 
         code = (result or {}).get("code")
         hint = self.ERROR_CODES.get(code, "") if code else ""
-        print(f"❌ Order REJECTED: {symbol} | code={code} | {self.last_error}"
+        print(f"❌ Order REJECTED: {bingx_sym} | code={code} | {self.last_error}"
               + (f" | {hint}" if hint else ""))
         return None
 
@@ -383,8 +415,8 @@ class BingXClient:
 
     async def set_leverage(self, symbol: str, leverage: int,
                            position_side: str = "BOTH") -> bool:
-        sides   = ["LONG", "SHORT"] if position_side == "BOTH" else [position_side]
-        all_ok  = True
+        sides  = ["LONG", "SHORT"] if position_side == "BOTH" else [position_side]
+        all_ok = True
         for side in sides:
             result = await self._make_request(
                 "POST", "/openApi/swap/v2/trade/leverage",
