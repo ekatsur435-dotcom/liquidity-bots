@@ -63,7 +63,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "short"
     MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
@@ -91,7 +91,7 @@ class Config:
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # Watchlist — управляется через Render Environment Variables
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "500000"))
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
 
 
