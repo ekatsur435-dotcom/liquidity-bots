@@ -59,7 +59,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "long"
     MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))
     MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "20"))
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
     # SL НИЖЕ входа для LONG
@@ -78,7 +78,7 @@ class Config:
     USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # Watchlist — настраивается через Render Environment Variables:
-    #   MIN_VOLUME_USDT = минимальный суточный объём (1_000_000 = $1M)
+    #   MIN_VOLUME_USDT = минимальный суточный объём (500_000 = $500K)
     #   MAX_WATCHLIST   = сколько монет сканировать (200)
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
@@ -544,14 +544,16 @@ async def scan_market():
                 continue
             signal = await scan_symbol(symbol)
             if signal:
-                state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-                await state.telegram.send_signal(
+                # Отправляем сигнал и сохраняем tg_msg_id для тред-ответов
+                tg_msg_id = await state.telegram.send_signal(
                     direction="long", symbol=signal["symbol"], score=signal["score"],
                     price=signal["price"], pattern=signal["best_pattern"] or "N/A",
                     indicators=signal["indicators"], entry=signal["entry_price"],
                     stop_loss=signal["stop_loss"], take_profits=signal["take_profits"],
                     leverage=Config.LEVERAGE, risk="≤1% deposit",
                 )
+                signal["tg_msg_id"] = tg_msg_id
+                state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
                 # BingX AutoTrader
                 if state.auto_trader and Config.AUTO_TRADING:
                     try:
