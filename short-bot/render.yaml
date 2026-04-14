@@ -8,20 +8,36 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
+
+      # ── Redis ──────────────────────────────────────────────────────────────
       - key: REDIS_URL
         sync: false
+
+      # ── Binance ───────────────────────────────────────────────────────────
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
+
+      # ── BingX ─────────────────────────────────────────────────────────────
+      - key: BINGX_API_KEY
+        sync: false
+      - key: BINGX_API_SECRET
+        sync: false
+
+      # ── Telegram ──────────────────────────────────────────────────────────
       - key: SHORT_TELEGRAM_BOT_TOKEN
         sync: false
       - key: SHORT_TELEGRAM_CHAT_ID
         sync: false
       - key: SHORT_TELEGRAM_TOPIC_ID
         sync: false
+
+      # ── CoinGlass (опционально) ────────────────────────────────────────────
       - key: COINGLASS_API_KEY
         sync: false
+
+      # ── Настройки сканера ─────────────────────────────────────────────────
       - key: SCAN_INTERVAL
         value: "180"
       - key: MIN_SHORT_SCORE
@@ -29,8 +45,31 @@ services:
       - key: SHORT_LEVERAGE
         value: "5-50"
       - key: SHORT_SL_BUFFER
-        value: "2.5"
+        value: "2.5"           # SL = 2.5% выше входа для SHORT
+
+      # ── Позиции ───────────────────────────────────────────────────────────
       - key: MAX_SHORT_POSITIONS
         value: "20"
+      - key: MIN_VOLUME_USDT
+        value: "1000000"
+      - key: MAX_WATCHLIST
+        value: "200"
+
+      # ── BingX Trading ─────────────────────────────────────────────────────
+      - key: AUTO_TRADING_ENABLED
+        value: "true"
+      - key: BINGX_DEMO_MODE
+        value: "true"
+      - key: RISK_PER_TRADE
+        value: "0.001"
+
+      # ── Trailing stop (SHORT активирует раньше) ────────────────────────────
+      - key: SHORT_TRAIL_ACTIVATION
+        value: "0.010"         # 1% (для LONG дефолт 1.5%)
+
+      # ── SMC ───────────────────────────────────────────────────────────────
+      - key: USE_SMC
+        value: "true"
+
     healthCheckPath: /health
     autoDeploy: true
