@@ -229,7 +229,15 @@ class PositionTracker:
         if move_type == "безубыток":
             lines.append("\n<i>Позиция теперь в безубытке. Риск = 0.</i>")
 
-        await self._send("\n".join(lines))
+        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
+        tg_msg_id = signal.get("tg_msg_id")
+        if tg_msg_id:
+            try:
+                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
+            except Exception:
+                await self._send("\n".join(lines))
+        else:
+            await self._send("\n".join(lines))
         print(f"[PositionTracker] SL moved {move_type}: {symbol} {old_sl:.6f} → {new_sl:.6f}")
 
     # =========================================================================
@@ -288,7 +296,15 @@ class PositionTracker:
             remaining = total - len(taken)
             lines.append(f"⏳ До следующего TP: {remaining} шт.")
 
-        await self._send("\n".join(lines))
+        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
+        tg_msg_id = signal.get("tg_msg_id")
+        if tg_msg_id:
+            try:
+                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
+            except Exception:
+                await self._send("\n".join(lines))
+        else:
+            await self._send("\n".join(lines))
 
     async def _close_sl(self, signal: Dict, current_price: float):
         direction = signal["direction"]
@@ -325,7 +341,15 @@ class PositionTracker:
         if was_trailing and pnl_pct >= 0:
             lines.append("\n<i>Позиция закрыта без убытка (трейлинг-стоп).</i>")
 
-        await self._send("\n".join(lines))
+        # Если есть tg_msg_id — отвечаем в тред, иначе обычное сообщение
+        tg_msg_id = signal.get("tg_msg_id")
+        if tg_msg_id:
+            try:
+                await self.tg.send_reply(tg_msg_id, "\n".join(lines))
+            except Exception:
+                await self._send("\n".join(lines))
+        else:
+            await self._send("\n".join(lines))
         await self._record_pnl(pnl_pct, "sl")
 
     async def _expire(self, signal: Dict):
