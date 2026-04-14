@@ -1,9 +1,14 @@
 """
-Telegram Bot Integration  (FIXED)
-Исправления:
-  - cmd_pause / cmd_resume: используют is_paused вместо is_running
-  - cmd_stats: показывает реальный P&L из daily_trades (записанный PositionTracker)
-  - cmd_signals: добавлено время в сделке и P&L для каждой позиции
+Telegram Bot Integration  v2.2
+
+НОВОЕ v2.2:
+  ✅ send_message() возвращает Optional[int] (message_id) — для thread replies
+  ✅ send_reply(text, reply_to_msg_id) — ответ на исходное сообщение сигнала
+  ✅ send_signal() возвращает Optional[int] — main.py сохраняет msg_id в Redis
+  ✅ #SYMBOL вместо SYMBOL — удобный поиск в Telegram
+  ✅ /daily_rep, /weekly_rep, /monthly_rep, /leaderswr — отчёты
+  ✅ /stats — читает из правильных Redis ключей (stats:daily:{date})
+  ✅ Уведомления о TP/SL/trailing читают tg_msg_id из Redis → reply
 """
 
 import os
@@ -19,32 +24,22 @@ import aiohttp
 # ============================================================================
 
 def fmt_price(price: float) -> str:
-    """
-    Умное форматирование цены — количество знаков зависит от величины:
-      >= 1000       →  $1,234.56        (2 знака)
-      >= 1          →  $1.3350          (4 знака)
-      >= 0.01       →  $0.013350        (6 знаков)
-      >= 0.0001     →  $0.00013350      (8 знаков)
-      < 0.0001      →  $0.000000001335  (12 знаков, для PEPE/SHIB)
-    """
     if price == 0:
         return "$0"
     abs_p = abs(price)
-    if abs_p >= 1000:
-        return f"${price:,.2f}"
-    elif abs_p >= 1:
-        return f"${price:,.4f}"
-    elif abs_p >= 0.01:
-        return f"${price:,.6f}"
-    elif abs_p >= 0.0001:
-        return f"${price:,.8f}"
-    else:
-        return f"${price:,.12f}"
+    if abs_p >= 1000:   return f"${price:,.2f}"
+    elif abs_p >= 1:    return f"${price:,.4f}"
+    elif abs_p >= 0.01: return f"${price:,.6f}"
+    elif abs_p >= 0.0001: return f"${price:,.8f}"
+    else:               return f"${price:,.12f}"
 
 
+# ============================================================================
+# TELEGRAM BOT
+# ============================================================================
 
 class TelegramBot:
-    """Telegram бот для отправки сигналов и приёма команд."""
+    """Telegram бот для сигналов, уведомлений и команд."""
 
     def __init__(self,
                  bot_token: Optional[str] = None,
@@ -126,39 +121,65 @@ class TelegramBot:
             return None
 
     # =========================================================================
-    # SEND
+    # SEND — возвращает message_id для thread replies
     # =========================================================================
 
-    async def _send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+    async def _send_message(self,
+                             text: str,
+                             parse_mode: str = "HTML",
+                             reply_to_message_id: Optional[int] = None,
+                             chat_id: Optional[str] = None) -> Optional[int]:
+        """
+        Отправить сообщение.
+        ✅ Возвращает message_id (int) при успехе, None при ошибке.
+        ✅ reply_to_message_id — привязка к исходному сообщению сигнала.
+        """
         try:
-            payload = {
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": parse_mode,
+            payload: Dict = {
+                "chat_id":                  chat_id or self.chat_id,
+                "text":                     text,
+                "parse_mode":               parse_mode,
                 "disable_web_page_preview": True,
             }
-            if self.topic_id:
+            if self.topic_id and not chat_id:
                 payload["message_thread_id"] = int(self.topic_id)
+            if reply_to_message_id:
+                payload["reply_to_message_id"]       = reply_to_message_id
+                payload["allow_sending_without_reply"] = True   # не фейлить если оригинал удалён
 
             session = await self._get_session()
             async with session.post(
                 f"{self.base_url}/sendMessage",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
-                if response.status == 200:
-                    return True
-                error_text = await response.text()
-                print(f"Telegram API error: {response.status} — {error_text}")
-                return False
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    msg_id = data.get("result", {}).get("message_id")
+                    return msg_id  # ← возвращаем message_id!
+                error_text = await resp.text()
+                print(f"Telegram API error: {resp.status} — {error_text[:120]}")
+                return None
         except Exception as e:
             print(f"Error sending Telegram message: {e}")
-            return False
+            return None
 
-    async def send_message(self, text: str) -> bool:
+    async def send_message(self, text: str) -> Optional[int]:
+        """Отправить сообщение. Возвращает message_id."""
         return await self._send_message(text)
 
-    async def send_signal(self, direction: str, **kwargs) -> bool:
+    async def send_reply(self, text: str, reply_to_message_id: int) -> Optional[int]:
+        """
+        Отправить сообщение как ОТВЕТ на исходный сигнал.
+        Использовать для: TP hit / SL hit / trailing stop update.
+        """
+        return await self._send_message(text, reply_to_message_id=reply_to_message_id)
+
+    async def send_signal(self, direction: str, **kwargs) -> Optional[int]:
+        """
+        Отправить сигнал. Возвращает message_id для хранения в Redis.
+        main.py сохраняет этот ID в signal["tg_msg_id"] → Redis.
+        """
         if direction == "short":
             text = self.format_short_signal(**kwargs)
         else:
@@ -166,76 +187,36 @@ class TelegramBot:
         return await self._send_message(text)
 
     async def send_test_message(self) -> bool:
-        return await self._send_message(
+        result = await self._send_message(
             "🤖 <b>Bot Connected</b>\n\nСоединение с Telegram установлено!"
         )
+        return result is not None
 
     async def send_error_alert(self, error: str, context: str = "") -> bool:
-        return await self._send_message(
+        result = await self._send_message(
             f"<b>⚠️ BOT ERROR</b>\n\n"
             f"<b>Context:</b> {context}\n"
             f"<b>Error:</b> <code>{error}</code>\n"
             f"<b>Time:</b> {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
+        return result is not None
 
     # =========================================================================
     # FORMAT: SIGNALS
     # =========================================================================
 
     def _calc_pct(self, entry: float, target: float) -> float:
-        if entry == 0:
-            return 0.0
-        return ((target - entry) / entry) * 100
+        return ((target - entry) / entry * 100) if entry else 0.0
 
-    def format_short_signal(self,
-                            symbol: str,
-                            score: int,
-                            price: float,
-                            pattern: str,
-                            indicators: Dict,
-                            entry: float,
-                            stop_loss: float,
-                            take_profits: List[tuple],
-                            leverage: str,
-                            risk: str,
-                            valid_minutes: int = 30) -> str:
-        if score >= 85:
-            score_emoji, strength = "🔥", "ЭКСТРЕМАЛЬНЫЙ"
-        elif score >= 75:
-            score_emoji, strength = "⚡", "СИЛЬНЫЙ"
-        elif score >= 65:
-            score_emoji, strength = "✅", "ХОРОШИЙ"
-        else:
-            score_emoji, strength = "⚠️", "СРЕДНИЙ"
-
-        sl_pct = self._calc_pct(entry, stop_loss)
-
-        tp_lines = ""
-        for i, (tp_price, tp_weight) in enumerate(take_profits, 1):
-            pct = abs(self._calc_pct(entry, tp_price))
-            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (-{pct:.1f}%)  [{tp_weight}%]\n"
-
-        ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
-
-        return (
-            f"\n{score_emoji} <b>SHORT SIGNAL | {strength}</b>\n"
-            f"<b>Score: {score}%</b>\n\n"
-            f"<b>💎 SYMBOL:</b> <code>{symbol}</code>\n"
-            f"<b>📊 Pattern:</b> {pattern}\n\n"
-            f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
-            f"<b>🎯 LEVELS:</b>\n"
-            f"   Entry: <b>{fmt_price(entry)}</b>\n"
-            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  (+{abs(sl_pct):.2f}%)\n"
-            f"{tp_lines}\n"
-            f"<b>⚡ Leverage:</b> {leverage}x\n"
-            f"<b>💰 Risk:</b> {risk}\n"
-            f"<b>⏱ Valid:</b> ~{valid_minutes} мин\n"
-            f"<b>🕐 Time:</b> {datetime.utcnow().strftime('%H:%M UTC')}"
-        )
+    def _score_grade(self, score: float):
+        if score >= 85: return "🔥", "ЭКСТРЕМАЛЬНЫЙ"
+        if score >= 75: return "⚡", "СИЛЬНЫЙ"
+        if score >= 65: return "✅", "ХОРОШИЙ"
+        return "⚠️", "СРЕДНИЙ"
 
     def format_long_signal(self,
                            symbol: str,
-                           score: int,
+                           score: float,
                            price: float,
                            pattern: str,
                            indicators: Dict,
@@ -245,28 +226,23 @@ class TelegramBot:
                            leverage: str,
                            risk: str,
                            valid_minutes: int = 30) -> str:
-        if score >= 85:
-            score_emoji, strength = "🔥", "ЭКСТРЕМАЛЬНЫЙ"
-        elif score >= 75:
-            score_emoji, strength = "⚡", "СИЛЬНЫЙ"
-        elif score >= 65:
-            score_emoji, strength = "✅", "ХОРОШИЙ"
-        else:
-            score_emoji, strength = "⚠️", "СРЕДНИЙ"
-
+        emoji, strength = self._score_grade(score)
         sl_pct = self._calc_pct(entry, stop_loss)
 
         tp_lines = ""
-        for i, (tp_price, tp_weight) in enumerate(take_profits, 1):
+        for i, tp_item in enumerate(take_profits, 1):
+            tp_price  = float(tp_item[0]) if isinstance(tp_item, (list, tuple)) else float(tp_item.get("price", 0))
+            tp_weight = tp_item[1] if isinstance(tp_item, (list, tuple)) else tp_item.get("weight", 0)
             pct = abs(self._calc_pct(entry, tp_price))
             tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (+{pct:.1f}%)  [{tp_weight}%]\n"
 
         ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
 
+        # ✅ #SYMBOL для удобного поиска в Telegram
         return (
-            f"\n{score_emoji} <b>LONG SIGNAL | {strength}</b>\n"
-            f"<b>Score: {score}%</b>\n\n"
-            f"<b>💎 SYMBOL:</b> <code>{symbol}</code>\n"
+            f"\n{emoji} <b>LONG SIGNAL | {strength}</b>\n"
+            f"<b>Score: {score:.0f}%</b>\n\n"
+            f"<b>💎 SYMBOL:</b> <code>#{symbol}</code>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
@@ -279,13 +255,116 @@ class TelegramBot:
             f"<b>🕐 Time:</b> {datetime.utcnow().strftime('%H:%M UTC')}"
         )
 
+    def format_short_signal(self,
+                            symbol: str,
+                            score: float,
+                            price: float,
+                            pattern: str,
+                            indicators: Dict,
+                            entry: float,
+                            stop_loss: float,
+                            take_profits: List[tuple],
+                            leverage: str,
+                            risk: str,
+                            valid_minutes: int = 30) -> str:
+        emoji, strength = self._score_grade(score)
+        sl_pct = self._calc_pct(entry, stop_loss)
+
+        tp_lines = ""
+        for i, tp_item in enumerate(take_profits, 1):
+            tp_price  = float(tp_item[0]) if isinstance(tp_item, (list, tuple)) else float(tp_item.get("price", 0))
+            tp_weight = tp_item[1] if isinstance(tp_item, (list, tuple)) else tp_item.get("weight", 0)
+            pct = abs(self._calc_pct(entry, tp_price))
+            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (-{pct:.1f}%)  [{tp_weight}%]\n"
+
+        ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
+
+        return (
+            f"\n{emoji} <b>SHORT SIGNAL | {strength}</b>\n"
+            f"<b>Score: {score:.0f}%</b>\n\n"
+            f"<b>💎 SYMBOL:</b> <code>#{symbol}</code>\n"
+            f"<b>📊 Pattern:</b> {pattern}\n\n"
+            f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
+            f"<b>🎯 LEVELS:</b>\n"
+            f"   Entry: <b>{fmt_price(entry)}</b>\n"
+            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  (+{abs(sl_pct):.2f}%)\n"
+            f"{tp_lines}\n"
+            f"<b>⚡ Leverage:</b> {leverage}x\n"
+            f"<b>💰 Risk:</b> {risk}\n"
+            f"<b>⏱ Valid:</b> ~{valid_minutes} мин\n"
+            f"<b>🕐 Time:</b> {datetime.utcnow().strftime('%H:%M UTC')}"
+        )
+
     # =========================================================================
-    # COMMAND HANDLER
+    # FORMAT: TRADE UPDATES (для thread replies)
     # =========================================================================
 
+    def format_tp_hit(self, symbol: str, direction: str, tp_num: int,
+                      total_tps: int, entry: float, tp_price: float,
+                      pnl_pct: float, duration_str: str,
+                      tps_left: int) -> str:
+        d_emoji = "🟢" if direction == "long" else "🔴"
+        dir_str = "LONG" if direction == "long" else "SHORT"
+        pnl_sign = "+" if pnl_pct >= 0 else ""
+        return (
+            f"🎯 <b>TP{tp_num}/{total_tps} взят!</b>\n\n"
+            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"📍 Вход:      <b>{fmt_price(entry)}</b>\n"
+            f"🎯 TP{tp_num}:     <b>{fmt_price(tp_price)}</b>\n"
+            f"📊 P&L:       <b>{pnl_sign}{pnl_pct:.2f}%</b>\n"
+            f"⏱ В сделке:  {duration_str}\n"
+            + (f"⏳ До следующего TP: {tps_left} шт." if tps_left > 0 else "✅ <b>Все TP закрыты!</b>")
+        )
+
+    def format_sl_hit(self, symbol: str, direction: str, entry: float,
+                      sl_price: float, close_price: float,
+                      pnl_pct: float, duration_str: str,
+                      reason: str = "стоп") -> str:
+        d_emoji = "🟢" if direction == "long" else "🔴"
+        dir_str = "LONG" if direction == "long" else "SHORT"
+        reason_map = {
+            "trailing": "трейлинг-стоп",
+            "sl":       "стоп-лосс",
+            "manual":   "ручное закрытие",
+        }
+        reason_str = reason_map.get(reason, reason)
+        pnl_sign = "+" if pnl_pct >= 0 else ""
+        return (
+            f"🛑 <b>Стоп выбит</b>  ({reason_str})\n\n"
+            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"📍 Вход:     <b>{fmt_price(entry)}</b>\n"
+            f"🛑 Стоп:     <b>{fmt_price(sl_price)}</b>\n"
+            f"💰 Закрыто:  <b>{fmt_price(close_price)}</b>\n"
+            f"📊 P&L:      <b>{pnl_sign}{pnl_pct:.2f}%</b>\n"
+            f"⏱ В сделке: {duration_str}\n"
+            f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+        )
+
+    def format_trailing_update(self, symbol: str, direction: str,
+                               entry: float, old_sl: float,
+                               new_sl: float) -> str:
+        d_emoji = "🟢" if direction == "long" else "🔴"
+        dir_str = "LONG" if direction == "long" else "SHORT"
+        old_pct = abs((old_sl - entry) / entry * 100)
+        new_pct = abs((new_sl - entry) / entry * 100)
+        sign_old = "+" if old_sl >= entry else "-"
+        sign_new = "+" if new_sl >= entry else "-"
+        return (
+            f"🔄 <b>Стоп передвинут — ТРЕЙЛИНГ</b>\n\n"
+            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"📍 Вход:     <b>{fmt_price(entry)}</b>\n"
+            f"🛑 Было SL:  <b>{fmt_price(old_sl)}</b>  ({sign_old}{old_pct:.2f}%)\n"
+            f"✅ Теперь SL: <b>{fmt_price(new_sl)}</b>  ({sign_new}{new_pct:.2f}%)\n"
+            f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+        )
+
+
+# ============================================================================
+# COMMAND HANDLER
+# ============================================================================
 
 class TelegramCommandHandler:
-    """Обработчик входящих команд от пользователя."""
+    """Обработчик входящих команд."""
 
     ALLOWED_COMMANDS = {
         "/start", "/help", "/ping", "/status",
@@ -293,6 +372,8 @@ class TelegramCommandHandler:
         "/pause", "/resume", "/setscore", "/closeall", "/close_all",
         "/clearpos", "/balance", "/positions",
         "/emergency_stop", "/reset_stats", "/cleanup", "/clean", "/logs",
+        # Новые отчёты
+        "/daily_rep", "/weekly_rep", "/monthly_rep", "/leaderswr",
     }
 
     def __init__(self,
@@ -309,22 +390,15 @@ class TelegramCommandHandler:
         self.scan_callback = scan_callback
         self.config        = config
 
-    async def _reply(self, chat_id: str, text: str) -> bool:
-        """
-        Отправить ответ в любой чат.
-        FIX: message_thread_id добавляется ТОЛЬКО если отвечаем в группу бота.
-        В личке (другой chat_id) topic_id не нужен — Telegram отклоняет такие запросы.
-        """
+    async def _reply(self, chat_id: str, text: str) -> Optional[int]:
         try:
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
+            payload: Dict = {
+                "chat_id":                  chat_id,
+                "text":                     text,
+                "parse_mode":               "HTML",
                 "disable_web_page_preview": True,
             }
-            # Добавляем topic только когда пишем в ГРУППУ (chat_id совпадает с ботовым)
-            is_group_chat = str(chat_id) == str(self.bot.chat_id)
-            if self.bot.topic_id and is_group_chat:
+            if self.bot.topic_id and str(chat_id) == str(self.bot.chat_id):
                 payload["message_thread_id"] = int(self.bot.topic_id)
 
             session = await self.bot._get_session()
@@ -333,13 +407,15 @@ class TelegramCommandHandler:
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    print(f"[Telegram reply] Error {resp.status}: {err[:120]}")
-                return resp.status == 200
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", {}).get("message_id")
+                err = await resp.text()
+                print(f"[Telegram reply] Error {resp.status}: {err[:120]}")
+                return None
         except Exception as e:
             print(f"Error sending reply: {e}")
-            return False
+            return None
 
     async def handle_update(self, update: Dict) -> bool:
         try:
@@ -361,44 +437,45 @@ class TelegramCommandHandler:
 
             print(f"📨 Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
 
-            # ── Безопасность: в личке отвечаем только ADMIN_USER_ID ──────────
-            # В группе — всем (группа защищена самим фактом наличия invite)
             if chat_type == "private":
                 admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
                 if admin_ids_raw:
                     allowed = {s.strip() for s in admin_ids_raw.split(",")}
                     if user_id not in allowed:
-                        print(f"⛔ Unauthorized private access from user {user_id}")
+                        print(f"⛔ Unauthorized: user {user_id}")
                         return False
-                # Если ADMIN_USER_IDS не задан — пропускаем всех (обратная совместимость)
 
             if cmd not in self.ALLOWED_COMMANDS:
                 await self._reply(reply_chat_id,
-                    f"❓ Неизвестная команда: <code>{cmd}</code>\n"
-                    "Напиши /help для списка команд.")
+                    f"❓ Неизвестная команда: <code>{cmd}</code>\nНапиши /help")
                 return False
 
             handlers = {
-                "/start":    self.cmd_start,
-                "/help":     self.cmd_help,
-                "/ping":     self.cmd_ping,
-                "/status":   self.cmd_status,
-                "/signals":  self.cmd_signals,
-                "/stats":    self.cmd_stats,
-                "/scan":     self.cmd_scan,
-                "/pause":    self.cmd_pause,
-                "/resume":   self.cmd_resume,
-                "/setscore": self.cmd_set_min_score,
-                "/clearpos": self.cmd_clearpos,
-                "/closeall": self.cmd_closeall,
-                "/close_all": self.cmd_closeall,
-                "/balance":  self.cmd_balance,
-                "/positions": self.cmd_positions,
+                "/start":        self.cmd_start,
+                "/help":         self.cmd_start,
+                "/ping":         self.cmd_ping,
+                "/status":       self.cmd_status,
+                "/signals":      self.cmd_signals,
+                "/stats":        self.cmd_stats,
+                "/scan":         self.cmd_scan,
+                "/pause":        self.cmd_pause,
+                "/resume":       self.cmd_resume,
+                "/setscore":     self.cmd_set_min_score,
+                "/clearpos":     self.cmd_clearpos,
+                "/closeall":     self.cmd_closeall,
+                "/close_all":    self.cmd_closeall,
+                "/balance":      self.cmd_balance,
+                "/positions":    self.cmd_positions,
                 "/emergency_stop": self.cmd_emergency_stop,
-                "/reset_stats": self.cmd_reset_stats,
-                "/cleanup": self.cmd_cleanup,
-                "/clean": self.cmd_clean,
-                "/logs": self.cmd_logs,
+                "/reset_stats":  self.cmd_reset_stats,
+                "/cleanup":      self.cmd_cleanup,
+                "/clean":        self.cmd_clean,
+                "/logs":         self.cmd_logs,
+                # Отчёты
+                "/daily_rep":    self.cmd_daily_report,
+                "/weekly_rep":   self.cmd_weekly_report,
+                "/monthly_rep":  self.cmd_monthly_report,
+                "/leaderswr":    self.cmd_leaders_wr,
             }
             await handlers[cmd](args, reply_chat_id)
             return True
@@ -408,14 +485,64 @@ class TelegramCommandHandler:
             return False
 
     # =========================================================================
-    # COMMANDS
+    # HELPERS
+    # =========================================================================
+
+    def _get_trade_history(self, days: int = 30) -> List[Dict]:
+        """Получить историю сделок из Redis за последние N дней."""
+        if not self.redis:
+            return []
+        trades = []
+        try:
+            # История хранится по символам: {bot_type}:history:{symbol}
+            pattern = f"{self.bot_type}:history:*"
+            keys = self.redis.client.keys(pattern)
+            for key in keys:
+                sym_trades = self.redis.client.lrange(key, 0, -1)
+                cutoff = datetime.utcnow() - timedelta(days=days)
+                for t_json in sym_trades:
+                    try:
+                        import json
+                        t = json.loads(t_json)
+                        closed_at = t.get("closed_at", "")
+                        if closed_at:
+                            dt = datetime.fromisoformat(closed_at)
+                            if dt >= cutoff:
+                                trades.append(t)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"_get_trade_history error: {e}")
+        return trades
+
+    def _wr_emoji(self, wr: float) -> str:
+        if wr >= 60: return "🟢"
+        if wr >= 45: return "🟡"
+        return "🔴"
+
+    def _duration_str(self, seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}ч {m}м" if h else f"{m}м"
+
+    def _get_daily_stats_from_redis(self, date_str: str) -> Dict:
+        """Читает stats из Redis ключей stats:daily:{date}."""
+        if not self.redis:
+            return {}
+        try:
+            return self.redis.get_daily_stats(self.bot_type, date_str) or {}
+        except Exception:
+            return {}
+
+    # =========================================================================
+    # COMMANDS — BASIC
     # =========================================================================
 
     async def cmd_start(self, args, reply_chat_id: str):
         bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
-            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.1</b>\n\n"
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.2</b>\n\n"
             "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
@@ -425,6 +552,11 @@ class TelegramCommandHandler:
             "💳 /balance — Баланс BingX\n"
             "📈 /positions — Открытые позиции\n"
             "❌ /closeall — Закрыть ВСЕ позиции\n\n"
+            "<b>📅 Отчёты:</b>\n"
+            "📅 /daily_rep — Дневной отчёт\n"
+            "📅 /weekly_rep — Недельный отчёт\n"
+            "📅 /monthly_rep — Месячный отчёт\n"
+            "🏆 /leaderswr — Топ пар по Win Rate\n\n"
             "<b>⚙️ Управление:</b>\n"
             "⏸ /pause — Остановить новые сигналы\n"
             "▶️ /resume — Возобновить\n"
@@ -435,12 +567,8 @@ class TelegramCommandHandler:
             "🛑 /emergency_stop — Экстренный стоп\n"
             "📜 /logs — Посмотреть логи\n"
             "⚙️ /setscore 75 — Мин. скор\n"
-            "🏓 /ping — Проверка связи\n\n"
-            "Сигналы + TP/SL уведомления — автоматически 📍"
+            "🏓 /ping — Проверка связи"
         )
-
-    async def cmd_help(self, args, reply_chat_id: str):
-        await self.cmd_start(args, reply_chat_id)
 
     async def cmd_ping(self, args, reply_chat_id: str):
         await self._reply(reply_chat_id, "🏓 Pong! Бот активен ✅")
@@ -449,15 +577,13 @@ class TelegramCommandHandler:
         if not self.state:
             await self._reply(reply_chat_id, "✅ Бот работает")
             return
-
-        wl       = len(self.state.watchlist)
-        last     = self.state.last_scan.strftime("%H:%M UTC") if self.state.last_scan else "никогда"
-        running  = "✅ Работает" if self.state.is_running else "❌ Остановлен"
-        paused   = "⏸ На паузе" if self.state.is_paused else ""
-        redis_ok = "✅" if (self.redis and self.redis.health_check()) else "❌"
+        wl        = len(self.state.watchlist)
+        last      = self.state.last_scan.strftime("%H:%M UTC") if self.state.last_scan else "никогда"
+        running   = "✅ Работает" if self.state.is_running else "❌ Остановлен"
+        paused    = "⏸ На паузе" if self.state.is_paused else ""
+        redis_ok  = "✅" if (self.redis and self.redis.health_check()) else "❌"
         min_score = getattr(self.config, "MIN_SCORE", 65) if self.config else 65
         max_pos   = getattr(self.config, "MAX_POSITIONS", 10) if self.config else 10
-
         await self._reply(reply_chat_id,
             f"🤖 <b>Статус бота</b>\n\n"
             f"Состояние: {running} {paused}\n"
@@ -481,14 +607,12 @@ class TelegramCommandHandler:
 
             msg = f"🎯 <b>Активные сигналы ({len(signals)}):</b>\n\n"
             for s in signals[:8]:
-                d        = "🔴" if s.get("direction") == "short" else "🟢"
-                symbol   = s.get("symbol", "?")
-                score    = s.get("score", 0)
-                entry    = s.get("entry_price", 0)
-                taken    = len(s.get("taken_tps", []))
-                total_tp = len(s.get("take_profits", []))
-
-                # Время в сделке
+                d      = "🔴" if s.get("direction") == "short" else "🟢"
+                sym    = s.get("symbol", "?")
+                score  = s.get("score", 0)
+                entry  = s.get("entry_price", 0)
+                taken  = len(s.get("taken_tps", []))
+                total  = len(s.get("take_profits", []))
                 try:
                     opened = datetime.fromisoformat(s.get("timestamp", ""))
                     age    = datetime.utcnow() - opened
@@ -497,12 +621,10 @@ class TelegramCommandHandler:
                     time_s = f"{h}ч {m}м" if h else f"{m}м"
                 except Exception:
                     time_s = "N/A"
-
                 msg += (
-                    f"{d} <code>{symbol}</code> — Score: {score}%\n"
-                    f"   Вход: {fmt_price(entry)}  |  TP: {taken}/{total_tp}  |  ⏱ {time_s}\n\n"
+                    f"{d} <code>#{sym}</code> — Score: {score:.0f}%\n"
+                    f"   Вход: {fmt_price(entry)}  |  TP: {taken}/{total}  |  ⏱ {time_s}\n\n"
                 )
-
             await self._reply(reply_chat_id, msg)
         except Exception as e:
             print(f"cmd_signals error: {e}")
@@ -510,47 +632,44 @@ class TelegramCommandHandler:
 
     async def cmd_stats(self, args, reply_chat_id: str):
         """
-        FIX: теперь показывает реальный P&L из PositionTracker.
-        Данные хранятся в bot_state → daily_trades.
+        ✅ FIX: читаем stats из {bot_type}:stats:daily:{date}
+        Именно туда PositionTracker пишет результаты сделок.
         """
         if not self.redis:
             await self._reply(reply_chat_id, "📉 Статистика недоступна")
             return
         try:
-            bot_st       = self.redis.get_bot_state(self.bot_type) or {}
-            daily_trades = bot_st.get("daily_trades", {})
-
-            # Считаем за 7 дней
             total_trades = 0
             total_wins   = 0
             total_pnl    = 0.0
+            lines        = []
 
-            lines = []
             for i in range(7):
-                day = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
-                d   = daily_trades.get(day, {})
-                tr  = d.get("trades", 0)
-                pnl = d.get("pnl", 0.0)
-                w   = d.get("wins", 0)
+                date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+                d    = self._get_daily_stats_from_redis(date)
+                tr   = d.get("trades", 0)
+                w    = d.get("wins",   0)
+                pnl  = d.get("pnl",    0.0)
                 if tr:
-                    lines.append(f"  {day}: {tr} сделок  P&L: {pnl:+.2f}%  ✅{w}")
+                    wr   = round(w / tr * 100, 1) if tr else 0
+                    wemj = self._wr_emoji(wr)
+                    lines.append(f"  {date}: {tr} сд  {wemj}{wr}%  P&L: {pnl:+.2f}%")
                 total_trades += tr
                 total_wins   += w
                 total_pnl    += pnl
 
-            winrate = round(total_wins / total_trades * 100, 1) if total_trades else 0
-            daily_sig = self.state.daily_signals if self.state else 0
+            winrate  = round(total_wins / total_trades * 100, 1) if total_trades else 0
+            wr_emoji = self._wr_emoji(winrate)
 
             msg = (
                 f"📉 <b>Статистика за 7 дней</b>\n\n"
-                f"📨 Сигналов отправлено: {daily_sig}\n"
+                f"📨 Сигналов: {getattr(self.state, 'daily_signals', 0)}\n"
                 f"🔄 Сделок закрыто: {total_trades}\n"
-                f"✅ Победных: {total_wins}  ({winrate}%)\n"
+                f"✅ Победных: {total_wins}  ({wr_emoji}{winrate}%)\n"
                 f"💵 P&L: <b>{total_pnl:+.2f}%</b>\n"
             )
             if lines:
                 msg += "\n<b>По дням:</b>\n" + "\n".join(lines)
-
             msg += f"\n🕐 {datetime.utcnow().strftime('%d.%m.%Y %H:%M UTC')}"
             await self._reply(reply_chat_id, msg)
 
@@ -561,453 +680,519 @@ class TelegramCommandHandler:
     async def cmd_scan(self, args, reply_chat_id: str):
         await self._reply(reply_chat_id, "🔍 Запускаю скан рынка...")
         try:
-            if self.scan_callback is None:
-                await self._reply(reply_chat_id, "❌ scan_callback не настроен.")
+            if not self.scan_callback:
+                await self._reply(reply_chat_id, "❌ scan_callback не настроен")
                 return
             if self.state and self.state.is_paused:
                 await self._reply(reply_chat_id, "⏸ Бот на паузе. Сначала /resume")
                 return
             asyncio.create_task(self.scan_callback())
-            await self._reply(reply_chat_id, "✅ Скан запущен! Сигналы придут автоматически.")
+            await self._reply(reply_chat_id, "✅ Скан запущен!")
         except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка запуска скана: {e}")
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_pause(self, args, reply_chat_id: str):
-        """
-        FIX 4: Устанавливаем is_paused=True, НЕ трогаем is_running.
-        background_scanner продолжает крутиться, просто пропускает сканы.
-        PositionTracker продолжает следить за открытыми позициями.
-        """
         if self.state:
             self.state.is_paused = True
-            if self.config:
-                self.config.is_paused = True   # синхронизируем если есть
         await self._reply(reply_chat_id,
-            "⏸ <b>Бот на паузе</b>\n\n"
-            "Новых сигналов не будет.\n"
+            "⏸ <b>Бот на паузе</b>\n\nНовых сигналов не будет.\n"
             "PositionTracker продолжает следить за открытыми позициями.\n"
-            "Команда /resume для возобновления.")
+            "/resume для возобновления.")
 
     async def cmd_resume(self, args, reply_chat_id: str):
-        """
-        FIX 4: Сбрасываем is_paused=False. Следующий цикл начнёт сканировать.
-        """
         if self.state:
             self.state.is_paused = False
-            if self.config:
-                self.config.is_paused = False
-        await self._reply(reply_chat_id,
-            "▶️ <b>Бот возобновил работу!</b>\n\n"
-            "Сканирование активно.\n"
-            f"Следующий скан через ~{getattr(self.config, 'SCAN_INTERVAL', 60)} секунд.")
+        await self._reply(reply_chat_id, "▶️ <b>Бот возобновил работу!</b>")
 
     async def cmd_set_min_score(self, args, reply_chat_id: str):
-        if args and args[0].isdigit():
-            score = int(args[0])
-            if 50 <= score <= 95:
-                try:
-                    if self.config:
-                        self.config.MIN_SCORE = score
-                    await self._reply(reply_chat_id,
-                        f"✅ Минимальный скор: <b>{score}%</b>\n"
-                        f"Применится со следующего скана.")
-                except Exception as e:
-                    await self._reply(reply_chat_id, f"⚠️ Ошибка: {e}")
-            else:
-                await self._reply(reply_chat_id, "⚠️ Скор должен быть от 50 до 95")
-        else:
-            await self._reply(reply_chat_id,
-                "⚙️ Использование: <code>/setscore 75</code>\n"
-                "Диапазон: 50–95")
-
-
-    async def cmd_clearpos(self, args, reply_chat_id: str):
-        """
-        /clearpos — очистить active-сигналы из Redis.
-        Нужно когда бот пишет "Max positions reached" хотя реальных позиций нет.
-        Опционально: /clearpos BTCUSDT — только одну пару
-                     /clearpos all    — все сигналы бота
-        """
         try:
-            target = args[0].upper() if args else "ALL"
+            if not args:
+                score = getattr(self.config, "MIN_SCORE", 65) if self.config else 65
+                await self._reply(reply_chat_id, f"⚙️ Текущий мин. скор: {score}%")
+                return
+            new_score = int(args[0])
+            if not (40 <= new_score <= 100):
+                await self._reply(reply_chat_id, "❌ Скор должен быть от 40 до 100")
+                return
+            if self.config:
+                self.config.MIN_SCORE = new_score
+            if self.state and self.state.scorer:
+                self.state.scorer.min_score = new_score
+            await self._reply(reply_chat_id, f"✅ Мин. скор установлен: {new_score}%")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
-            if target != "ALL":
-                # Очищаем один символ
-                symbol = target
-                key = f"{self.bot_type}:signals:{symbol}"
-                import json as _json
-                signals = self.redis.client.lrange(key, 0, -1)
-                if not signals:
-                    await self._reply(reply_chat_id, f"❓ Сигналов по {symbol} не найдено")
-                    return
-                for i, s_json in enumerate(signals):
-                    sig = _json.loads(s_json)
-                    if sig.get("status") == "active":
-                        sig["status"] = "expired"
-                        sig["cleared_at"] = "manual"
-                        self.redis.client.lset(key, i, _json.dumps(sig))
-                await self._reply(reply_chat_id,
-                    f"✅ Сигнал {symbol} помечен как expired\n"
-                    f"Бот возобновит поиск по этой паре.")
-            else:
-                # Очищаем все active сигналы
-                import json as _json
-                pattern = f"{self.bot_type}:signals:*"
-                keys = self.redis.client.keys(pattern)
-                cleared = 0
-                for key in keys:
-                    signals = self.redis.client.lrange(key, 0, -1)
-                    for i, s_json in enumerate(signals):
-                        try:
-                            sig = _json.loads(s_json)
-                            if sig.get("status") == "active":
-                                sig["status"] = "expired"
-                                sig["cleared_at"] = "manual"
-                                self.redis.client.lset(key, i, _json.dumps(sig))
-                                cleared += 1
-                        except Exception:
-                            pass
+    async def cmd_balance(self, args, reply_chat_id: str):
+        if not (self.state and self.state.auto_trader):
+            await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
+            return
+        try:
+            bal  = await self.state.auto_trader.bingx.get_account_balance()
+            mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
+            if not bal:
+                await self._reply(reply_chat_id, "❌ Не удалось получить баланс")
+                return
+            eq   = float(bal.get("equity", 0))
+            avail = float(bal.get("availableMargin", 0))
+            upnl  = float(bal.get("unrealizedPNL", 0))
+            await self._reply(reply_chat_id,
+                f"💳 <b>Баланс BingX [{mode}]</b>\n\n"
+                f"💰 Equity:     <b>${eq:,.2f}</b>\n"
+                f"✅ Available:  <b>${avail:,.2f}</b>\n"
+                f"📊 uPNL:       <b>${upnl:+,.2f}</b>\n"
+                f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
-                if self.state:
-                    self.state.active_signals = 0
-
-                await self._reply(reply_chat_id,
-                    f"✅ <b>Очищено {cleared} активных сигналов</b>\n\n"
-                    f"Бот снова начнёт открывать новые позиции.\n"
-                    f"Используй /scan для немедленного скана.\n\n"
-                    f"<i>Подсказка: /clearpos BTCUSDT — очистить одну пару</i>")
+    async def cmd_positions(self, args, reply_chat_id: str):
+        if not (self.state and self.state.auto_trader):
+            await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
+            return
+        try:
+            positions = await self.state.auto_trader.bingx.get_positions()
+            mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
+            if not positions:
+                await self._reply(reply_chat_id, f"📈 Нет открытых позиций [{mode}]")
+                return
+            msg = f"📈 <b>Позиции [{mode}] ({len(positions)}):</b>\n\n"
+            total_upnl = 0.0
+            for p in positions:
+                d_emoji = "🟢" if p.side == "LONG" else "🔴"
+                upnl    = p.unrealized_pnl
+                total_upnl += upnl
+                pnl_sign = "+" if upnl >= 0 else ""
+                msg += (
+                    f"{d_emoji} <code>#{p.symbol}</code> {p.side}\n"
+                    f"   Вход: {fmt_price(p.entry_price)} | Размер: {p.size}\n"
+                    f"   uPNL: <b>{pnl_sign}${upnl:.2f}</b> | Плечо: {p.leverage}x\n\n"
+                )
+            pnl_sign = "+" if total_upnl >= 0 else ""
+            msg += f"💵 Итого uPNL: <b>{pnl_sign}${total_upnl:.2f}</b>"
+            await self._reply(reply_chat_id, msg)
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_closeall(self, args, reply_chat_id: str):
-        """
-        /closeall — закрыть ВСЕ открытые позиции на BingX (рыночными ордерами).
-        Используй когда бот показывает "Max positions" но позиции уже устарели.
-        """
+        if not (self.state and self.state.auto_trader):
+            await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
+            return
+        await self._reply(reply_chat_id, "⏳ Закрываю все позиции...")
         try:
-            # Проверяем есть ли auto_trader с bingx клиентом
-            if not self.state or not hasattr(self.state, 'auto_trader') or not self.state.auto_trader:
-                await self._reply(reply_chat_id, 
-                    "❌ AutoTrader не инициализирован.\n"
-                    "Убедись что BINGX_API_KEY и BINGX_API_SECRET настроены.")
+            closed = await self.state.auto_trader.close_all_positions()
+            await self._reply(reply_chat_id, f"✅ Закрыто позиций: {closed}")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+
+    async def cmd_clearpos(self, args, reply_chat_id: str):
+        try:
+            if not self.redis:
+                await self._reply(reply_chat_id, "❌ Redis недоступен")
                 return
-            
-            bingx = self.state.auto_trader.bingx
-            
-            # Получаем все открытые позиции
-            positions = await bingx.get_positions()
-            
-            if not positions:
-                await self._reply(reply_chat_id, 
-                    "✅ Нет открытых позиций на BingX.")
-                return
-            
-            closed = 0
-            failed = 0
-            total_pnl = 0.0
-            
-            for pos in positions:
-                try:
-                    symbol = pos.symbol
-                    side = "SELL" if pos.side == "LONG" else "BUY"
-                    qty = abs(pos.size)
-                    
-                    # Рыночный ордер на закрытие
-                    await bingx.place_market_order(
-                        symbol=symbol,
-                        side=side,
-                        size=qty,
-                        position_side=pos.side
-                    )
-                    
-                    closed += 1
-                    total_pnl += pos.unrealized_pnl
-                    print(f"Closed position: {symbol} {pos.side} | PnL: {pos.unrealized_pnl:+.2f}")
-                    
-                except Exception as e:
-                    failed += 1
-                    print(f"Failed to close {pos.symbol}: {e}")
-            
-            # Сбрасываем счётчик позиций
+            import json as _json
+            keys = self.redis.client.keys(f"{self.bot_type}:signals:*")
+            cleared = 0
+            for key in keys:
+                signals = self.redis.client.lrange(key, 0, -1)
+                for sig_json in signals:
+                    try:
+                        sig = _json.loads(sig_json)
+                        if sig.get("status") == "active":
+                            sig["status"] = "closed"
+                            sig["closed_at"] = datetime.utcnow().isoformat()
+                            self.redis.client.lset(key, 0, _json.dumps(sig))
+                            cleared += 1
+                            break
+                    except Exception:
+                        pass
             if self.state:
                 self.state.active_signals = 0
-            
-            # Очищаем Redis сигналы
-            pattern = f"{self.bot_type}:signals:*"
-            keys = self.redis.client.keys(pattern)
-            for key in keys:
-                self.redis.client.delete(key)
-            
-            emoji = "✅" if closed > 0 else "⚠️"
-            mode = "DEMO" if bingx.demo else "REAL"
-            
             await self._reply(reply_chat_id,
-                f"{emoji} <b>Закрыто {closed} позиций ({mode})</b>\n\n"
-                f"💰 Total P&L: <code>{total_pnl:+.2f} USDT</code>\n"
-                f"❌ Failed: {failed}\n\n"
-                f"🤖 Бот снова может открывать новые позиции.\n"
-                f"Используй /scan для немедленного скана.")
-                
-        except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка закрытия позиций: {e}")
-
-    async def cmd_balance(self, args, reply_chat_id: str):
-        """/balance — баланс BingX аккаунта."""
-        try:
-            auto_trader = getattr(self.state, "auto_trader", None) if self.state else None
-            if not auto_trader:
-                await self._reply(reply_chat_id,
-                    "❌ AutoTrader не подключён\n"
-                    "Установи <code>AUTO_TRADING_ENABLED=true</code> в Render → Environment")
-                return
-
-            summary = await auto_trader.get_account_summary()
-            balance = summary.get("balance", {})
-            avail   = float(balance.get("availableMargin", 0))
-            equity  = float(balance.get("equity", avail))
-            pnl     = summary.get("unrealized_pnl", 0)
-            mode    = summary.get("mode", "DEMO")
-            n_pos   = summary.get("open_positions", 0)
-
-            mode_str = "🟡 DEMO (торговля не реальная)" if mode == "DEMO" else "🟢 REAL"
-
-            await self._reply(reply_chat_id,
-                f"💰 <b>BingX Аккаунт</b>  [{mode_str}]\n\n"
-                f"Equity:     <b>${equity:,.2f}</b>\n"
-                f"Свободно:  <b>${avail:,.2f}</b>\n"
-                f"Unrealized PnL: <b>{'+' if pnl >= 0 else ''}{pnl:.2f} USDT</b>\n\n"
-                f"Открытых позиций: {n_pos}\n"
-                f"Сделок сегодня: {summary.get('daily_trades', 0)}\n"
-                f"P&L сегодня: {summary.get('daily_pnl', 0):.2f}%\n"
-                f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
-            )
-        except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка получения баланса: {e}")
-
-    async def cmd_positions(self, args, reply_chat_id: str):
-        """/positions — открытые позиции на BingX."""
-        try:
-            auto_trader = getattr(self.state, "auto_trader", None) if self.state else None
-            if not auto_trader:
-                await self._reply(reply_chat_id, "❌ AutoTrader не подключён")
-                return
-
-            positions = await auto_trader.bingx.get_positions()
-            if not positions:
-                await self._reply(reply_chat_id, "📭 Нет открытых позиций на BingX")
-                return
-
-            msg = f"📊 <b>Открытые позиции BingX ({len(positions)}):</b>\n\n"
-            for p in positions:
-                d_emoji = "🟢" if p.side == "LONG" else "🔴"
-                pnl_str = f"+{p.unrealized_pnl:.2f}" if p.unrealized_pnl >= 0 else f"{p.unrealized_pnl:.2f}"
-                msg += (
-                    f"{d_emoji} <code>{p.symbol}</code>  {p.side}\n"
-                    f"   Вход: <b>${p.entry_price:,.4f}</b>  |  Плечо: {p.leverage}x\n"
-                    f"   Размер: {p.size:.4f}  |  PnL: <b>{pnl_str} USDT</b>\n\n"
-                )
-
-            await self._reply(reply_chat_id, msg)
+                f"🗑 <b>Позиции сброшены</b>\n\n"
+                f"Сброшено записей: {cleared}\n"
+                f"Счётчик сигналов: 0\n\n"
+                "⚠️ Реальные позиции на бирже НЕ закрыты. Используй /closeall")
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_emergency_stop(self, args, reply_chat_id: str):
-        """
-        /emergency_stop — экстренная остановка всех новых сигналов.
-        Алиас для /pause с более чётким сообщением.
-        """
+        await self._reply(reply_chat_id, "🛑 <b>Экстренная остановка...</b>")
         try:
-            if not self.state:
-                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
-                return
-
-            self.state.is_paused = True
-
-            bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
-            bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
-
+            if self.state:
+                self.state.is_paused = True
+            closed = 0
+            if self.state and self.state.auto_trader:
+                closed = await self.state.auto_trader.close_all_positions()
             await self._reply(reply_chat_id,
-                f"🛑 <b>ЭКСТРЕННАЯ ОСТАНОВКА {bot_emoji} {bot_name} Bot</b>\n\n"
-                "⏸️ Новые сигналы ОСТАНОВЛЕНЫ\n"
-                "📊 Позиции продолжают отслеживаться\n"
-                "🔄 Сканирование приостановлено\n\n"
-                "Используй /resume для возобновления")
+                f"🛑 <b>Экстренная остановка выполнена!</b>\n\n"
+                f"⏸ Бот поставлен на паузу\n"
+                f"❌ Закрыто позиций: {closed}\n\n"
+                "Используй /resume для возобновления.")
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка при остановке: {e}")
 
+    async def cmd_reset_stats(self, args, reply_chat_id: str):
+        try:
+            if self.state and self.state.auto_trader:
+                self.state.auto_trader.daily_pnl    = 0.0
+                self.state.auto_trader.daily_trades  = 0
+                self.state.auto_trader.total_pnl     = 0.0
+                self.state.auto_trader.win_count     = 0
+                self.state.auto_trader.loss_count    = 0
+            if self.redis:
+                self.redis.client.delete(f"{self.bot_type}:daily_trades")
+                self.redis.client.delete(f"{self.bot_type}:daily_pnl")
+            await self._reply(reply_chat_id,
+                "🔄 <b>Статистика сброшена</b>\n\nСчётчики обнулены ✅")
         except Exception as e:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
-    async def cmd_reset_stats(self, args, reply_chat_id: str):
-        """
-        /reset_stats — сбросить статистику (daily_trades, daily_pnl).
-        """
-        try:
-            if not self.state or not hasattr(self.state, 'auto_trader') or not self.state.auto_trader:
-                await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
-                return
-
-            # Сбрасываем статистику
-            self.state.auto_trader.daily_trades = 0
-            self.state.auto_trader.daily_pnl = 0.0
-            self.state.auto_trader.total_pnl = 0.0
-            self.state.auto_trader.win_count = 0
-            self.state.auto_trader.loss_count = 0
-
-            # Сбрасываем в Redis
-            if self.redis:
-                self.redis.client.delete(f"{self.bot_type}:daily_trades")
-                self.redis.client.delete(f"{self.bot_type}:daily_pnl")
-
-            await self._reply(reply_chat_id,
-                "🔄 <b>Статистика сброшена</b>\n\n"
-                "📊 Daily trades: 0\n"
-                "📈 Daily P&L: 0.00%\n"
-                "🎯 Win/Loss: 0/0\n\n"
-                "Счётчики обнулены ✅")
-
-        except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка сброса: {e}")
-
     async def cmd_cleanup(self, args, reply_chat_id: str):
-        """
-        /cleanup — удалить зависшие сделки из Redis.
-        Очистка signals и проверка синхронизации с биржей.
-        """
         try:
-            if not self.state:
-                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
-                return
-
-            # Получаем реальные позиции с биржи
             real_positions = []
-            if self.state.auto_trader:
+            if self.state and self.state.auto_trader:
                 real_positions = await self.state.auto_trader.bingx.get_positions()
             real_symbols = {p.symbol for p in real_positions}
 
-            # Чистим Redis
             cleaned = 0
-            pattern = f"{self.bot_type}:signals:*"
-            keys = self.redis.client.keys(pattern) if self.redis else []
-
+            keys = self.redis.client.keys(f"{self.bot_type}:signals:*") if self.redis else []
             for key in keys:
-                try:
-                    # Проверяем есть ли эта позиция на бирже
-                    symbol = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
-                    if symbol not in real_symbols:
-                        self.redis.client.delete(key)
-                        cleaned += 1
-                except:
-                    pass
+                sym = (key.decode() if isinstance(key, bytes) else key).split(":")[-1]
+                if sym not in real_symbols:
+                    self.redis.client.delete(key)
+                    cleaned += 1
 
-            # Сбрасываем счётчик
-            self.state.active_signals = len(real_positions)
+            if self.state:
+                self.state.active_signals = len(real_positions)
 
             await self._reply(reply_chat_id,
                 f"🧹 <b>Cleanup завершён</b>\n\n"
-                f"📊 Реальных позиций на бирже: {len(real_positions)}\n"
-                f"🗑 Очищено записей из Redis: {cleaned}\n"
-                f"✅ Счётчик активных сигналов: {self.state.active_signals}\n\n"
-                "Бот синхронизирован с биржей ✅")
-
+                f"📊 Реальных позиций: {len(real_positions)}\n"
+                f"🗑 Очищено из Redis: {cleaned}\n"
+                f"✅ Активных сигналов: {len(real_positions)}")
         except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка cleanup: {e}")
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_clean(self, args, reply_chat_id: str):
-        """
-        /clean — полная очистка: trades + positions + Redis.
-        Комбинация /reset_stats + /cleanup + /clearpos.
-        """
         try:
-            if not self.state:
-                await self._reply(reply_chat_id, "❌ Бот не инициализирован")
-                return
-
-            # 1. Сброс статистики
-            if self.state.auto_trader:
+            if self.state and self.state.auto_trader:
                 self.state.auto_trader.daily_trades = 0
-                self.state.auto_trader.daily_pnl = 0.0
-
-            # 2. Очистка Redis signals
-            pattern = f"{self.bot_type}:signals:*"
-            keys = self.redis.client.keys(pattern) if self.redis else []
-            cleaned_signals = len(keys)
+                self.state.auto_trader.daily_pnl    = 0.0
+            keys = self.redis.client.keys(f"{self.bot_type}:signals:*") if self.redis else []
+            cnt  = len(keys)
             for key in keys:
                 self.redis.client.delete(key)
-
-            # 3. Очистка других ключей
             if self.redis:
                 self.redis.client.delete(f"{self.bot_type}:daily_trades")
                 self.redis.client.delete(f"{self.bot_type}:daily_pnl")
-                self.redis.client.delete(f"{self.bot_type}:last_scan")
-
-            # 4. Сброс счётчиков
-            self.state.active_signals = 0
-            self.state.is_paused = False
-
+            if self.state:
+                self.state.active_signals = 0
+                self.state.is_paused = False
             await self._reply(reply_chat_id,
-                "🧼 <b>Полная очистка завершена</b>\n\n"
-                f"🗑 Очищено сигналов: {cleaned_signals}\n"
-                "📊 Статистика сброшена\n"
-                "⏸️ Пауза снята\n"
-                "🔄 Сканирование активно\n\n"
-                "Бот готов к работе! ✅")
-
+                f"🧼 <b>Полная очистка</b>\n\n"
+                f"🗑 Сигналов: {cnt}\n📊 Статистика: сброшена\n✅ Готов к работе")
         except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка очистки: {e}")
+            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_logs(self, args, reply_chat_id: str):
-        """
-        /logs — показать последние строки лога (для Render).
-        """
-        try:
-            import subprocess
-            import os
+        uptime_str = "N/A"
+        if self.state and hasattr(self.state, "start_time") and self.state.start_time:
+            delta = datetime.utcnow() - self.state.start_time
+            h = delta.seconds // 3600
+            m = (delta.seconds % 3600) // 60
+            uptime_str = f"{delta.days}д {h}ч {m}м"
+        await self._reply(reply_chat_id,
+            f"📋 <b>Статус бота</b>\n\n"
+            f"🤖 Тип: {self.bot_type.upper()}\n"
+            f"⏸️ Пауза: {'Да' if self.state and self.state.is_paused else 'Нет'}\n"
+            f"📊 Активных сигналов: {getattr(self.state, 'active_signals', 0)}\n"
+            f"🔄 AutoTrader: {'✅' if self.state and self.state.auto_trader else '❌'}\n"
+            f"⏱ Uptime: {uptime_str}\n\n"
+            "💡 Полные логи: Render Dashboard → Logs")
 
-            # Пытаемся получить логи (работает если есть доступ к файловой системе)
-            lines = 20
-            if args and args[0].isdigit():
-                lines = min(int(args[0]), 50)
+    # =========================================================================
+    # COMMANDS — REPORTS
+    # =========================================================================
 
-            # Читаем из файла лога если он есть
-            log_lines = []
-            log_files = ["/var/log/render.log", "/app/logs/app.log", "app.log", "bot.log"]
+    async def cmd_daily_report(self, args, reply_chat_id: str):
+        """📅 /daily_rep — дневной отчёт."""
+        # По умолчанию — сегодня, можно /daily_rep yesterday
+        if args and args[0].lower() in ("yesterday", "вчера"):
+            date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            date = datetime.utcnow().strftime("%Y-%m-%d")
 
-            for log_file in log_files:
-                if os.path.exists(log_file):
-                    try:
-                        with open(log_file, 'r') as f:
-                            log_lines = f.readlines()[-lines:]
-                        break
-                    except:
-                        pass
+        trades = [t for t in self._get_trade_history(days=2)
+                  if t.get("closed_at", "").startswith(date)]
 
-            if not log_lines:
-                # Если нет файла — показываем информацию о боте
-                uptime = getattr(self.state, 'start_time', None) if self.state else None
-                uptime_str = "N/A"
-                if uptime:
-                    from datetime import datetime
-                    delta = datetime.utcnow() - uptime
-                    uptime_str = f"{delta.days}d {delta.seconds//3600}h"
+        if not trades:
+            await self._reply(reply_chat_id,
+                f"📅 <b>Дневной отчёт {date}</b>\n\nСделок нет.")
+            return
 
-                await self._reply(reply_chat_id,
-                    f"📋 <b>Статус бота</b>\n\n"
-                    f"🤖 Тип: {self.bot_type.upper()}\n"
-                    f"⏸️ Пауза: {'Да' if self.state and getattr(self.state, 'is_paused', False) else 'Нет'}\n"
-                    f"📊 Активных сигналов: {getattr(self.state, 'active_signals', 0)}\n"
-                    f"🔄 AutoTrader: {'✅' if self.state and getattr(self.state, 'auto_trader', None) else '❌'}\n\n"
-                    "💡 Подробные логи в Render Dashboard → Logs")
-                return
+        wins   = [t for t in trades if t.get("pnl", 0) > 0]
+        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        total  = len(trades)
+        wr     = round(len(wins) / total * 100, 1) if total else 0
+        pnl    = sum(t.get("pnl", 0) for t in trades)
 
-            # Формируем сообщение с логами
-            msg = f"📜 <b>Последние {len(log_lines)} строк лога:</b>\n\n<code>"
-            for line in log_lines:
-                msg += line.replace('<', '&lt;').replace('>', '&gt;')[:200] + "\n"
-            msg += "</code>"
+        # Среднее время в сделке
+        durations = []
+        for t in trades:
+            try:
+                opened = datetime.fromisoformat(t.get("opened_at", ""))
+                closed = datetime.fromisoformat(t.get("closed_at", ""))
+                durations.append((closed - opened).total_seconds())
+            except Exception:
+                pass
+        avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
 
-            await self._reply(reply_chat_id, msg)
+        # TP breakdown
+        tp_counts: Dict[str, int] = {}
+        for t in wins:
+            tp_lvl = t.get("tp_level", "TP?")
+            tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
+        tp_lines = ""
+        for tp, cnt in sorted(tp_counts.items()):
+            bar = "█" * cnt
+            tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
 
-        except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка получения логов: {e}")
+        # Последние сделки (до 5)
+        last_trades = ""
+        for t in sorted(trades, key=lambda x: x.get("closed_at",""), reverse=True)[:5]:
+            sym  = t.get("symbol", "?")
+            side = t.get("direction", "?").upper()
+            pnl_ = t.get("pnl", 0)
+            tp_l = t.get("tp_level", "SL")
+            ico  = "✅" if pnl_ > 0 else "❌"
+            try:
+                dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
+                         datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
+                dur_str = self._duration_str(dur_s)
+            except Exception:
+                dur_str = "?"
+            last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
+
+        wr_emoji = self._wr_emoji(wr)
+        msg = (
+            f"📅 <b>Дневной отчёт {date}</b>\n\n"
+            f"📊 Win Rate: {wr_emoji} {wr}%\n"
+            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"📈 Всего закрыто: {total}\n"
+            f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
+            f"⏱ Ср. время: {avg_dur}\n"
+        )
+        if tp_lines:
+            msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
+        if last_trades:
+            msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
+        await self._reply(reply_chat_id, msg)
+
+    async def cmd_weekly_report(self, args, reply_chat_id: str):
+        """📅 /weekly_rep — недельный отчёт."""
+        now   = datetime.utcnow()
+        start = now - timedelta(days=7)
+        trades = self._get_trade_history(days=8)
+
+        if not trades:
+            await self._reply(reply_chat_id,
+                f"📅 <b>Недельный отчёт</b>\n\nСделок нет.")
+            return
+
+        wins   = [t for t in trades if t.get("pnl", 0) > 0]
+        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        total  = len(trades)
+        wr     = round(len(wins) / total * 100, 1) if total else 0
+        pnl    = sum(t.get("pnl", 0) for t in trades)
+
+        durations = []
+        for t in trades:
+            try:
+                o = datetime.fromisoformat(t.get("opened_at",""))
+                c = datetime.fromisoformat(t.get("closed_at",""))
+                durations.append((c - o).total_seconds())
+            except Exception:
+                pass
+        avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
+
+        # Активных дней
+        active_days = len(set(
+            t.get("closed_at","")[:10] for t in trades if t.get("closed_at","")
+        ))
+
+        # Топ тикеры по количеству
+        sym_count: Dict[str, int] = {}
+        for t in trades:
+            sym = t.get("symbol", "?")
+            sym_count[sym] = sym_count.get(sym, 0) + 1
+        top_syms = sorted(sym_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_lines = "\n".join(f"  <code>#{sym}</code>: {cnt}" for sym, cnt in top_syms)
+
+        wr_emoji = self._wr_emoji(wr)
+        date_from = start.strftime("%d.%m")
+        date_to   = now.strftime("%d.%m.%Y")
+        msg = (
+            f"📅 <b>Недельный отчёт</b>\n"
+            f"с {date_from} по {date_to}\n\n"
+            f"📊 Win Rate: {wr_emoji} {wr}%\n"
+            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"📈 Всего закрыто: {total}\n"
+            f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
+            f"⏱ Ср. время: {avg_dur}\n"
+            f"📅 Активных дней: {active_days}\n"
+        )
+        if top_syms:
+            msg += f"\n<b>Топ тикеры:</b>\n{top_lines}"
+        await self._reply(reply_chat_id, msg)
+
+    async def cmd_monthly_report(self, args, reply_chat_id: str):
+        """📅 /monthly_rep — месячный отчёт."""
+        now    = datetime.utcnow()
+        trades = self._get_trade_history(days=31)
+
+        if not trades:
+            await self._reply(reply_chat_id,
+                f"📅 <b>Месячный отчёт</b>\n\nСделок нет.")
+            return
+
+        wins   = [t for t in trades if t.get("pnl", 0) > 0]
+        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        total  = len(trades)
+        wr     = round(len(wins) / total * 100, 1) if total else 0
+        pnl    = sum(t.get("pnl", 0) for t in trades)
+
+        durations = []
+        for t in trades:
+            try:
+                o = datetime.fromisoformat(t.get("opened_at",""))
+                c = datetime.fromisoformat(t.get("closed_at",""))
+                durations.append((c - o).total_seconds())
+            except Exception:
+                pass
+        avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
+
+        active_days = len(set(
+            t.get("closed_at","")[:10] for t in trades if t.get("closed_at","")
+        ))
+
+        # TP breakdown
+        tp_counts: Dict[str, int] = {}
+        for t in wins:
+            tp_lvl = t.get("tp_level", "TP?")
+            tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
+        tp_lines = ""
+        for tp, cnt in sorted(tp_counts.items()):
+            bar = "█" * min(cnt, 10)
+            tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
+
+        # Топ тикеры
+        sym_count: Dict[str, int] = {}
+        for t in trades:
+            sym = t.get("symbol","?")
+            sym_count[sym] = sym_count.get(sym, 0) + 1
+        top_syms = sorted(sym_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_lines = "\n".join(f"  <code>#{sym}</code>: {cnt}" for sym, cnt in top_syms)
+
+        wr_emoji = self._wr_emoji(wr)
+        month_name = now.strftime("%B %Y")
+        msg = (
+            f"📅 <b>Месячный отчёт — {month_name}</b>\n\n"
+            f"📊 Win Rate: {wr_emoji} {wr}%\n"
+            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"📈 Всего закрыто: {total}\n"
+            f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
+            f"⏱ Ср. время: {avg_dur}\n"
+            f"📅 Активных дней: {active_days}\n"
+        )
+        if tp_lines:
+            msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
+        if top_syms:
+            msg += f"\n<b>Топ тикеры:</b>\n{top_lines}"
+        await self._reply(reply_chat_id, msg)
+
+    async def cmd_leaders_wr(self, args, reply_chat_id: str):
+        """🏆 /leaderswr — топ пар по Win Rate (мин. 2 сделки)."""
+        trades = self._get_trade_history(days=30)
+
+        if not trades:
+            await self._reply(reply_chat_id, "🏆 Данных для рейтинга нет.")
+            return
+
+        # Группируем по символу
+        by_sym: Dict[str, Dict] = {}
+        for t in trades:
+            sym = t.get("symbol","?")
+            if sym not in by_sym:
+                by_sym[sym] = {"wins":0,"losses":0,"tps":{}}
+            pnl = t.get("pnl", 0)
+            tp_lvl = t.get("tp_level","")
+            if pnl > 0:
+                by_sym[sym]["wins"] += 1
+                if tp_lvl:
+                    by_sym[sym]["tps"][tp_lvl] = by_sym[sym]["tps"].get(tp_lvl, 0) + 1
+            else:
+                by_sym[sym]["losses"] += 1
+
+        # Фильтр: мин. 2 сделки
+        stats = []
+        for sym, d in by_sym.items():
+            total = d["wins"] + d["losses"]
+            if total < 2:
+                continue
+            wr = round(d["wins"] / total * 100, 1)
+            stats.append({"sym": sym, "wr": wr, "wins": d["wins"],
+                          "losses": d["losses"], "total": total, "tps": d["tps"]})
+
+        stats.sort(key=lambda x: (x["wr"], x["wins"]), reverse=True)
+
+        medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+
+        # Лучшие (топ 5)
+        best_lines = ""
+        for i, s in enumerate(stats[:5]):
+            tp_summary = " ".join(f"TP{k.replace('TP','')}×{v}"
+                                   for k,v in sorted(s["tps"].items()))
+            medal = medals[i] if i < len(medals) else "▪️"
+            best_lines += (
+                f"{medal} <code>#{s['sym']}</code> — WR {s['wr']}%"
+                f" ({s['wins']}W/{s['losses']}L из {s['total']})\n"
+                + (f"   {tp_summary}\n" if tp_summary else "")
+            )
+
+        # Худшие (низший WR, мин. 2 сделки)
+        worst = [s for s in stats if s["wr"] < 60]
+        worst.sort(key=lambda x: x["wr"])
+        worst_lines = ""
+        for s in worst[:5]:
+            worst_lines += (
+                f"🔻 <code>#{s['sym']}</code> — WR {s['wr']}%"
+                f" ({s['wins']}W/{s['losses']}L)\n"
+            )
+
+        # Общий WR
+        total_all   = sum(s["total"] for s in stats)
+        total_wins  = sum(s["wins"]  for s in stats)
+        overall_wr  = round(total_wins / total_all * 100, 1) if total_all else 0
+        wr_emoji    = self._wr_emoji(overall_wr)
+
+        now = datetime.utcnow()
+        start = (now - timedelta(days=30)).strftime("%d.%m")
+        end   = now.strftime("%d.%m")
+
+        msg = (
+            f"📊 <b>Топ пар по Win Rate</b>\n"
+            f"с {start} по {end}\n\n"
+        )
+        if best_lines:
+            msg += f"<b>🏆 Лучшие тикеры:</b>\n{best_lines}\n"
+        if worst_lines:
+            msg += f"<b>📉 Худшие тикеры:</b>\n{worst_lines}\n"
+
+        msg += (
+            f"Всего тикеров: {len(stats)} | Сделок: {total_all}\n"
+            f"📊 Общий WR: {wr_emoji} <b>{overall_wr}%</b>"
+            f"  ({total_wins}✅ / {total_all-total_wins}❌)"
+        )
+        await self._reply(reply_chat_id, msg)
 
 
 # ============================================================================
@@ -1019,17 +1204,17 @@ class DualTelegramManager:
                  short_bot_token=None, short_chat_id=None, short_topic_id=None,
                  long_bot_token=None,  long_chat_id=None,  long_topic_id=None):
         self.short_bot = TelegramBot(
-            bot_token=short_bot_token or os.getenv("SHORT_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
-            chat_id=short_chat_id     or os.getenv("SHORT_TELEGRAM_CHAT_ID")   or os.getenv("TELEGRAM_CHAT_ID"),
+            bot_token=short_bot_token or os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
+            chat_id=short_chat_id     or os.getenv("SHORT_TELEGRAM_CHAT_ID"),
             topic_id=short_topic_id   or os.getenv("SHORT_TELEGRAM_TOPIC_ID"),
         )
         self.long_bot = TelegramBot(
-            bot_token=long_bot_token or os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
-            chat_id=long_chat_id     or os.getenv("LONG_TELEGRAM_CHAT_ID")   or os.getenv("TELEGRAM_CHAT_ID"),
+            bot_token=long_bot_token or os.getenv("LONG_TELEGRAM_BOT_TOKEN"),
+            chat_id=long_chat_id     or os.getenv("LONG_TELEGRAM_CHAT_ID"),
             topic_id=long_topic_id   or os.getenv("LONG_TELEGRAM_TOPIC_ID"),
         )
 
-    async def send_signal(self, direction: str, **kwargs) -> bool:
+    async def send_signal(self, direction: str, **kwargs) -> Optional[int]:
         if direction == "short":
             return await self.short_bot.send_signal(direction="short", **kwargs)
         return await self.long_bot.send_signal(direction="long", **kwargs)
