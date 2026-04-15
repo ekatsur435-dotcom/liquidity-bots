@@ -51,7 +51,7 @@ services:
       - key: MAX_SHORT_POSITIONS
         value: "20"
       - key: MIN_VOLUME_USDT
-        value: "1000000"
+        value: "300000"
       - key: MAX_WATCHLIST
         value: "200"
 
