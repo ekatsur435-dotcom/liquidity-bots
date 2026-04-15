@@ -61,7 +61,7 @@ services:
       - key: BINGX_DEMO_MODE
         value: "true"
       - key: RISK_PER_TRADE
-        value: "0.001"
+        value: "0.0005"
 
       # ── Trailing stop (SHORT активирует раньше) ────────────────────────────
       - key: SHORT_TRAIL_ACTIVATION
