@@ -78,9 +78,9 @@ class Config:
     USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # Watchlist — настраивается через Render Environment Variables:
-    #   MIN_VOLUME_USDT = минимальный суточный объём (500_000 = $500K)
+    #   MIN_VOLUME_USDT = минимальный суточный объём (300_000 = $300K)
     #   MAX_WATCHLIST   = сколько монет сканировать (200)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
 
 # ============================================================================
