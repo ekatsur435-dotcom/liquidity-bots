@@ -26,7 +26,7 @@ class TradeConfig:
     enabled:             bool  = True
     demo_mode:           bool  = True
     max_positions:       int   = 10        # ← ENV: MAX_LONG_POSITIONS / MAX_SHORT_POSITIONS
-    risk_per_trade:      float = 0.001     # 0.1% от баланса
+    risk_per_trade:      float = 0.0005     # 0.1% от баланса
     max_daily_risk:      float = 0.05      # 5% максимум в день
     default_leverage:    int   = 20
     min_leverage:        int   = 5
