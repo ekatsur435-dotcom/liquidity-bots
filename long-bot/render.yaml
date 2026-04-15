@@ -61,7 +61,7 @@ services:
       - key: BINGX_DEMO_MODE
         value: "true"          # true = DEMO (VST), false = реальные деньги!
       - key: RISK_PER_TRADE
-        value: "0.001"         # 0.1% баланса на сделку
+        value: "0.0005"         # 0.1% баланса на сделку
 
       # ── SMC ───────────────────────────────────────────────────────────────
       - key: USE_SMC
