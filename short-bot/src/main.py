@@ -91,7 +91,7 @@ class Config:
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # Watchlist — управляется через Render Environment Variables
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "200"))
 
 
