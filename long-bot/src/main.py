@@ -72,7 +72,7 @@ class Config:
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "false").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.001"))
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.0005"))
 
     USE_SMC       = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS = bool(os.getenv("COINGLASS_API_KEY", ""))
