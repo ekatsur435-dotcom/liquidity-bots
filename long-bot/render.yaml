@@ -51,7 +51,7 @@ services:
       - key: MAX_LONG_POSITIONS
         value: "20"            # максимум открытых позиций
       - key: MIN_VOLUME_USDT
-        value: "1000000"       # мин. объём торгов за 24ч ($1M)
+        value: "300000"       # мин. объём торгов за 24ч ($1M)
       - key: MAX_WATCHLIST
         value: "200"           # кол-во монет для сканирования
 
