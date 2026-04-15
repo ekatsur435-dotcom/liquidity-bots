@@ -84,7 +84,7 @@ class Config:
     # BingX
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "false").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.001"))
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.0005"))
 
     # SMC и CoinGlass
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
