@@ -1,607 +1,589 @@
 """
-Pattern Detection System - БЕЗ PANDAS
-8 паттернов: 4 для SHORT + 4 для LONG
-Все детектируются на 15-минутном таймфрейме
+Pattern Detector v3.0 — ЕДИНЫЙ ФАЙЛ (Long + Short)
+
+ЗАМЕНЯЕТ оба файла:
+  - pattern_detector.py (старый)
+  - pattern_detector_v2.py (удалить!)
+
+ИСПРАВЛЕНИЕ v3.0:
+  ✅ PatternResult.strength → alias для score_bonus
+     Исправляет: 'PatternResult' object has no attribute 'strength'
+     Scorer.py использует p.strength — теперь работает с обоими файлами
+
+ПАТТЕРНЫ:
+  LONG:  MEGA_LONG, TRAP_SHORT, REJECTION_LONG,
+         BREAKOUT_LONG, MOMENTUM_LONG, LIQUIDITY_SWEEP_LONG,
+         CONSOLIDATION_BREAK_LONG, WYCKOFF_SPRING
+  SHORT: MEGA_SHORT, TRAP_LONG, REJECTION_SHORT,
+         BREAKOUT_SHORT, MOMENTUM_SHORT, LIQUIDITY_SWEEP_SHORT,
+         DISTRIBUTION_BREAK, WYCKOFF_UPTHRUST
 """
 
-from typing import List, Optional, Dict, Tuple, Any
-from dataclasses import dataclass
-from datetime import datetime
-import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
+
+# ============================================================================
+# PatternResult — ЕДИНЫЙ датакласс для всех паттернов
+# ============================================================================
 
 @dataclass
-class Pattern:
-    """Торговый паттерн"""
+class PatternResult:
     name: str
-    direction: str  # 'short' или 'long'
-    strength: int     # 10-30 очков
-    candles_ago: int  # На какой свече найден (0 = текущая)
-    freshness: int    # Минут назад
-    volume_multiplier: float
-    delta_at_trigger: float
-    entry_price: float
-    stop_loss: float
-    confidence: str   # 'weak', 'moderate', 'strong', 'very_strong'
-    description: str
+    score_bonus: int       # основная метрика силы (0-30)
+    confidence: float      # 0.0-1.0
+    direction: str         # "long" | "short"
+    suggested_sl_pct: float = 0.0
+    suggested_tp1_pct: float = 0.0
+    reasons: List[str] = field(default_factory=list)
+
+    # ── ОБРАТНАЯ СОВМЕСТИМОСТЬ: scorer.py использует p.strength ─────────────
+    # Исправляет: 'PatternResult' object has no attribute 'strength'
+    @property
+    def strength(self) -> int:
+        """Alias для score_bonus (обратная совместимость со старым scorer.py)."""
+        return self.score_bonus
+
+    # Поля из старого Pattern датакласса (для scorer.py)
+    @property
+    def candles_ago(self) -> int:
+        return 0
+
+    @property
+    def freshness(self) -> int:
+        return 2
 
 
-class BasePatternDetector:
-    """Базовый класс для детекторов паттернов"""
-    
-    def __init__(self, min_volume_mult: float = 1.5):
-        self.min_volume_mult = min_volume_mult
-    
-    def _calculate_atr(self, data: List[Dict], period: int = 14) -> float:
-        """Расчёт ATR (Average True Range)"""
-        if len(data) < 2:
-            return 0.0
-        
-        highs = [self._get_high(candle) for candle in data[-period:]]
-        lows = [self._get_low(candle) for candle in data[-period:]]
-        
-        ranges = [h - l for h, l in zip(highs, lows)]
-        return np.mean(ranges) if ranges else 0.0
-    
-    def _get_price_trend(self, data: List[Any], lookback: int = 5) -> str:
-        """Определить тренд цены"""
-        if len(data) < lookback:
-            return 'sideways'
-        
-        first_price = self._get_close(data[-lookback])
-        last_price = self._get_close(data[-1])
-        
-        change = (last_price - first_price) / first_price * 100
-        
-        if change > 2:
-            return 'rising'
-        elif change < -2:
-            return 'falling'
-        else:
-            return 'sideways'
-    
-    def _get_volume_trend(self, data: List[Any], lookback: int = 5) -> str:
-        """Определить тренд объёма"""
-        if len(data) < lookback + 5:
-            return 'stable'
-        
-        recent_vol = np.mean([self._get_volume(d) for d in data[-lookback:]])
-        prev_vol = np.mean([self._get_volume(d) for d in data[-lookback-5:-lookback]])
-        
-        ratio = recent_vol / prev_vol if prev_vol > 0 else 1
-        
-        if ratio > 1.5:
-            return 'rising'
-        elif ratio < 0.7:
-            return 'falling'
-        else:
-            return 'stable'
+# ============================================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================================
 
-    # =========================================================================
-    # HELPER METHODS — общие для SHORT и LONG детекторов
-    # =========================================================================
+def _closes(candles) -> List[float]:
+    return [c.close for c in candles]
 
-    def _get_candle(self, data: List[Any], idx: int) -> Optional[Any]:
-        """Безопасно получить свечу по индексу"""
-        if 0 <= idx < len(data):
-            return data[idx]
-        return None
+def _highs(candles) -> List[float]:
+    return [c.high for c in candles]
 
-    def _get_open(self, candle: Any) -> float:
-        return candle['open'] if isinstance(candle, dict) else candle.open
+def _lows(candles) -> List[float]:
+    return [c.low for c in candles]
 
-    def _get_high(self, candle: Any) -> float:
-        return candle['high'] if isinstance(candle, dict) else candle.high
+def _avg_vol(candles, lookback: int = 20) -> float:
+    vols = [c.quote_volume for c in candles]
+    if len(vols) < lookback:
+        return sum(vols) / len(vols) if vols else 1.0
+    return sum(vols[-lookback-1:-1]) / lookback
 
-    def _get_low(self, candle: Any) -> float:
-        return candle['low'] if isinstance(candle, dict) else candle.low
+def _vol_spike(candles, lookback: int = 20) -> float:
+    avg = _avg_vol(candles, lookback)
+    if avg <= 0:
+        return 1.0
+    return candles[-1].quote_volume / avg
 
-    def _get_close(self, candle: Any) -> float:
-        return candle['close'] if isinstance(candle, dict) else candle.close
+def _atr(candles, period: int = 14) -> float:
+    if len(candles) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        pc  = candles[i-1].close
+        tr  = max(candles[i].high - candles[i].low,
+                  abs(candles[i].high - pc), abs(candles[i].low - pc))
+        trs.append(tr)
+    return sum(trs[-period:]) / period
 
-    def _get_volume(self, candle: Any) -> float:
-        return candle['volume'] if isinstance(candle, dict) else candle.volume
+def _body(c) -> float:
+    return abs(c.close - c.open)
 
-    def _get_timestamp(self, candle: Any) -> datetime:
-        ts = candle.get('timestamp', datetime.now()) if isinstance(candle, dict) else getattr(candle, 'timestamp', datetime.now())
-        if isinstance(ts, int):
-            return datetime.fromtimestamp(ts / 1000)
-        return ts
+def _ema(values: List[float], period: int) -> List[float]:
+    if len(values) < period:
+        return values
+    k   = 2 / (period + 1)
+    ema = [sum(values[:period]) / period]
+    for v in values[period:]:
+        ema.append(v * k + ema[-1] * (1 - k))
+    return ema
 
-    def _is_bullish(self, candle: Any) -> bool:
-        return self._get_close(candle) > self._get_open(candle)
+def _swing_highs(candles, lookback: int = 3) -> List[float]:
+    highs = []
+    for i in range(lookback, len(candles) - lookback):
+        h = candles[i].high
+        if (all(candles[j].high <= h for j in range(i-lookback, i)) and
+                all(candles[j].high <= h for j in range(i+1, i+lookback+1))):
+            highs.append(h)
+    return highs
 
-    def _is_bearish(self, candle: Any) -> bool:
-        return self._get_close(candle) < self._get_open(candle)
-
-    def _get_body(self, candle: Any) -> float:
-        return abs(self._get_close(candle) - self._get_open(candle))
-
-    def _get_range(self, candle: Any) -> float:
-        return self._get_high(candle) - self._get_low(candle)
+def _swing_lows(candles, lookback: int = 3) -> List[float]:
+    lows = []
+    for i in range(lookback, len(candles) - lookback):
+        l = candles[i].low
+        if (all(candles[j].low >= l for j in range(i-lookback, i)) and
+                all(candles[j].low >= l for j in range(i+1, i+lookback+1))):
+            lows.append(l)
+    return lows
 
 
-class ShortPatternDetector(BasePatternDetector):
-    """Детектор паттернов для SHORT позиций"""
-    
-    def detect_all(self, data_15m: List[Dict], delta_15m: List[float],
-                  ohlcv_1h: List[Dict] = None) -> List[Pattern]:
-        """Обнаружить все SHORT паттерны"""
-        patterns = []
-        
-        rejection = self.detect_rejection_short(data_15m, delta_15m)
-        if rejection:
-            patterns.append(rejection)
-        
-        trap = self.detect_trap_long(data_15m, delta_15m)
-        if trap:
-            patterns.append(trap)
-        
-        mega = self.detect_mega_short(data_15m, delta_15m)
-        if mega:
-            patterns.append(mega)
-        
-        distribution = self.detect_distribution(data_15m, delta_15m)
-        if distribution:
-            patterns.append(distribution)
-        
-        return patterns
-    
-    def detect_rejection_short(self, data: List[Any], 
-                              delta_data: List[float]) -> Optional[Pattern]:
-        """REJECTION SHORT: Цена отбилась от сопротивления вниз"""
-        if len(data) < 3:
+# ============================================================================
+# LONG PATTERN DETECTOR
+# ============================================================================
+
+class LongPatternDetector:
+    """Детектор паттернов для LONG входов."""
+
+    def detect_all(self, candles, hourly_deltas=None, market_data=None) -> List[PatternResult]:
+        results = []
+        for fn in [
+            self.detect_breakout_long,
+            self.detect_momentum_long,
+            self.detect_liquidity_sweep_long,
+            self.detect_consolidation_break_long,
+            self.detect_wyckoff_spring,
+            self.detect_mega_long,
+            self.detect_trap_short,
+            self.detect_rejection_long,
+        ]:
+            try:
+                r = fn(candles, hourly_deltas, market_data)
+                if r:
+                    results.append(r)
+            except Exception:
+                pass
+        results.sort(key=lambda x: x.score_bonus, reverse=True)
+        return results
+
+    def _get_price_trend(self, candles) -> str:
+        if len(candles) < 20:
+            return "flat"
+        closes = _closes(candles)
+        ema20  = _ema(closes, 20)
+        if not ema20:
+            return "flat"
+        slope = (ema20[-1] - ema20[-5]) / ema20[-5] * 100 if len(ema20) >= 5 else 0
+        if closes[-1] > ema20[-1] and slope > 0.1:
+            return "up"
+        elif closes[-1] < ema20[-1] and slope < -0.1:
+            return "down"
+        return "flat"
+
+    # ── НОВЫЕ ПАТТЕРНЫ ────────────────────────────────────────────────────────
+
+    def detect_breakout_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """BREAKOUT_LONG: Пробой флэта вверх с объёмом."""
+        if len(candles) < 25:
             return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        total_range = self._get_high(current) - self._get_low(current)
-        if total_range == 0:
+        consolidation = candles[-20:-2]
+        last          = candles[-1]
+        high_cons     = max(c.high for c in consolidation)
+        low_cons      = min(c.low  for c in consolidation)
+        cons_range    = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
+        if cons_range > 3.0 or last.close <= high_cons:
             return None
-        
-        upper_wick = self._get_high(current) - max(self._get_open(current), self._get_close(current))
-        lower_wick = min(self._get_open(current), self._get_close(current)) - self._get_low(current)
-        body_size = abs(self._get_close(current) - self._get_open(current))
-        
-        is_shooting_star = (
-            upper_wick > total_range * 0.6 and
-            body_size < total_range * 0.3 and
-            self._get_close(current) < self._get_open(current) and
-            self._get_close(current) < self._get_low(current) + total_range * 0.3
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 1.5:
+            return None
+        rng = last.high - last.low
+        if rng > 0 and (last.close - last.open) / rng < 0.5:
+            return None
+        breakout_pct = (last.close - high_cons) / high_cons * 100
+        bonus = min(25, int(10 + vol_spike * 3 + breakout_pct * 2))
+        return PatternResult(
+            name="BREAKOUT_LONG", score_bonus=bonus,
+            confidence=min(0.9, 0.5 + vol_spike * 0.1), direction="long",
+            suggested_sl_pct=round((last.close - low_cons) / last.close * 100, 2),
+            reasons=[f"Breakout выше {high_cons:.4f} (флэт {cons_range:.1f}%)",
+                     f"Volume spike {vol_spike:.1f}x | +{breakout_pct:.2f}%"],
         )
-        
-        is_bearish_engulfing = False
-        if len(data) >= 2:
-            prev = data[-2]
-            is_bearish_engulfing = (
-                self._get_open(current) > self._get_close(prev) and
-                self._get_close(current) < self._get_open(prev) and
-                self._is_bearish(current) and  # Медвежья свеча
-                self._get_high(current) > self._get_high(prev) and      # Пробой максимума
-                self._get_close(current) < self._get_low(prev)          # Закрытие ниже минимума пред.
-            )
-        
-        if not (is_shooting_star or is_bearish_engulfing):
+
+    def detect_momentum_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """MOMENTUM_LONG: Сильная бычья свеча + volume spike ≥2x."""
+        if len(candles) < 25:
             return None
-        
-        if self._get_volume(current) < avg_volume * self.min_volume_mult:
+        last      = candles[-1]
+        atr_v     = _atr(candles, 14)
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 2.0:
             return None
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta > 0:
+        rng = last.high - last.low
+        if rng <= 0 or (last.close - last.low) / rng < 0.65:
             return None
-        
-        if is_bearish_engulfing:
-            confidence = 'very_strong'
-            strength = 20
-        elif upper_wick > total_range * 0.7:
-            confidence = 'strong'
-            strength = 18
-        else:
-            confidence = 'moderate'
-            strength = 15
-        
-        sl = self._get_high(current) + (self._get_high(current) - self._get_low(current)) * 0.2
-        
-        return Pattern(
-            name='REJECTION_SHORT',
-            direction='short',
-            strength=strength,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence=confidence,
-            description=f'Price rejected from high with {"engulfing" if is_bearish_engulfing else "shooting star"} pattern'
+        body = last.close - last.open
+        if body <= 0 or (atr_v > 0 and body < atr_v * 0.5):
+            return None
+        closes = _closes(candles)
+        ema20  = _ema(closes, 20)
+        if ema20 and last.close < ema20[-1]:
+            return None
+        rsi = getattr(md, "rsi_1h", None) if md else None
+        if rsi and (rsi < 40 or rsi > 78):
+            return None
+        pct_move = (last.close - last.open) / last.open * 100 if last.open else 0
+        bonus    = min(20, int(12 + vol_spike * 1.5))
+        return PatternResult(
+            name="MOMENTUM_LONG", score_bonus=bonus,
+            confidence=min(0.85, 0.55 + vol_spike * 0.08), direction="long",
+            suggested_sl_pct=round((last.close - last.open) / last.close * 100, 2),
+            reasons=[f"Momentum свеча +{pct_move:.2f}% | Volume {vol_spike:.1f}x avg"],
         )
-    
-    def detect_trap_long(self, data: List[Any], 
-                        delta_data: List[float]) -> Optional[Pattern]:
-        """TRAP LONG: Ловушка для лонгистов"""
-        if len(data) < 5:
+
+    def detect_liquidity_sweep_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """LIQUIDITY_SWEEP_LONG: Stop hunt вниз → разворот (ICT/SMC)."""
+        if len(candles) < 20:
             return None
-        
-        recent_5 = data[-5:]
-        highs = [self._get_high(d) for d in recent_5]
-        lows = [self._get_low(d) for d in recent_5]
-        
-        resistance = max(highs[:-1])  # Максимум за 4 свечи до текущей
-        current = data[-1]
-        
-        fake_breakout = (
-            self._get_high(current) > resistance and
-            self._get_close(current) < resistance and
-            self._is_bearish(current)
+        last  = candles[-1]
+        sweep = candles[-2]
+        atr_v = _atr(candles[:-2], 14)
+        if atr_v <= 0:
+            return None
+        lower_wick = min(sweep.open, sweep.close) - sweep.low
+        if lower_wick < atr_v * 1.0:
+            return None
+        swing_lows_list = _swing_lows(candles[:-3], lookback=3)
+        if not swing_lows_list:
+            return None
+        recent_sl = (min(swing_lows_list[-3:]) if len(swing_lows_list) >= 3
+                     else swing_lows_list[-1])
+        if sweep.low > recent_sl or sweep.close < recent_sl:
+            return None
+        if last.close <= last.open:
+            return None
+        vol_spike    = _vol_spike(candles[:-1], 20)
+        sweep_depth  = (recent_sl - sweep.low) / atr_v
+        bonus        = min(25, int(18 + sweep_depth * 2 + vol_spike))
+        return PatternResult(
+            name="LIQUIDITY_SWEEP_LONG", score_bonus=bonus,
+            confidence=0.75, direction="long",
+            suggested_sl_pct=round((last.close - sweep.low) / last.close * 100 + 0.2, 2),
+            reasons=[f"Ликвидность снята под {recent_sl:.4f}",
+                     f"Sweep {sweep_depth:.1f}x ATR | Volume {vol_spike:.1f}x",
+                     "Цена вернулась выше уровня — разворот"],
         )
-        
-        if not fake_breakout:
+
+    def detect_consolidation_break_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """CONSOLIDATION_BREAK_LONG: Выход из боковика вверх."""
+        if len(candles) < 25:
             return None
-        
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        if self._get_volume(current) < avg_volume * self.min_volume_mult:
+        cons       = candles[-22:-2]
+        last       = candles[-1]
+        high_cons  = max(c.high for c in cons)
+        low_cons   = min(c.low  for c in cons)
+        range_pct  = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
+        if range_pct > 2.5 or last.close <= high_cons:
             return None
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta > -1:
+        vol_spike    = _vol_spike(candles, 20)
+        if vol_spike < 1.3:
             return None
-        
-        sl = self._get_high(current) + (self._get_high(current) - self._get_low(current)) * 0.3
-        
-        return Pattern(
-            name='TRAP_LONG',
-            direction='short',
-            strength=22,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='strong',
-            description=f'Trap for longs: fake breakout above {resistance:.2f} then reversal'
+        breakout_pct = (last.close - high_cons) / high_cons * 100
+        bonus        = min(18, int(10 + vol_spike * 2 + breakout_pct))
+        return PatternResult(
+            name="CONSOLIDATION_BREAK_LONG", score_bonus=bonus,
+            confidence=0.65, direction="long",
+            suggested_sl_pct=round((last.close - low_cons) / last.close * 100, 2),
+            reasons=[f"Флэт {range_pct:.1f}% ({len(cons)} свечей) → пробой +{breakout_pct:.2f}%",
+                     f"Volume {vol_spike:.1f}x"],
         )
-    
-    def detect_mega_short(self, data: List[Any], 
-                         delta_data: List[float]) -> Optional[Pattern]:
-        """MEGA SHORT: Доминация продавцов"""
-        if len(data) < 5:
+
+    def detect_wyckoff_spring(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """WYCKOFF_SPRING: Ложный пробой лоу диапазона накопления."""
+        if len(candles) < 30:
             return None
-        
-        recent_5 = data[-5:]
-        red_candles = sum(1 for d in recent_5 if self._is_bearish(d))
-        
-        if red_candles < 4:
+        acc    = candles[-30:-5]
+        last   = candles[-1]
+        prev   = candles[-2]
+        r_high = max(c.high for c in acc)
+        r_low  = min(c.low  for c in acc)
+        r_pct  = (r_high - r_low) / r_low * 100 if r_low else 999
+        if not (1.5 < r_pct < 8.0):
             return None
-        
-        volumes = [self._get_volume(d) for d in recent_5]
-        avg_vol = np.mean(volumes)
-        high_vol = all(v > avg_vol * 0.8 for v in volumes)
-        
-        if not high_vol:
+        if prev.low > r_low or prev.close < r_low:
             return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta > 0:
+        avg_vol = _avg_vol(acc, min(len(acc), 15))
+        if prev.quote_volume > avg_vol * 1.5:
             return None
-        
-        sl = max(self._get_high(d) for d in recent_5) * 1.01
-        
-        return Pattern(
-            name='MEGA_SHORT',
-            direction='short',
-            strength=25,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='very_strong',
-            description=f'MEGA SHORT: {red_candles}/5 red candles, sellers dominating'
+        if last.close < r_low or last.close <= last.open:
+            return None
+        spring_depth = (r_low - prev.low) / r_low * 100
+        return PatternResult(
+            name="WYCKOFF_SPRING", score_bonus=22,
+            confidence=0.80, direction="long",
+            suggested_sl_pct=round((last.close - prev.low) / last.close * 100 + 0.3, 2),
+            reasons=[f"Wyckoff Spring: диапазон {r_pct:.1f}%",
+                     f"Spring -{spring_depth:.2f}% ниже поддержки",
+                     "Низкий объём на spring — ложный пробой"],
         )
-    
-    def detect_distribution(self, data: List[Any], 
-                           delta_data: List[float]) -> Optional[Pattern]:
-        """DISTRIBUTION: Крупный игрок распродаёт позицию"""
-        if len(data) < 10:
+
+    # ── КЛАССИЧЕСКИЕ ПАТТЕРНЫ ─────────────────────────────────────────────────
+
+    def detect_mega_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 20:
             return None
-        
-        recent_10 = data[-10:]
-        highs = [self._get_high(d) for d in recent_10]
-        lows = [self._get_low(d) for d in recent_10]
-        
-        range_high = max(highs)
-        range_low = min(lows)
-        total_range = range_high - range_low
-        
-        if total_range == 0:
+        rsi = getattr(md, "rsi_1h", None) if md else None
+        if rsi and rsi > 45:
             return None
-        
-        in_range = all(range_low * 0.98 <= self._get_close(d) <= range_high * 1.02 for d in recent_10)
-        
-        if not in_range:
+        last       = candles[-1]
+        body       = _body(last)
+        lower_wick = min(last.open, last.close) - last.low
+        if lower_wick < body * 1.5:
             return None
-        
-        first_5_delta = sum(delta_data[-10:-5]) if len(delta_data) >= 10 else 0
-        last_5_delta = sum(delta_data[-5:]) if len(delta_data) >= 5 else 0
-        
-        distribution_detected = first_5_delta > 0 and last_5_delta < -first_5_delta * 0.5
-        
-        if not distribution_detected:
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 1.2:
             return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        sl = range_high + total_range * 0.1
-        
-        return Pattern(
-            name='DISTRIBUTION',
-            direction='short',
-            strength=28,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=last_5_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='very_strong',
-            description=f'Distribution detected: smart money selling in range {range_low:.2f}-{range_high:.2f}'
+        return PatternResult(
+            name="MEGA_LONG", score_bonus=20, confidence=0.6, direction="long",
+            reasons=["RSI перепродан" if rsi else "Нижний wick",
+                     f"Lower wick {lower_wick:.4f} | Volume {vol_spike:.1f}x"],
+        )
+
+    def detect_trap_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 20:
+            return None
+        last  = candles[-1]
+        prev  = candles[-2]
+        atr_v = _atr(candles[:-2], 14)
+        prev_lower = min(prev.open, prev.close) - prev.low
+        if prev_lower < atr_v * 0.8 or last.close <= last.open:
+            return None
+        return PatternResult(
+            name="TRAP_SHORT", score_bonus=18, confidence=0.58, direction="long",
+            reasons=["Шортисты пойманы в ловушку", "Разворот вверх подтверждён"],
+        )
+
+    def detect_rejection_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 10:
+            return None
+        last       = candles[-1]
+        lower_wick = min(last.open, last.close) - last.low
+        body       = _body(last)
+        if lower_wick < body * 1.0 or last.close < last.open:
+            return None
+        return PatternResult(
+            name="REJECTION_LONG", score_bonus=15, confidence=0.55, direction="long",
+            reasons=["Отскок от поддержки", f"Lower wick {lower_wick:.4f}"],
         )
 
 
-class LongPatternDetector(BasePatternDetector):
-    """Детектор паттернов для LONG позиций"""
-    
-    def detect_all(self, data_15m: List[Dict], delta_15m: List[float],
-                  ohlcv_1h: List[Dict] = None) -> List[Pattern]:
-        """Обнаружить все LONG паттерны"""
-        patterns = []
-        
-        rejection = self.detect_rejection_long(data_15m, delta_15m)
-        if rejection:
-            patterns.append(rejection)
-        
-        trap = self.detect_trap_short(data_15m, delta_15m)
-        if trap:
-            patterns.append(trap)
-        
-        mega = self.detect_mega_long(data_15m, delta_15m)
-        if mega:
-            patterns.append(mega)
-        
-        accumulation = self.detect_accumulation(data_15m, delta_15m)
-        if accumulation:
-            patterns.append(accumulation)
-        
-        return patterns
-    
-    def detect_rejection_long(self, data: List[Any], 
-                             delta_data: List[float]) -> Optional[Pattern]:
-        """REJECTION LONG: Отбой от поддержки вверх"""
-        if len(data) < 3:
+# ============================================================================
+# SHORT PATTERN DETECTOR
+# ============================================================================
+
+class ShortPatternDetector:
+    """Детектор паттернов для SHORT входов."""
+
+    def detect_all(self, candles, hourly_deltas=None, market_data=None) -> List[PatternResult]:
+        results = []
+        for fn in [
+            self.detect_breakout_short,
+            self.detect_momentum_short,
+            self.detect_liquidity_sweep_short,
+            self.detect_distribution_break,
+            self.detect_wyckoff_upthrust,
+            self.detect_mega_short,
+            self.detect_trap_long,
+            self.detect_rejection_short,
+        ]:
+            try:
+                r = fn(candles, hourly_deltas, market_data)
+                if r:
+                    results.append(r)
+            except Exception:
+                pass
+        results.sort(key=lambda x: x.score_bonus, reverse=True)
+        return results
+
+    def _get_price_trend(self, candles) -> str:
+        if len(candles) < 20:
+            return "flat"
+        closes = _closes(candles)
+        ema20  = _ema(closes, 20)
+        if not ema20:
+            return "flat"
+        slope = (ema20[-1] - ema20[-5]) / ema20[-5] * 100 if len(ema20) >= 5 else 0
+        if closes[-1] < ema20[-1] and slope < -0.1:
+            return "down"
+        elif closes[-1] > ema20[-1] and slope > 0.1:
+            return "up"
+        return "flat"
+
+    # ── НОВЫЕ SHORT ПАТТЕРНЫ ──────────────────────────────────────────────────
+
+    def detect_breakout_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """BREAKOUT_SHORT: Пробой флэта вниз с объёмом."""
+        if len(candles) < 25:
             return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        total_range = self._get_high(current) - self._get_low(current)
-        if total_range == 0:
+        cons      = candles[-20:-2]
+        last      = candles[-1]
+        low_cons  = min(c.low  for c in cons)
+        high_cons = max(c.high for c in cons)
+        r_pct     = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
+        if r_pct > 3.0 or last.close >= low_cons:
             return None
-        
-        upper_wick = self._get_high(current) - max(self._get_open(current), self._get_close(current))
-        lower_wick = min(self._get_open(current), self._get_close(current)) - self._get_low(current)
-        body_size = abs(self._get_close(current) - self._get_open(current))
-        
-        is_hammer = (
-            lower_wick > total_range * 0.6 and
-            body_size < total_range * 0.3 and
-            self._is_bullish(current) and
-            self._get_close(current) > self._get_low(current) + total_range * 0.7
-        )
-        
-        is_bullish_engulfing = False
-        if len(data) >= 2:
-            prev = data[-2]
-            is_bullish_engulfing = (
-                self._get_open(current) < self._get_close(prev) and
-                self._get_close(current) > self._get_open(prev) and
-                self._is_bullish(current) and
-                self._get_low(current) < self._get_low(prev) and
-                self._get_close(current) > self._get_high(prev)
-            )
-        
-        if not (is_hammer or is_bullish_engulfing):
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 1.5:
             return None
-        
-        if self._get_volume(current) < avg_volume * self.min_volume_mult:
+        rng = last.high - last.low
+        if rng > 0 and (last.high - last.close) / rng < 0.5:
             return None
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta < 0:
-            return None
-        
-        if is_bullish_engulfing:
-            confidence = 'very_strong'
-            strength = 20
-        elif lower_wick > total_range * 0.7:
-            confidence = 'strong'
-            strength = 18
-        else:
-            confidence = 'moderate'
-            strength = 15
-        
-        sl = self._get_low(current) - (self._get_high(current) - self._get_low(current)) * 0.2
-        
-        return Pattern(
-            name='REJECTION_LONG',
-            direction='long',
-            strength=strength,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence=confidence,
-            description=f'Price rejected low with {"engulfing" if is_bullish_engulfing else "hammer"} pattern'
-        )
-    
-    def detect_trap_short(self, data: List[Any], 
-                         delta_data: List[float]) -> Optional[Pattern]:
-        """TRAP SHORT: Ловушка для шортистов"""
-        if len(data) < 5:
-            return None
-        
-        recent_5 = data[-5:]
-        lows = [self._get_low(d) for d in recent_5]
-        
-        support = min(lows[:-1])
-        current = data[-1]
-        
-        fake_breakdown = (
-            self._get_low(current) < support and
-            self._get_close(current) > support and
-            self._get_close(current) > self._get_open(current)
-        )
-        
-        if not fake_breakdown:
-            return None
-        
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        if self._get_volume(current) < avg_volume * self.min_volume_mult:
-            return None
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta < 1:
-            return None
-        
-        sl = self._get_low(current) - (self._get_high(current) - self._get_low(current)) * 0.3
-        
-        return Pattern(
-            name='TRAP_SHORT',
-            direction='long',
-            strength=22,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='strong',
-            description=f'Trap for shorts: fake breakdown below {support:.2f} then recovery'
-        )
-    
-    def detect_mega_long(self, data: List[Any], 
-                        delta_data: List[float]) -> Optional[Pattern]:
-        """MEGA LONG: Доминация покупателей"""
-        if len(data) < 5:
-            return None
-        
-        recent_5 = data[-5:]
-        green_candles = sum(1 for d in recent_5 if self._is_bullish(d))
-        
-        if green_candles < 4:
-            return None
-        
-        volumes = [self._get_volume(d) for d in recent_5]
-        avg_vol = np.mean(volumes)
-        high_vol = all(v > avg_vol * 0.8 for v in volumes)
-        
-        if not high_vol:
-            return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        current_delta = delta_data[-1] if delta_data else 0
-        if current_delta < 0:
-            return None
-        
-        sl = min(self._get_low(d) for d in recent_5) * 0.99
-        
-        return Pattern(
-            name='MEGA_LONG',
-            direction='long',
-            strength=25,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=current_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='very_strong',
-            description=f'MEGA LONG: {green_candles}/5 green candles, buyers dominating'
-        )
-    
-    def detect_accumulation(self, data: List[Any], 
-                           delta_data: List[float]) -> Optional[Pattern]:
-        """ACCUMULATION: Крупный игрок накапливает"""
-        if len(data) < 10:
-            return None
-        
-        recent_10 = data[-10:]
-        highs = [self._get_high(d) for d in recent_10]
-        lows = [self._get_low(d) for d in recent_10]
-        
-        range_high = max(highs)
-        range_low = min(lows)
-        total_range = range_high - range_low
-        
-        if total_range == 0:
-            return None
-        
-        in_range = all(range_low * 0.98 <= self._get_close(d) <= range_high * 1.02 for d in recent_10)
-        
-        if not in_range:
-            return None
-        
-        first_5_delta = sum(delta_data[-10:-5]) if len(delta_data) >= 10 else 0
-        last_5_delta = sum(delta_data[-5:]) if len(delta_data) >= 5 else 0
-        
-        accumulation_detected = first_5_delta < 0 and last_5_delta > abs(first_5_delta) * 0.5
-        
-        if not accumulation_detected:
-            return None
-        
-        current = data[-1]
-        avg_volume = np.mean([self._get_volume(d) for d in data[-20:]]) if len(data) >= 20 else self._get_volume(current)
-        
-        sl = range_low - total_range * 0.1
-        
-        return Pattern(
-            name='ACCUMULATION',
-            direction='long',
-            strength=28,
-            candles_ago=0,
-            freshness=0,
-            volume_multiplier=self._get_volume(current) / avg_volume if avg_volume > 0 else 1.0,
-            delta_at_trigger=last_5_delta,
-            entry_price=self._get_close(current),
-            stop_loss=sl,
-            confidence='very_strong',
-            description=f'Accumulation detected: smart money buying in range {range_low:.2f}-{range_high:.2f}'
+        breakdown_pct = (low_cons - last.close) / low_cons * 100
+        bonus = min(25, int(10 + vol_spike * 3 + breakdown_pct * 2))
+        return PatternResult(
+            name="BREAKOUT_SHORT", score_bonus=bonus,
+            confidence=min(0.9, 0.5 + vol_spike * 0.1), direction="short",
+            suggested_sl_pct=round((high_cons - last.close) / last.close * 100, 2),
+            reasons=[f"Пробой ниже {low_cons:.4f} (флэт {r_pct:.1f}%)",
+                     f"Volume spike {vol_spike:.1f}x | -{breakdown_pct:.2f}%"],
         )
 
+    def detect_momentum_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """MOMENTUM_SHORT: Медвежья импульсная свеча + volume spike ≥2x."""
+        if len(candles) < 25:
+            return None
+        last      = candles[-1]
+        atr_v     = _atr(candles, 14)
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 2.0:
+            return None
+        rng = last.high - last.low
+        if rng <= 0 or (last.high - last.close) / rng < 0.65:
+            return None
+        body = last.open - last.close
+        if body <= 0 or (atr_v > 0 and body < atr_v * 0.5):
+            return None
+        closes = _closes(candles)
+        ema20  = _ema(closes, 20)
+        if ema20 and last.close > ema20[-1]:
+            return None
+        rsi = getattr(md, "rsi_1h", None) if md else None
+        if rsi and (rsi > 65 or rsi < 25):
+            return None
+        bonus = min(20, int(12 + vol_spike * 1.5))
+        return PatternResult(
+            name="MOMENTUM_SHORT", score_bonus=bonus,
+            confidence=min(0.85, 0.55 + vol_spike * 0.08), direction="short",
+            suggested_sl_pct=round((last.open - last.close) / last.close * 100, 2),
+            reasons=[f"Медвежий импульс | Volume {vol_spike:.1f}x avg"],
+        )
 
-# Example usage
-if __name__ == "__main__":
-    # Тестовые данные
-    data = [
-        {'open': 100, 'high': 105, 'low': 98, 'close': 103, 'volume': 1000},
-        {'open': 103, 'high': 108, 'low': 102, 'close': 104, 'volume': 1200},
-        {'open': 104, 'high': 109, 'low': 100, 'close': 101, 'volume': 1500},
-    ]
-    delta = [0.5, -1.2, 2.0]
-    
-    short_detector = ShortPatternDetector()
-    patterns = short_detector.detect_all(data, delta)
-    
-    for p in patterns:
-        print(f"{p.name}: {p.confidence} (strength: {p.strength})")
+    def detect_liquidity_sweep_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """LIQUIDITY_SWEEP_SHORT: Stop hunt вверх → разворот вниз (ICT/SMC)."""
+        if len(candles) < 20:
+            return None
+        last  = candles[-1]
+        sweep = candles[-2]
+        atr_v = _atr(candles[:-2], 14)
+        if atr_v <= 0:
+            return None
+        upper_wick = sweep.high - max(sweep.open, sweep.close)
+        if upper_wick < atr_v * 1.0:
+            return None
+        swing_highs_list = _swing_highs(candles[:-3], lookback=3)
+        if not swing_highs_list:
+            return None
+        recent_sh = (max(swing_highs_list[-3:]) if len(swing_highs_list) >= 3
+                     else swing_highs_list[-1])
+        if sweep.high < recent_sh or sweep.close > recent_sh:
+            return None
+        if last.close >= last.open:
+            return None
+        vol_spike     = _vol_spike(candles[:-1], 20)
+        sweep_height  = (sweep.high - recent_sh) / recent_sh * 100
+        bonus         = min(25, int(18 + sweep_height * 2 + vol_spike))
+        return PatternResult(
+            name="LIQUIDITY_SWEEP_SHORT", score_bonus=bonus,
+            confidence=0.75, direction="short",
+            suggested_sl_pct=round((sweep.high - last.close) / last.close * 100 + 0.2, 2),
+            reasons=[f"Ликвидность снята над {recent_sh:.4f}",
+                     f"Sweep +{sweep_height:.2f}% выше свинг-хая | Volume {vol_spike:.1f}x",
+                     "Разворот вниз подтверждён"],
+        )
+
+    def detect_distribution_break(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """DISTRIBUTION_BREAK: Пробой нижней границы зоны распределения."""
+        if len(candles) < 25:
+            return None
+        dist  = candles[-20:-2]
+        last  = candles[-1]
+        l     = min(c.low  for c in dist)
+        h     = max(c.high for c in dist)
+        r_pct = (h - l) / l * 100 if l else 999
+        if r_pct > 3.0 or r_pct < 0.5 or last.close >= l:
+            return None
+        vol_spike     = _vol_spike(candles, 20)
+        if vol_spike < 1.3:
+            return None
+        breakdown_pct = (l - last.close) / l * 100
+        bonus         = min(18, int(10 + vol_spike * 2 + breakdown_pct))
+        return PatternResult(
+            name="DISTRIBUTION_BREAK", score_bonus=bonus,
+            confidence=0.65, direction="short",
+            suggested_sl_pct=round((h - last.close) / last.close * 100, 2),
+            reasons=[f"Пробой распределения ниже {l:.4f} | -{breakdown_pct:.2f}%",
+                     f"Volume {vol_spike:.1f}x"],
+        )
+
+    def detect_wyckoff_upthrust(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """WYCKOFF_UPTHRUST: Ложный пробой хая зоны распределения."""
+        if len(candles) < 30:
+            return None
+        dist   = candles[-30:-5]
+        last   = candles[-1]
+        prev   = candles[-2]
+        r_h    = max(c.high for c in dist)
+        r_l    = min(c.low  for c in dist)
+        r_pct  = (r_h - r_l) / r_l * 100 if r_l else 999
+        if not (1.5 < r_pct < 8.0):
+            return None
+        if prev.high < r_h or prev.close > r_h:
+            return None
+        avg_vol = _avg_vol(dist, min(len(dist), 15))
+        if prev.quote_volume > avg_vol * 1.5:
+            return None
+        if last.close > r_h or last.close >= last.open:
+            return None
+        uth = (prev.high - r_h) / r_h * 100
+        return PatternResult(
+            name="WYCKOFF_UPTHRUST", score_bonus=22,
+            confidence=0.80, direction="short",
+            suggested_sl_pct=round((prev.high - last.close) / last.close * 100 + 0.3, 2),
+            reasons=[f"Wyckoff Upthrust: диапазон {r_pct:.1f}%",
+                     f"Upthrust +{uth:.2f}% выше сопротивления",
+                     "Низкий объём на upthrust — ложный пробой"],
+        )
+
+    # ── КЛАССИЧЕСКИЕ ПАТТЕРНЫ ─────────────────────────────────────────────────
+
+    def detect_mega_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 20:
+            return None
+        last       = candles[-1]
+        upper_wick = last.high - max(last.open, last.close)
+        body       = _body(last)
+        if upper_wick < body * 1.5:
+            return None
+        return PatternResult(
+            name="MEGA_SHORT", score_bonus=20, confidence=0.6, direction="short",
+            reasons=["Верхний wick большой", "Отскок от сопротивления"],
+        )
+
+    def detect_trap_long(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 20:
+            return None
+        last  = candles[-1]
+        prev  = candles[-2]
+        atr_v = _atr(candles[:-2], 14)
+        upper_wick = prev.high - max(prev.open, prev.close)
+        if upper_wick < atr_v * 0.8 or last.close >= last.open:
+            return None
+        return PatternResult(
+            name="TRAP_LONG", score_bonus=18, confidence=0.58, direction="short",
+            reasons=["Лонгисты пойманы в ловушку", "Разворот вниз подтверждён"],
+        )
+
+    def detect_rejection_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        if len(candles) < 10:
+            return None
+        last       = candles[-1]
+        upper_wick = last.high - max(last.open, last.close)
+        body       = _body(last)
+        if upper_wick < body * 1.0 or last.close > last.open:
+            return None
+        return PatternResult(
+            name="REJECTION_SHORT", score_bonus=15, confidence=0.55, direction="short",
+            reasons=["Отскок от сопротивления", f"Upper wick {upper_wick:.4f}"],
+        )
