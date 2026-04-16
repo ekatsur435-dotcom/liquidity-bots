@@ -9,53 +9,41 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.0"
 
-      # ── Redis ──────────────────────────────────────────────────────────────
       - key: REDIS_URL
         sync: false
-
-      # ── Binance ───────────────────────────────────────────────────────────
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
-
-      # ── BingX ─────────────────────────────────────────────────────────────
       - key: BINGX_API_KEY
         sync: false
       - key: BINGX_API_SECRET
         sync: false
-
-      # ── Telegram ──────────────────────────────────────────────────────────
       - key: SHORT_TELEGRAM_BOT_TOKEN
         sync: false
       - key: SHORT_TELEGRAM_CHAT_ID
         sync: false
       - key: SHORT_TELEGRAM_TOPIC_ID
         sync: false
-
-      # ── CoinGlass (опционально) ────────────────────────────────────────────
       - key: COINGLASS_API_KEY
         sync: false
 
-      # ── Настройки сканера ─────────────────────────────────────────────────
       - key: SCAN_INTERVAL
-        value: "180"
+        value: "200"
       - key: MIN_SHORT_SCORE
-        value: "65"
+        value: "60"             # Ниже чем LONG — SHORT сложнее найти
       - key: SHORT_LEVERAGE
         value: "5-50"
       - key: SHORT_SL_BUFFER
-        value: "2.5"           # SL = 2.5% выше входа для SHORT
+        value: "2.5"            # Шире SL для SHORT (контртрендовый)
 
-      # ── Позиции ───────────────────────────────────────────────────────────
       - key: MAX_SHORT_POSITIONS
         value: "20"
       - key: MIN_VOLUME_USDT
         value: "300000"
       - key: MAX_WATCHLIST
-        value: "200"
+        value: "300"
 
-      # ── BingX Trading ─────────────────────────────────────────────────────
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
@@ -63,13 +51,12 @@ services:
       - key: RISK_PER_TRADE
         value: "0.0005"
 
-      # ── Trailing stop (SHORT активирует раньше) ────────────────────────────
-      - key: SHORT_TRAIL_ACTIVATION
-        value: "0.010"         # 1% (для LONG дефолт 1.5%)
-
-      # ── SMC ───────────────────────────────────────────────────────────────
       - key: USE_SMC
         value: "true"
+
+      # SHORT-специфичные
+      - key: SHORT_TRAIL_ACTIVATION
+        value: "0.010"          # Трейлинг SHORT активируется при +1%
 
     healthCheckPath: /health
     autoDeploy: true
