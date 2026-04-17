@@ -1079,90 +1079,73 @@ class TelegramCommandHandler:
             f"⏱ Uptime: {uptime_str}\n\n"
             "💡 Полные логи: Render Dashboard → Logs")
 
-    wins   = [t for t in trades if t.get("pnl", 0) > 0]
-    losses = [t for t in trades if t.get("pnl", 0) <= 0]
-    total  = len(trades)
-    wr     = round(len(wins) / total * 100, 1) if total else 0
-    pnl    = sum(t.get("pnl", 0) for t in trades)
 
-    # Среднее время в сделке
-    durations = []
-    for t in trades:
-        try:
-            opened = datetime.fromisoformat(t.get("opened_at", ""))
-            closed = datetime.fromisoformat(t.get("closed_at", ""))
-            durations.append((closed - opened).total_seconds())
-        except Exception:
-            pass
-    avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
+    async def cmd_daily_report(self, args, reply_chat_id: str):
+        """📅 /daily_rep — дневной отчёт."""
+        date   = datetime.utcnow().strftime("%Y-%m-%d")
+        trades = self._get_trade_history(days=1)
 
-    # TP breakdown
-    tp_counts: Dict[str, int] = {}
-    for t in wins:
-        tp_lvl = t.get("tp_level", "TP?")
-        tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
-    tp_lines = ""
-    for tp, cnt in sorted(tp_counts.items()):
-        bar = "█" * cnt
-        tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
+        if not trades:
+            await self._reply(reply_chat_id,
+                f"📅 <b>Дневной отчёт {date}</b>\n\nСделок нет.")
+            return
 
-    # Последние сделки (до 5)
-    last_trades = ""
-    for t in sorted(trades, key=lambda x: x.get("closed_at",""), reverse=True)[:5]:
-        sym  = t.get("symbol", "?")
-        side = t.get("direction", "?").upper()
-        pnl_ = t.get("pnl", 0)
-        tp_l = t.get("tp_level", "SL")
-        ico  = "✅" if pnl_ > 0 else "❌"
-        try:
-            dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
-                     datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
-            dur_str = self._duration_str(dur_s)
-        except Exception:
-            dur_str = "?"
-        last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
+        wins   = [t for t in trades if t.get("pnl", 0) > 0]
+        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        total  = len(trades)
+        wr     = round(len(wins) / total * 100, 1) if total else 0
+        pnl    = sum(t.get("pnl", 0) for t in trades)
 
-    wr_emoji = self._wr_emoji(wr)
-    msg = (
-        f"📅 <b>Дневной отчёт {date}</b>\n\n"
-        f"📊 Win Rate: {wr_emoji} {wr}%\n"
-        f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
-        f"📈 Всего закрыто: {total}\n"
-        f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
-        f"⏱ Ср. время: {avg_dur}\n"
-    )
-    if tp_lines:
-        msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
-    if last_trades:
-        msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
-    
-    # TP уровни
-    tp_stats = {}
-    for t in trades:
-        tp_lvl = t.get("tp_level", "SL")
-        if tp_lvl not in tp_stats:
-            tp_stats[tp_lvl] = {'count': 0, 'pnl': 0}
-        tp_stats[tp_lvl]['count'] += 1
-        tp_stats[tp_lvl]['pnl'] += t.get("pnl", 0)
-    
-    if tp_stats:
-        msg += f"\n🎯 <b>TP УРОВНИ:</b>\n"
-        for tp in ["TP1", "TP2", "TP3", "TP4", "TP5", "TP6"]:
-            count = tp_stats.get(tp, {}).get('count', 0)
-            pnl = tp_stats.get(tp, {}).get('pnl', 0)
-            if count > 0:
-                msg += f"   {tp}: {count} | P&L: {pnl:+.2f}%\n"
-        
-        # BE и SL
-        be_count = tp_stats.get('BE', {}).get('count', 0)
-        sl_count = tp_stats.get('SL', {}).get('count', 0)
-        sl_pnl = tp_stats.get('SL', {}).get('pnl', 0)
-        if be_count > 0:
-            msg += f"   BE: {be_count} | P&L: 0.00%\n"
-        if sl_count > 0:
-            msg += f"   SL: {sl_count} | P&L: {sl_pnl:+.2f}%\n"
-    
-    await self._reply(reply_chat_id, msg)
+        durations = []
+        for t in trades:
+            try:
+                opened = datetime.fromisoformat(t.get("opened_at", ""))
+                closed = datetime.fromisoformat(t.get("closed_at", ""))
+                durations.append((closed - opened).total_seconds())
+            except Exception:
+                pass
+        avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
+
+        # TP breakdown
+        tp_counts: Dict[str, int] = {}
+        for t in wins:
+            tp_lvl = t.get("tp_level", "TP?")
+            tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
+        tp_lines = ""
+        for tp, cnt in sorted(tp_counts.items()):
+            bar = "█" * cnt
+            tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
+
+        # Последние сделки (до 5)
+        last_trades = ""
+        for t in sorted(trades, key=lambda x: x.get("closed_at",""), reverse=True)[:5]:
+            sym  = t.get("symbol", "?")
+            side = t.get("direction", "?").upper()
+            pnl_ = t.get("pnl", 0)
+            tp_l = t.get("tp_level", "SL")
+            ico  = "✅" if pnl_ > 0 else "❌"
+            try:
+                dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
+                         datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
+                dur_str = self._duration_str(dur_s)
+            except Exception:
+                dur_str = "?"
+            last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
+
+        wr_emoji = self._wr_emoji(wr)
+        msg = (
+            f"📅 <b>Дневной отчёт {date}</b>\n\n"
+            f"📊 Win Rate: {wr_emoji} {wr}%\n"
+            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"📈 Всего закрыто: {total}\n"
+            f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
+            f"⏱ Ср. время: {avg_dur}\n"
+        )
+        if tp_lines:
+            msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
+        if last_trades:
+            msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
+        await self._reply(reply_chat_id, msg)
 
     async def cmd_weekly_report(self, args, reply_chat_id: str):
         """📅 /weekly_rep — недельный отчёт."""
