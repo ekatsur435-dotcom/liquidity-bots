@@ -1,353 +1,396 @@
 """
-🆕 Liquidation Zone Detector — shared/core/liquidation_detector.py
+🆕 SQLite Signals Database — shared/database/signals_db.py
 
-Детектор магнитов ликвидации (Liquidation Clusters).
-Находит зоны массовой ликвидации (магниты) которые притягивают цену.
-
-Интеграция с:
-- Coinglass API для данных ликвидаций
-- Scorer для bonus к скору
-- TradeManager для SL/TP оптимизации
+Сохранение истории сигналов и P&L для аналитики.
+Альтернатива Redis для долгосрочного хранения.
 """
 
-import numpy as np
-from typing import List, Optional, Dict, Tuple
-from dataclasses import dataclass
+import sqlite3
+import json
 from datetime import datetime, timedelta
-import asyncio
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
+from contextlib import contextmanager
 
 
 @dataclass
-class LiquidationCluster:
-    """Кластер ликвидаций = магнит для цены"""
-    price_level: float
-    volume: float  # Суммарный объём ликвидаций в USD
-    side: str  # "long" | "short" — чьи позиции ликвидировались
-    strength: float  # 0.0-1.0 относительная сила
-    distance_pct: float  # Расстояние от текущей цены в %
-    
-    @property
-    def is_above(self) -> bool:
-        """Магнит выше текущей цены?"""
-        return self.distance_pct > 0
-    
-    @property
-    def is_below(self) -> bool:
-        """Магнит ниже текущей цены?"""
-        return self.distance_pct < 0
-
-
-@dataclass
-class LiquidationAnalysis:
-    """Результат анализа ликвидаций для символа"""
+class SignalRecord:
+    """Запись о сигнале в БД"""
+    id: Optional[int]
+    timestamp: datetime
     symbol: str
-    current_price: float
-    clusters: List[LiquidationCluster]
+    direction: str  # "long" | "short"
+    timeframe: str  # "15m", "45m", "1h", "2h", "4h"
+    score: int
+    confidence: float
+    entry_price: float
+    oi_change: float
+    price_change: float
+    volume_spike: float
+    recommended_sl: float
+    recommended_tp: float
+    leverage: int
+    pattern_name: str
+    bot_type: str  # "long" | "short"
     
-    # Ближайшие магниты
-    nearest_above: Optional[LiquidationCluster]
-    nearest_below: Optional[LiquidationCluster]
+    # Исполнение
+    executed: bool = False
+    execution_price: Optional[float] = None
+    execution_time: Optional[datetime] = None
     
-    # Самые сильные
-    strongest_above: Optional[LiquidationCluster]
-    strongest_below: Optional[LiquidationCluster]
-    
-    # Тренд ликвидаций
-    long_liq_dominance: float  # 0.0-1.0 сколько ликвидаций было лонгов
-    
-    @property
-    def has_targets(self) -> bool:
-        """Есть ли цели для цены?"""
-        return len(self.clusters) >= 1
-    
-    def get_recommended_tp(self, direction: str, default_tp: float) -> float:
-        """Рекомендует TP на основе ближайшего магнита"""
-        if direction == "long" and self.nearest_above:
-            # TP у ближайшего магнита выше
-            return self.nearest_above.price_level * 0.998  # Чуть ниже магнита
-        elif direction == "short" and self.nearest_below:
-            # TP у ближайшего магнита ниже
-            return self.nearest_below.price_level * 1.002  # Чуть выше магнита
-        return default_tp
-    
-    def get_recommended_sl(self, direction: str, default_sl: float) -> float:
-        """Рекомендует SL защищённым от магнитов"""
-        if direction == "long" and self.nearest_below:
-            # SL за магнитом (с запасом)
-            return self.nearest_below.price_level * 0.995  # Ниже магнита
-        elif direction == "short" and self.nearest_above:
-            # SL за магнитом
-            return self.nearest_above.price_level * 1.005  # Выше магнита
-        return default_sl
-    
-    def get_score_bonus(self, direction: str) -> int:
-        """Вычисляет bonus к скору на основе магнитов"""
-        bonus = 0
-        
-        if direction == "long":
-            # Лонг хорош когда:
-            # 1. Магнит выше (куда цена пойдёт)
-            # 2. Нет сильного магнита ниже (не соберут стопы)
-            
-            if self.nearest_above:
-                dist = abs(self.nearest_above.distance_pct)
-                if 2 <= dist <= 8:  # Оптимальное расстояние
-                    bonus += 15
-                elif 8 < dist <= 15:
-                    bonus += 10  # Далековато но есть цель
-            
-            # Штраф если сильный магнит близко снизу
-            if self.nearest_below and abs(self.nearest_below.distance_pct) < 1.5:
-                bonus -= 10  # Риск собрать стопы
-                
-        else:  # short
-            if self.nearest_below:
-                dist = abs(self.nearest_below.distance_pct)
-                if 2 <= dist <= 8:
-                    bonus += 15
-                elif 8 < dist <= 15:
-                    bonus += 10
-            
-            if self.nearest_above and abs(self.nearest_above.distance_pct) < 1.5:
-                bonus -= 10
-        
-        return max(-20, min(20, bonus))  # Clamp -20..+20
+    # Результат
+    closed: bool = False
+    close_price: Optional[float] = None
+    close_time: Optional[datetime] = None
+    pnl_percent: Optional[float] = None
+    pnl_usd: Optional[float] = None
+    status: str = "pending"  # pending, active, closed, cancelled
 
 
-class LiquidationZoneDetector:
+class SignalsDatabase:
     """
-    🆕 Liquidation Zone Detector
+    🆕 SQLite database для хранения сигналов и результатов.
     
-    Находит магниты ликвидации используя алгоритм кластеризации.
-    Работает с данными Coinglass или симуляцией для тестов.
+    Features:
+    - История всех сигналов
+    - P&L tracking
+    - Аналитика по timeframes, patterns
+    - Статистика win rate
     """
     
-    # Параметры кластеризации
-    PRICE_BUCKET_SIZE_PCT = 0.5  # Бакет цены = 0.5%
-    MIN_CLUSTER_VOLUME_USD = 500_000  # Минимум $500K для значимого кластера
+    def __init__(self, db_path: str = "signals_history.db"):
+        self.db_path = Path(db_path)
+        self._init_db()
     
-    def __init__(self, coinglass_client=None):
-        self.coinglass = coinglass_client
-        self._cache = {}  # symbol -> (timestamp, analysis)
-        self._cache_ttl = timedelta(minutes=5)
-    
-    async def analyze_symbol(
-        self,
-        symbol: str,
-        current_price: float,
-        liquidations_data: Optional[List[Dict]] = None,
-    ) -> LiquidationAnalysis:
-        """
-        Анализирует ликвидации для символа
-        
-        Args:
-            symbol: Торговая пара (BTCUSDT)
-            current_price: Текущая цена
-            liquidations_data: Сырые данные ликвидаций (опционально)
-        
-        Returns:
-            LiquidationAnalysis с кластерами
-        """
-        # Проверяем кеш
-        cached = self._cache.get(symbol)
-        if cached:
-            timestamp, analysis = cached
-            if datetime.utcnow() - timestamp < self._cache_ttl:
-                return analysis
-        
-        # Получаем данные ликвидаций
-        if liquidations_data is None and self.coinglass:
-            liquidations_data = await self._fetch_coinglass_liq(symbol)
-        
-        if not liquidations_data:
-            # Симуляция для тестов (в реальности использовать реальные данные)
-            liquidations_data = self._simulate_liquidations(current_price)
-        
-        # Кластеризуем
-        clusters = self._cluster_liquidations(
-            liquidations_data, current_price
-        )
-        
-        # Находим ближайшие и сильнейшие
-        clusters_above = [c for c in clusters if c.is_above]
-        clusters_below = [c for c in clusters if c.is_below]
-        
-        nearest_above = min(clusters_above, key=lambda x: abs(x.distance_pct)) if clusters_above else None
-        nearest_below = min(clusters_below, key=lambda x: abs(x.distance_pct)) if clusters_below else None
-        
-        strongest_above = max(clusters_above, key=lambda x: x.strength) if clusters_above else None
-        strongest_below = max(clusters_below, key=lambda x: x.strength) if clusters_below else None
-        
-        # Расчёт dominance
-        long_liq_volume = sum(c.volume for c in clusters if c.side == "long")
-        short_liq_volume = sum(c.volume for c in clusters if c.side == "short")
-        total = long_liq_volume + short_liq_volume
-        long_dominance = long_liq_volume / total if total > 0 else 0.5
-        
-        analysis = LiquidationAnalysis(
-            symbol=symbol,
-            current_price=current_price,
-            clusters=clusters,
-            nearest_above=nearest_above,
-            nearest_below=nearest_below,
-            strongest_above=strongest_above,
-            strongest_below=strongest_below,
-            long_liq_dominance=long_dominance,
-        )
-        
-        # Кешируем
-        self._cache[symbol] = (datetime.utcnow(), analysis)
-        
-        return analysis
-    
-    def _cluster_liquidations(
-        self,
-        liquidations: List[Dict],
-        current_price: float,
-    ) -> List[LiquidationCluster]:
-        """Кластеризует ликвидации по ценовым уровням"""
-        
-        # Группируем по ценовым бакетам
-        buckets: Dict[int, Dict] = {}
-        
-        for liq in liquidations:
-            price = liq.get("price", current_price)
-            volume = liq.get("volume", 0)
-            side = liq.get("side", "long")
-            
-            # Определяем бакет
-            pct_from_current = (price - current_price) / current_price * 100
-            bucket_idx = int(pct_from_current / self.PRICE_BUCKET_SIZE_PCT)
-            
-            if bucket_idx not in buckets:
-                buckets[bucket_idx] = {
-                    "prices": [],
-                    "volumes": [],
-                    "sides": [],
-                }
-            
-            buckets[bucket_idx]["prices"].append(price)
-            buckets[bucket_idx]["volumes"].append(volume)
-            buckets[bucket_idx]["sides"].append(side)
-        
-        # Создаём кластеры
-        clusters = []
-        for bucket_idx, data in buckets.items():
-            total_volume = sum(data["volumes"])
-            
-            if total_volume < self.MIN_CLUSTER_VOLUME_USD:
-                continue  # Слишком маленький кластер
-            
-            avg_price = np.mean(data["prices"])
-            dominant_side = max(set(data["sides"]), key=data["sides"].count)
-            distance_pct = (avg_price - current_price) / current_price * 100
-            
-            # Сила относительно максимума
-            max_volume = max(sum(b["volumes"]) for b in buckets.values())
-            strength = total_volume / max_volume if max_volume > 0 else 0
-            
-            clusters.append(LiquidationCluster(
-                price_level=avg_price,
-                volume=total_volume,
-                side=dominant_side,
-                strength=strength,
-                distance_pct=distance_pct,
-            ))
-        
-        # Сортируем по силе
-        clusters.sort(key=lambda x: x.strength, reverse=True)
-        
-        return clusters
-    
-    async def _fetch_coinglass_liq(self, symbol: str) -> List[Dict]:
-        """Получает данные ликвидаций с Coinglass"""
-        if not self.coinglass:
-            return []
-        
+    @contextmanager
+    def _get_connection(self):
+        """Контекстный менеджер для соединений"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
-            # Здесь должен быть вызов Coinglass API
-            # Например: self.coinglass.get_liquidations(symbol)
-            data = await self.coinglass.get_liquidation_data(symbol)
-            return data if data else []
-        except Exception as e:
-            print(f"⚠️ Coinglass liq fetch failed for {symbol}: {e}")
-            return []
+            yield conn
+        finally:
+            conn.close()
     
-    def _simulate_liquidations(self, current_price: float) -> List[Dict]:
-        """Симуляция данных ликвидаций для тестирования"""
-        # В реальности удалить эту функцию и использовать только реальные данные
-        liquidations = []
-        
-        # Создаём фейковые ликвидации выше и ниже цены
-        for i in range(10):
-            # Ликвидации лонгов выше цены (для шортов)
-            price_up = current_price * (1 + 0.02 + i * 0.01)
-            liquidations.append({
-                "price": price_up,
-                "volume": 500_000 + i * 100_000,
-                "side": "long",
-            })
+    def _init_db(self):
+        """Создаёт таблицы если не существуют"""
+        with self._get_connection() as conn:
+            # Основная таблица сигналов
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    confidence REAL,
+                    entry_price REAL,
+                    oi_change REAL,
+                    price_change REAL,
+                    volume_spike REAL,
+                    recommended_sl REAL,
+                    recommended_tp REAL,
+                    leverage INTEGER,
+                    pattern_name TEXT,
+                    bot_type TEXT,
+                    
+                    -- Execution
+                    executed BOOLEAN DEFAULT 0,
+                    execution_price REAL,
+                    execution_time TEXT,
+                    
+                    -- Result
+                    closed BOOLEAN DEFAULT 0,
+                    close_price REAL,
+                    close_time TEXT,
+                    pnl_percent REAL,
+                    pnl_usd REAL,
+                    status TEXT DEFAULT 'pending',
+                    
+                    -- Meta
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            # Ликвидации шортов ниже цены (для лонгов)
-            price_down = current_price * (1 - 0.02 - i * 0.01)
-            liquidations.append({
-                "price": price_down,
-                "volume": 600_000 + i * 80_000,
-                "side": "short",
-            })
+            # Индексы для быстрых запросов
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_timeframe ON signals(timeframe)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_bot ON signals(bot_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
+            
+            # Таблица для multi-timeframe агрегации
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS multi_tf_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_signal_id INTEGER,
+                    timeframe TEXT NOT NULL,
+                    score INTEGER,
+                    FOREIGN KEY (parent_signal_id) REFERENCES signals(id)
+                )
+            """)
+            
+            # Таблица для ежедневной статистики
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_stats (
+                    date TEXT PRIMARY KEY,
+                    bot_type TEXT NOT NULL,
+                    total_signals INTEGER DEFAULT 0,
+                    executed_signals INTEGER DEFAULT 0,
+                    closed_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    losing_trades INTEGER DEFAULT 0,
+                    total_pnl_percent REAL,
+                    total_pnl_usd REAL,
+                    avg_score REAL,
+                    best_trade_symbol TEXT,
+                    best_trade_pnl REAL,
+                    worst_trade_symbol TEXT,
+                    worst_trade_pnl REAL
+                )
+            """)
+            
+            conn.commit()
+    
+    def save_signal(self, signal: SignalRecord) -> int:
+        """Сохраняет сигнал и возвращает ID"""
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO signals (
+                    timestamp, symbol, direction, timeframe, score, confidence,
+                    entry_price, oi_change, price_change, volume_spike,
+                    recommended_sl, recommended_tp, leverage, pattern_name, bot_type,
+                    executed, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                signal.timestamp.isoformat(),
+                signal.symbol,
+                signal.direction,
+                signal.timeframe,
+                signal.score,
+                signal.confidence,
+                signal.entry_price,
+                signal.oi_change,
+                signal.price_change,
+                signal.volume_spike,
+                signal.recommended_sl,
+                signal.recommended_tp,
+                signal.leverage,
+                signal.pattern_name,
+                signal.bot_type,
+                signal.executed,
+                signal.status
+            ))
+            conn.commit()
+            return cursor.lastrowid
+    
+    def mark_executed(self, signal_id: int, execution_price: float):
+        """Отмечает сигнал как исполненный"""
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE signals 
+                SET executed = 1, 
+                    execution_price = ?,
+                    execution_time = ?,
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (execution_price, datetime.utcnow().isoformat(), signal_id))
+            conn.commit()
+    
+    def close_signal(self, signal_id: int, close_price: float, 
+                     pnl_percent: float, pnl_usd: float = None):
+        """Закрывает сигнал и сохраняет P&L"""
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE signals 
+                SET closed = 1,
+                    close_price = ?,
+                    close_time = ?,
+                    pnl_percent = ?,
+                    pnl_usd = ?,
+                    status = 'closed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (close_price, datetime.utcnow().isoformat(), 
+                  pnl_percent, pnl_usd, signal_id))
+            conn.commit()
+    
+    def get_signal_by_id(self, signal_id: int) -> Optional[SignalRecord]:
+        """Получает сигнал по ID"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM signals WHERE id = ?", (signal_id,)
+            ).fetchone()
+            
+            if row:
+                return self._row_to_signal(row)
+            return None
+    
+    def get_signals_by_symbol(self, symbol: str, 
+                             days: int = 7) -> List[SignalRecord]:
+        """Получает сигналы по символу за последние N дней"""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
         
-        return liquidations
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM signals 
+                WHERE symbol = ? AND timestamp > ?
+                ORDER BY timestamp DESC
+            """, (symbol, since)).fetchall()
+            
+            return [self._row_to_signal(row) for row in rows]
     
-    def clear_cache(self):
-        """Очищает кеш"""
-        self._cache.clear()
+    def get_stats_by_timeframe(self, timeframe: str, 
+                               days: int = 30,
+                               bot_type: str = None) -> Dict[str, Any]:
+        """Статистика по конкретному таймфрейму"""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        
+        query = """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN executed = 1 THEN 1 ELSE 0 END) as executed,
+                SUM(CASE WHEN closed = 1 THEN 1 ELSE 0 END) as closed,
+                SUM(CASE WHEN pnl_percent > 0 THEN 1 ELSE 0 END) as winners,
+                SUM(CASE WHEN pnl_percent < 0 THEN 1 ELSE 0 END) as losers,
+                AVG(pnl_percent) as avg_pnl,
+                AVG(score) as avg_score
+            FROM signals 
+            WHERE timeframe = ? AND timestamp > ?
+        """
+        params = [timeframe, since]
+        
+        if bot_type:
+            query += " AND bot_type = ?"
+            params.append(bot_type)
+        
+        with self._get_connection() as conn:
+            row = conn.execute(query, params).fetchone()
+            
+            return {
+                "timeframe": timeframe,
+                "total_signals": row["total"] or 0,
+                "executed": row["executed"] or 0,
+                "closed": row["closed"] or 0,
+                "winners": row["winners"] or 0,
+                "losers": row["losers"] or 0,
+                "win_rate": (row["winners"] / row["closed"] * 100) if row["closed"] else 0,
+                "avg_pnl": row["avg_pnl"] or 0,
+                "avg_score": row["avg_score"] or 0,
+            }
+    
+    def get_pattern_performance(self, pattern_name: str, days: int = 30) -> Dict:
+        """Анализ эффективности паттерна"""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    AVG(pnl_percent) as avg_pnl,
+                    SUM(CASE WHEN pnl_percent > 0 THEN 1 ELSE 0 END) as winners,
+                    SUM(CASE WHEN closed = 1 THEN 1 ELSE 0 END) as closed
+                FROM signals 
+                WHERE pattern_name = ? AND timestamp > ? AND closed = 1
+            """, (pattern_name, since)).fetchone()
+            
+            return {
+                "pattern": pattern_name,
+                "total_signals": row["total"] or 0,
+                "avg_pnl": row["avg_pnl"] or 0,
+                "winners": row["winners"] or 0,
+                "win_rate": (row["winners"] / row["closed"] * 100) if row["closed"] else 0,
+            }
+    
+    def get_best_timeframe(self, bot_type: str = None, days: int = 30) -> List[Dict]:
+        """Возвращает рейтинг таймфреймов по P&L"""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        
+        query = """
+            SELECT 
+                timeframe,
+                COUNT(*) as total,
+                AVG(pnl_percent) as avg_pnl,
+                SUM(CASE WHEN pnl_percent > 0 THEN 1 ELSE 0 END) as winners,
+                SUM(CASE WHEN closed = 1 THEN 1 ELSE 0 END) as closed
+            FROM signals 
+            WHERE timestamp > ? AND closed = 1
+        """
+        params = [since]
+        
+        if bot_type:
+            query += " AND bot_type = ?"
+            params.append(bot_type)
+        
+        query += " GROUP BY timeframe ORDER BY avg_pnl DESC"
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            
+            return [
+                {
+                    "timeframe": row["timeframe"],
+                    "total_signals": row["total"],
+                    "avg_pnl": row["avg_pnl"] or 0,
+                    "winners": row["winners"] or 0,
+                    "win_rate": (row["winners"] / row["closed"] * 100) if row["closed"] else 0,
+                }
+                for row in rows
+            ]
+    
+    def _row_to_signal(self, row: sqlite3.Row) -> SignalRecord:
+        """Конвертирует строку БД в SignalRecord"""
+        return SignalRecord(
+            id=row["id"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            symbol=row["symbol"],
+            direction=row["direction"],
+            timeframe=row["timeframe"],
+            score=row["score"],
+            confidence=row["confidence"],
+            entry_price=row["entry_price"],
+            oi_change=row["oi_change"],
+            price_change=row["price_change"],
+            volume_spike=row["volume_spike"],
+            recommended_sl=row["recommended_sl"],
+            recommended_tp=row["recommended_tp"],
+            leverage=row["leverage"],
+            pattern_name=row["pattern_name"],
+            bot_type=row["bot_type"],
+            executed=bool(row["executed"]),
+            execution_price=row["execution_price"],
+            execution_time=datetime.fromisoformat(row["execution_time"]) if row["execution_time"] else None,
+            closed=bool(row["closed"]),
+            close_price=row["close_price"],
+            close_time=datetime.fromisoformat(row["close_time"]) if row["close_time"] else None,
+            pnl_percent=row["pnl_percent"],
+            pnl_usd=row["pnl_usd"],
+            status=row["status"],
+        )
+    
+    def cleanup_old_signals(self, days: int = 90):
+        """Очищает старые сигналы (кроме закрытых с P&L)"""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        
+        with self._get_connection() as conn:
+            conn.execute("""
+                DELETE FROM signals 
+                WHERE timestamp < ? 
+                AND (closed = 0 OR pnl_percent IS NULL)
+            """, (since,))
+            conn.commit()
 
 
-# 🔧 Утилиты для интеграции
+# Singleton instance
+_signals_db = None
 
-def format_liquidation_zones(analysis: LiquidationAnalysis) -> str:
-    """Форматирует зоны для Telegram"""
-    if not analysis.has_targets:
-        return "🎯 Нет данных о ликвидациях"
-    
-    msg = "🧲 <b>Магниты ликвидации:</b>\n\n"
-    
-    if analysis.nearest_above:
-        na = analysis.nearest_above
-        msg += f"⬆️ Выше: ${na.price_level:,.2f} (+{na.distance_pct:.1f}%)\n"
-        msg += f"   Объём: ${na.volume:,.0f} | Сила: {na.strength:.0%}\n\n"
-    
-    if analysis.nearest_below:
-        nb = analysis.nearest_below
-        msg += f"⬇️ Ниже: ${nb.price_level:,.2f} ({nb.distance_pct:.1f}%)\n"
-        msg += f"   Объём: ${nb.volume:,.0f} | Сила: {nb.strength:.0%}\n\n"
-    
-    # Доминирование
-    if analysis.long_liq_dominance > 0.6:
-        msg += f"📊 Доминируют ликвидации <b>ЛОНГОВ</b> ({analysis.long_liq_dominance:.0%})\n"
-        msg += "   💡 Цена тянется вверх за стопами\n"
-    elif analysis.long_liq_dominance < 0.4:
-        msg += f"📊 Доминируют ликвидации <b>ШОРТОВ</b> ({1-analysis.long_liq_dominance:.0%})\n"
-        msg += "   💡 Цена тянется вниз за стопами\n"
-    
-    return msg
-
-
-def get_liquidation_insight(analysis: LiquidationAnalysis, direction: str) -> str:
-    """Генерирует инсайт для сигнала"""
-    if direction == "long":
-        if analysis.nearest_above and analysis.nearest_above.strength > 0.7:
-            dist = abs(analysis.nearest_above.distance_pct)
-            return f"🧲 Сильный магнит +{dist:.1f}% — цель для TP"
-        elif analysis.nearest_below and abs(analysis.nearest_below.distance_pct) < 1.5:
-            dist = abs(analysis.nearest_below.distance_pct)
-            return f"⚠️ Магнит -{dist:.1f}% близко — риск стопа"
-    else:  # short
-        if analysis.nearest_below and analysis.nearest_below.strength > 0.7:
-            dist = abs(analysis.nearest_below.distance_pct)
-            return f"🧲 Сильный магнит -{dist:.1f}% — цель для TP"
-        elif analysis.nearest_above and abs(analysis.nearest_above.distance_pct) < 1.5:
-            dist = abs(analysis.nearest_above.distance_pct)
-            return f"⚠️ Магнит +{dist:.1f}% близко — риск стопа"
-    
-    return "🎯 Магниты в нейтральной зоне"
+def get_signals_db(db_path: str = "signals_history.db") -> SignalsDatabase:
+    """Возвращает singleton instance базы"""
+    global _signals_db
+    if _signals_db is None:
+        _signals_db = SignalsDatabase(db_path)
+    return _signals_db
