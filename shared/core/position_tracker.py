@@ -139,20 +139,26 @@ class PositionTracker:
         current_sl      = _f(signal.get("stop_loss", 0))
         trailing_active = signal.get("trailing_active", False)
         be_done         = signal.get("be_done", False)   # безубыток уже выставлен
+        taken_tps       = signal.get("taken_tps", [])
 
         if not entry or not current_sl:
             return
+
+        # ✅ FIX: Проверяем be_done — если уже в безубытке, не обновляем повторно
+        if be_done:
+            trailing_active = True  # активируем трейлинг если BE уже был
 
         if direction == "long":
             profit_pct = (price - entry) / entry
 
             # Безубыток выставляем только после TP2 (BREAKEVEN_AFTER_TP)
-            # Проверяем: количество взятых TP >= BREAKEVEN_AFTER_TP
-            taken_count = len(signal.get("taken_tps", []))
+            taken_count = len(taken_tps)
 
             if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
                 new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
-                if new_sl > current_sl:
+                # ✅ FIX: Минимальный порог 0.05% для изменения SL (избегаем микро-движений)
+                min_move_threshold = current_sl * 0.0005  # 0.05%
+                if new_sl > current_sl + min_move_threshold:
                     await self._move_sl(signal, current_sl, new_sl, "безубыток")
                     signal["be_done"]         = True
                     signal["trailing_active"] = True
@@ -166,11 +172,13 @@ class PositionTracker:
 
         else:  # SHORT
             profit_pct = (entry - price) / entry
-            taken_count = len(signal.get("taken_tps", []))
+            taken_count = len(taken_tps)
 
             if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
                 new_sl = entry * (1 - self.BREAKEVEN_BUFFER)
-                if new_sl < current_sl:
+                # ✅ FIX: Минимальный порог 0.05% для изменения SL
+                min_move_threshold = current_sl * 0.0005  # 0.05%
+                if new_sl < current_sl - min_move_threshold:
                     await self._move_sl(signal, current_sl, new_sl, "безубыток")
                     signal["be_done"]         = True
                     signal["trailing_active"] = True
