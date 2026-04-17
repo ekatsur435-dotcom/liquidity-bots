@@ -372,6 +372,8 @@ class TelegramCommandHandler:
         "/pause", "/resume", "/setscore", "/closeall", "/close_all",
         "/clearpos", "/balance", "/positions",
         "/emergency_stop", "/reset_stats", "/cleanup", "/clean", "/logs",
+        # Новые команды
+        "/sync", "/flushdb",
         # Новые отчёты
         "/daily_rep", "/weekly_rep", "/monthly_rep", "/leaderswr",
     }
@@ -471,6 +473,9 @@ class TelegramCommandHandler:
                 "/cleanup":      self.cmd_cleanup,
                 "/clean":        self.cmd_clean,
                 "/logs":         self.cmd_logs,
+                # 🆕 Новые команды
+                "/sync":         self.cmd_sync,
+                "/flushdb":      self.cmd_flushdb,
                 # Отчёты
                 "/daily_rep":    self.cmd_daily_report,
                 "/weekly_rep":   self.cmd_weekly_report,
@@ -542,7 +547,7 @@ class TelegramCommandHandler:
         bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
-            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.2</b>\n\n"
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.3</b>\n\n"
             "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
@@ -551,7 +556,8 @@ class TelegramCommandHandler:
             "<b>💰 Биржа:</b>\n"
             "💳 /balance — Баланс BingX\n"
             "📈 /positions — Открытые позиции\n"
-            "❌ /closeall — Закрыть ВСЕ позиции\n\n"
+            "❌ /closeall — Закрыть ВСЕ позиции\n"
+            "🔄 /sync — Синхронизировать с биржей\n\n"
             "<b>📅 Отчёты:</b>\n"
             "📅 /daily_rep — Дневной отчёт\n"
             "📅 /weekly_rep — Недельный отчёт\n"
@@ -564,6 +570,7 @@ class TelegramCommandHandler:
             "🧹 /cleanup — Удалить зависшие сделки\n"
             "🧼 /clean — Полная очистка\n"
             "🔄 /reset_stats — Сбросить статистику\n"
+            "🗑 /flushdb yes — Очистить БД Redis\n"
             "🛑 /emergency_stop — Экстренный стоп\n"
             "📜 /logs — Посмотреть логи\n"
             "⚙️ /setscore 75 — Мин. скор\n"
@@ -831,20 +838,164 @@ class TelegramCommandHandler:
             await self._reply(reply_chat_id, f"❌ Ошибка при остановке: {e}")
 
     async def cmd_reset_stats(self, args, reply_chat_id: str):
+        """✅ Полный сброс статистики из Redis и памяти"""
         try:
+            deleted_keys = []
+            
+            # Сброс в AutoTrader
             if self.state and self.state.auto_trader:
                 self.state.auto_trader.daily_pnl    = 0.0
                 self.state.auto_trader.daily_trades  = 0
                 self.state.auto_trader.total_pnl     = 0.0
                 self.state.auto_trader.win_count     = 0
                 self.state.auto_trader.loss_count    = 0
+                self.state.auto_trader.last_reset    = datetime.utcnow().date()
+            
+            # ✅ Полная очистка всех stats ключей в Redis
             if self.redis:
-                self.redis.client.delete(f"{self.bot_type}:daily_trades")
-                self.redis.client.delete(f"{self.bot_type}:daily_pnl")
+                # Все возможные stats ключи
+                stats_patterns = [
+                    f"{self.bot_type}:daily_trades",
+                    f"{self.bot_type}:daily_pnl", 
+                    f"{self.bot_type}:stats:*",
+                    f"{self.bot_type}:history:*",
+                    f"{self.bot_type}:pnl:*",
+                ]
+                
+                for pattern in stats_patterns:
+                    keys = self.redis.client.keys(pattern)
+                    for key in keys:
+                        self.redis.client.delete(key)
+                        key_str = key.decode() if isinstance(key, bytes) else key
+                        deleted_keys.append(key_str)
+                
+                # Дополнительно: удаляем по точным именам
+                exact_keys = ["daily_trades", "daily_pnl", "total_trades", "total_pnl", "win_count", "loss_count"]
+                for key in exact_keys:
+                    self.redis.client.delete(f"{self.bot_type}:{key}")
+                    deleted_keys.append(f"{self.bot_type}:{key}")
+            
             await self._reply(reply_chat_id,
-                "🔄 <b>Статистика сброшена</b>\n\nСчётчики обнулены ✅")
+                f"🔄 <b>Статистика полностью сброшена</b>\n\n"
+                f"🗑 Очищено ключей: {len(deleted_keys)}\n"
+                f"✅ Счётчики обнулены\n"
+                f"✅ Готов к новому старту!")
+                
         except Exception as e:
-            await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
+            await self._reply(reply_chat_id, f"❌ Ошибка сброса: {e}")
+
+    async def cmd_sync(self, args, reply_chat_id: str):
+        """🔄 Синхронизация позиций с биржей BingX"""
+        try:
+            if not (self.state and self.state.auto_trader):
+                await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
+                return
+            
+            await self._reply(reply_chat_id, "🔄 Синхронизация с биржей...")
+            
+            # Получаем реальные позиции с биржи
+            positions = await self.state.auto_trader.bingx.get_positions()
+            mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
+            
+            if positions is None:
+                await self._reply(reply_chat_id, f"❌ Не удалось подключиться к BingX [{mode}]")
+                return
+            
+            # Синхронизируем с Redis
+            synced = 0
+            added = 0
+            
+            for pos in positions:
+                symbol = pos.symbol
+                redis_key = f"{self.bot_type}:positions:{symbol}"
+                
+                # Проверяем есть ли в Redis
+                existing = self.redis.client.get(redis_key) if self.redis else None
+                
+                if not existing:
+                    # Создаём запись в Redis для новой позиции
+                    signal_data = {
+                        "symbol": symbol,
+                        "direction": pos.side.lower(),
+                        "entry_price": pos.entry_price,
+                        "stop_loss": pos.stop_loss or 0,
+                        "take_profits": [],
+                        "status": "active",
+                        "size": pos.size,
+                        "leverage": pos.leverage,
+                        "created_at": datetime.utcnow().isoformat(),
+                        "tp_level": 0,
+                        "taken_tps": [],
+                        "be_done": False,
+                        "trailing_active": False,
+                    }
+                    if self.redis:
+                        self.redis.client.setex(redis_key, 86400, json.dumps(signal_data))
+                    added += 1
+                else:
+                    synced += 1
+            
+            # Обновляем счётчик активных сигналов
+            if self.state:
+                self.state.active_signals = len(positions)
+            
+            await self._reply(reply_chat_id,
+                f"✅ <b>Синхронизация завершена [{mode}]</b>\n\n"
+                f"📊 Позиций на бирже: {len(positions)}\n"
+                f"➕ Добавлено в трекер: {added}\n"
+                f"🔄 Уже в системе: {synced}\n"
+                f"✅ Готово к отслеживанию!")
+                
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка синхронизации: {e}")
+
+    async def cmd_flushdb(self, args, reply_chat_id: str):
+        """⚠️ Полная очистка базы данных Redis (ОПАСНО!)"""
+        try:
+            # Подтверждение требуется
+            if not args or args[0].lower() not in ["yes", "confirm", "да"]:
+                await self._reply(reply_chat_id,
+                    f"⚠️ <b>ВНИМАНИЕ: Полная очистка Redis!</b>\n\n"
+                    f"Это удалит ВСЕ данные бота:\n"
+                    f"• Все сигналы\n"
+                    f"• Всю статистику\n"
+                    f"• Все позиции\n"
+                    f"• Историю сделок\n\n"
+                    f"Для подтверждения отправь:\n"
+                    f"<code>/flushdb yes</code>")
+                return
+            
+            if not self.redis:
+                await self._reply(reply_chat_id, "❌ Redis не подключен")
+                return
+            
+            # Получаем статистику перед удалением
+            all_keys = self.redis.client.keys(f"{self.bot_type}:*")
+            key_count = len(all_keys)
+            
+            # Удаляем все ключи бота
+            deleted = 0
+            for key in all_keys:
+                self.redis.client.delete(key)
+                deleted += 1
+            
+            # Сбрасываем состояние
+            if self.state:
+                self.state.active_signals = 0
+                self.state.is_paused = False
+                if self.state.auto_trader:
+                    self.state.auto_trader.daily_pnl = 0.0
+                    self.state.auto_trader.daily_trades = 0
+            
+            await self._reply(reply_chat_id,
+                f"🗑 <b>База данных очищена!</b>\n\n"
+                f"🗑 Удалено ключей: {deleted}\n"
+                f"✅ Все данные сброшены\n"
+                f"🔄 Бот перезагружен\n\n"
+                f"<b>Используйте /sync чтобы синхронизировать позиции с биржей</b>")
+                
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка очистки: {e}")
 
     async def cmd_cleanup(self, args, reply_chat_id: str):
         try:
