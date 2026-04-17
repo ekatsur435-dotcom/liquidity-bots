@@ -89,7 +89,8 @@ class Config:
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # ✅ FIX: default MAX_WATCHLIST = 300
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))
+    # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "150000"))  # Было: 300000
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
@@ -141,20 +142,30 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
         print(f"⚠️ _init_source error: {e}")
 
     # Bybit (основной источник)
+    total_bybit_checked = 0
+    total_bybit_usdt = 0
     try:
         result = await binance_client._bybit("/v5/market/tickers", {"category": "linear"})
         if result and result.get("list"):
             EXCLUDE_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR", "3L", "3S")
-            for t in result.get("list", []):
+            all_tickers = result.get("list", [])
+            print(f"📊 Bybit API returned: {len(all_tickers)} total tickers")
+            
+            for t in all_tickers:
+                total_bybit_checked += 1
                 sym = t.get("symbol", "")
                 if not sym.endswith("USDT"):
                     continue
+                total_bybit_usdt += 1
                 if any(sym.endswith(s) for s in EXCLUDE_SUFFIXES):
                     continue
                 vol = float(t.get("turnover24h", 0))
+                # ✅ DEBUG: Показываем топ волюмов
                 if vol >= min_vol:
                     bybit_syms.add(sym)
-        print(f"✅ Bybit symbols: {len(bybit_syms)}")
+                    
+        print(f"✅ Bybit symbols: {len(bybit_syms)} (checked: {total_bybit_checked}, USDT: {total_bybit_usdt})")
+        print(f"   Min volume threshold: ${min_vol:,.0f}")
     except Exception as e:
         print(f"⚠️ Bybit watchlist error: {e}")
 
@@ -177,6 +188,9 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
     except Exception as e:
         print(f"⚠️ Binance watchlist error: {e}")
 
+    # ✅ DEBUG: Статистика до объединения
+    print(f"📈 Pre-merge: Bybit={len(bybit_syms)}, Binance={len(binance_syms)}, threshold=${min_vol:,.0f}")
+    
     # ✅ FIX: Fallback если оба источника пустые
     total_found = len(bybit_syms) + len(binance_syms)
     if total_found == 0:
