@@ -158,6 +158,14 @@ class PositionTracker:
                 new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
                 # ✅ FIX: Минимальный порог 0.05% для изменения SL (избегаем микро-движений)
                 min_move_threshold = current_sl * 0.0005  # 0.05%
+                
+                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
+                if abs(current_sl - new_sl) <= min_move_threshold:
+                    signal["be_done"] = True
+                    signal["trailing_active"] = True
+                    self._save(symbol, signal)
+                    return
+                
                 if new_sl > current_sl + min_move_threshold:
                     await self._move_sl(signal, current_sl, new_sl, "безубыток")
                     signal["be_done"]         = True
@@ -178,6 +186,14 @@ class PositionTracker:
                 new_sl = entry * (1 - self.BREAKEVEN_BUFFER)
                 # ✅ FIX: Минимальный порог 0.05% для изменения SL
                 min_move_threshold = current_sl * 0.0005  # 0.05%
+                
+                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
+                if abs(current_sl - new_sl) <= min_move_threshold:
+                    signal["be_done"] = True
+                    signal["trailing_active"] = True
+                    self._save(symbol, signal)
+                    return
+                
                 if new_sl < current_sl - min_move_threshold:
                     await self._move_sl(signal, current_sl, new_sl, "безубыток")
                     signal["be_done"]         = True
