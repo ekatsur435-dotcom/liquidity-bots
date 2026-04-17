@@ -540,6 +540,24 @@ class TelegramCommandHandler:
         except Exception:
             return {}
 
+    def _get_tp_stats_for_day(self, date_str: str) -> Dict:
+        """🆕 Получает статистику по TP1-6 уровням за день"""
+        result = {"total": 0}
+        
+        # Получаем из Redis (ключи tp_stats:YYYY-MM-DD:*)
+        for level in ["TP1", "TP2", "TP3", "TP4", "TP5", "TP6", "BE", "SL"]:
+            count_key = f"tp_stats:{date_str}:{level}:count"
+            pnl_key = f"tp_stats:{date_str}:{level}:pnl"
+            
+            count = int(self.redis.get(count_key) or 0) if self.redis else 0
+            pnl = float(self.redis.get(pnl_key) or 0) if self.redis else 0
+            
+            if count > 0:
+                result[level] = {"count": count, "pnl": pnl}
+                result["total"] += count
+        
+        return result
+
     # =========================================================================
     # COMMANDS — BASIC
     # =========================================================================
@@ -1061,36 +1079,90 @@ class TelegramCommandHandler:
             f"⏱ Uptime: {uptime_str}\n\n"
             "💡 Полные логи: Render Dashboard → Logs")
 
-    # =========================================================================
-    # COMMANDS — REPORTS
-    # =========================================================================
+    wins   = [t for t in trades if t.get("pnl", 0) > 0]
+    losses = [t for t in trades if t.get("pnl", 0) <= 0]
+    total  = len(trades)
+    wr     = round(len(wins) / total * 100, 1) if total else 0
+    pnl    = sum(t.get("pnl", 0) for t in trades)
 
-    async def cmd_daily_report(self, args, reply_chat_id: str):
-        """📅 /daily_rep — дневной отчёт."""
-        # По умолчанию — сегодня, можно /daily_rep yesterday
-        if args and args[0].lower() in ("yesterday", "вчера"):
-            date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-        else:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+    # Среднее время в сделке
+    durations = []
+    for t in trades:
+        try:
+            opened = datetime.fromisoformat(t.get("opened_at", ""))
+            closed = datetime.fromisoformat(t.get("closed_at", ""))
+            durations.append((closed - opened).total_seconds())
+        except Exception:
+            pass
+    avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
 
-        trades = [t for t in self._get_trade_history(days=2)
-                  if t.get("closed_at", "").startswith(date)]
+    # TP breakdown
+    tp_counts: Dict[str, int] = {}
+    for t in wins:
+        tp_lvl = t.get("tp_level", "TP?")
+        tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
+    tp_lines = ""
+    for tp, cnt in sorted(tp_counts.items()):
+        bar = "█" * cnt
+        tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
 
-        if not trades:
-            await self._reply(reply_chat_id,
-                f"📅 <b>Дневной отчёт {date}</b>\n\nСделок нет.")
-            return
+    # Последние сделки (до 5)
+    last_trades = ""
+    for t in sorted(trades, key=lambda x: x.get("closed_at",""), reverse=True)[:5]:
+        sym  = t.get("symbol", "?")
+        side = t.get("direction", "?").upper()
+        pnl_ = t.get("pnl", 0)
+        tp_l = t.get("tp_level", "SL")
+        ico  = "✅" if pnl_ > 0 else "❌"
+        try:
+            dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
+                     datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
+            dur_str = self._duration_str(dur_s)
+        except Exception:
+            dur_str = "?"
+        last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
 
-        wins   = [t for t in trades if t.get("pnl", 0) > 0]
-        losses = [t for t in trades if t.get("pnl", 0) <= 0]
-        total  = len(trades)
-        wr     = round(len(wins) / total * 100, 1) if total else 0
-        pnl    = sum(t.get("pnl", 0) for t in trades)
-
-        # Среднее время в сделке
-        durations = []
-        for t in trades:
-            try:
+    wr_emoji = self._wr_emoji(wr)
+    msg = (
+        f"📅 <b>Дневной отчёт {date}</b>\n\n"
+        f"📊 Win Rate: {wr_emoji} {wr}%\n"
+        f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+        f"📈 Всего закрыто: {total}\n"
+        f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
+        f"⏱ Ср. время: {avg_dur}\n"
+    )
+    if tp_lines:
+        msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
+    if last_trades:
+        msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
+    
+    # TP уровни
+    tp_stats = {}
+    for t in trades:
+        tp_lvl = t.get("tp_level", "SL")
+        if tp_lvl not in tp_stats:
+            tp_stats[tp_lvl] = {'count': 0, 'pnl': 0}
+        tp_stats[tp_lvl]['count'] += 1
+        tp_stats[tp_lvl]['pnl'] += t.get("pnl", 0)
+    
+    if tp_stats:
+        msg += f"\n🎯 <b>TP УРОВНИ:</b>\n"
+        for tp in ["TP1", "TP2", "TP3", "TP4", "TP5", "TP6"]:
+            count = tp_stats.get(tp, {}).get('count', 0)
+            pnl = tp_stats.get(tp, {}).get('pnl', 0)
+            if count > 0:
+                msg += f"   {tp}: {count} | P&L: {pnl:+.2f}%\n"
+        
+        # BE и SL
+        be_count = tp_stats.get('BE', {}).get('count', 0)
+        sl_count = tp_stats.get('SL', {}).get('count', 0)
+        sl_pnl = tp_stats.get('SL', {}).get('pnl', 0)
+        if be_count > 0:
+            msg += f"   BE: {be_count} | P&L: 0.00%\n"
+        if sl_count > 0:
+            msg += f"   SL: {sl_count} | P&L: {sl_pnl:+.2f}%\n"
+    
+    await self._reply(reply_chat_id, msg)
                 opened = datetime.fromisoformat(t.get("opened_at", ""))
                 closed = datetime.fromisoformat(t.get("closed_at", ""))
                 durations.append((closed - opened).total_seconds())
@@ -1383,13 +1455,129 @@ class DualTelegramManager:
 
 
 # ============================================================================
-# SINGLETON
+# 🆕 AUTO-REPORTS SCHEDULER
+# ============================================================================
+
+class ReportScheduler:
+    """
+    🆕 Планировщик автоматических отчётов в Telegram.
+    
+    Отправляет:
+    - 📅 Ежедневный отчёт в 23:59 МСК (20:59 UTC)
+    - 📅 Еженедельный отчёт в воскресенье 23:59 МСК  
+    - 📅 Ежемесячный отчёт в последний день месяца 23:59 МСК
+    """
+    
+    def __init__(self, telegram_bot: TelegramBot, chat_id: str):
+        self.bot = telegram_bot
+        self.chat_id = chat_id
+        self._running = False
+        self._task = None
+    
+    async def start(self):
+        """Запускает планировщик"""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._scheduler_loop())
+        print("🕐 Report scheduler started (Daily: 23:59 MSK, Weekly: Sun, Monthly: Last day)")
+    
+    async def stop(self):
+        """Останавливает планировщик"""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+    
+    async def _scheduler_loop(self):
+        """Главный цикл планировщика"""
+        while self._running:
+            try:
+                now = datetime.utcnow()
+                
+                # 🕐 Проверяем время для отчётов (20:59 UTC = 23:59 МСК)
+                if now.hour == 20 and now.minute == 59:
+                    # 📅 Ежедневный отчёт (каждый день)
+                    await self._send_daily_report()
+                    
+                    # 📅 Еженедельный (воскресенье = weekday 6)
+                    if now.weekday() == 6:
+                        await self._send_weekly_report()
+                    
+                    # 📅 Ежемесячный (последний день месяца)
+                    if self._is_last_day_of_month(now):
+                        await self._send_monthly_report()
+                    
+                    # Ждём 2 минуты чтобы не отправить дважды
+                    await asyncio.sleep(120)
+                else:
+                    # Проверяем каждую минуту
+                    await asyncio.sleep(60)
+                    
+            except Exception as e:
+                print(f"⚠️ Scheduler error: {e}")
+                await asyncio.sleep(60)
+    
+    def _is_last_day_of_month(self, dt: datetime) -> bool:
+        """Проверяет, является ли день последним в месяце"""
+        # Последний день = завтра будет другой месяц
+        tomorrow = dt + timedelta(days=1)
+        return tomorrow.month != dt.month
+    
+    async def _send_daily_report(self):
+        """Отправляет ежедневный отчёт"""
+        try:
+            print(f"📅 Sending daily report to {self.chat_id}")
+            await self.bot.cmd_daily_report("", self.chat_id)
+        except Exception as e:
+            print(f"⚠️ Daily report error: {e}")
+    
+    async def _send_weekly_report(self):
+        """Отправляет еженедельный отчёт"""
+        try:
+            print(f"📅 Sending weekly report to {self.chat_id}")
+            await self.bot.cmd_weekly_report("", self.chat_id)
+        except Exception as e:
+            print(f"⚠️ Weekly report error: {e}")
+    
+    async def _send_monthly_report(self):
+        """Отправляет ежемесячный отчёт"""
+        try:
+            print(f"📅 Sending monthly report to {self.chat_id}")
+            await self.bot.cmd_monthly_report("", self.chat_id)
+        except Exception as e:
+            print(f"⚠️ Monthly report error: {e}")
+
+
+# ============================================================================
+# SINGLETON + SCHEDULER INIT
 # ============================================================================
 
 _telegram_bot = None
+_report_scheduler = None
 
 def get_telegram_bot() -> TelegramBot:
     global _telegram_bot
     if _telegram_bot is None:
         _telegram_bot = TelegramBot()
     return _telegram_bot
+
+
+def start_report_scheduler(chat_id: str):
+    """🆕 Запускает планировщик отчётов"""
+    global _report_scheduler
+    if _report_scheduler is None:
+        bot = get_telegram_bot()
+        _report_scheduler = ReportScheduler(bot, chat_id)
+        asyncio.create_task(_report_scheduler.start())
+
+
+def stop_report_scheduler():
+    """🆕 Останавливает планировщик отчётов"""
+    global _report_scheduler
+    if _report_scheduler:
+        asyncio.create_task(_report_scheduler.stop())
+        _report_scheduler = None
