@@ -93,6 +93,8 @@ LONG_PATTERN_STRENGTHS = {
 }
 
 SHORT_PATTERN_STRENGTHS = {
+    # 🆕 Pump & Dump (как у DUMP Signals) — высокий потенциал
+    "PUMP_DUMP_SHORT":          26,
     # SMC/ICT паттерны
     "LIQUIDITY_SWEEP_SHORT":    28,
     "WYCKOFF_UPTHRUST":         26,
