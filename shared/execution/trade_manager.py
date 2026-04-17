@@ -51,6 +51,13 @@ class TradePosition:
     # 🆕 Liquidation zones (магниты)
     liquidation_data: Optional[Dict] = None  # Данные о магнитах ликвидации
     
+    # 🆕 BE и Trailing Stop статусы
+    be_activated: bool = False  # Переведено в BE после TP1
+    trail_active: bool = False  # Trailing stop активирован
+    trail_sl_price: Optional[float] = None  # Цена trailing stop
+    tp1_hit: bool = False  # TP1 сработал
+    tp3_hit: bool = False  # TP3 сработал
+    
     # Уровни
     stop_loss: float
     take_profits: List[TakeProfitLevel]
