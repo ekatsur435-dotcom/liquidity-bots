@@ -261,6 +261,9 @@ async def status():
 async def trigger_scan(background_tasks: BackgroundTasks):
     if not state.is_running:
         raise HTTPException(status_code=503, detail="Bot not running")
+    # ✅ FIX: Проверяем is_paused
+    if state.is_paused:
+        raise HTTPException(status_code=503, detail="Bot is paused — use /resume first")
     background_tasks.add_task(scan_market)
     return {"message": "Scan triggered", "timestamp": datetime.utcnow().isoformat()}
 
@@ -580,11 +583,14 @@ async def scan_market():
                 signal["tg_msg_id"] = tg_msg_id
                 state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-                if state.auto_trader and Config.AUTO_TRADING:
+                # ✅ FIX: Двойная проверка is_paused перед открытием позиции
+                if state.auto_trader and Config.AUTO_TRADING and not state.is_paused:
                     try:
                         await state.auto_trader.execute_signal(signal)
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
+                elif state.is_paused:
+                    print(f"⏸ Skipping trade {symbol} — bot is paused")
 
                 print(f"✅ LONG: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                 new_signals += 1
