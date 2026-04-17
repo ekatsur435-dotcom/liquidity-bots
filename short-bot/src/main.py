@@ -126,18 +126,24 @@ state = BotState()
 
 async def _build_combined_watchlist(binance_client, min_vol: float, max_count: int) -> List[str]:
     """
-    Объединяет тикеры с Bybit и Binance:
-    1. Получаем списки с обоих источников
-    2. Объединяем, дедуплицируем
-    3. Возвращаем до max_count символов
+    Объединяет тикеры с Bybit и Binance.
+    ✅ FIX: Добавлен fallback на FALLBACK_WATCHLIST если оба источника пустые.
     """
+    from utils.binance_client import FALLBACK_WATCHLIST
+
     bybit_syms  = set()
     binance_syms = set()
 
-    # Bybit
+    # ✅ FIX: Убедимся что источник инициализирован
+    try:
+        await binance_client._init_source()
+    except Exception as e:
+        print(f"⚠️ _init_source error: {e}")
+
+    # Bybit (основной источник)
     try:
         result = await binance_client._bybit("/v5/market/tickers", {"category": "linear"})
-        if result:
+        if result and result.get("list"):
             EXCLUDE_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR", "3L", "3S")
             for t in result.get("list", []):
                 sym = t.get("symbol", "")
@@ -171,19 +177,30 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
     except Exception as e:
         print(f"⚠️ Binance watchlist error: {e}")
 
-    # Объединяем (Bybit первый как дефолтный источник данных)
-    combined = list(bybit_syms | binance_syms)
-    combined.sort()   # стабильный порядок
+    # ✅ FIX: Fallback если оба источника пустые
+    total_found = len(bybit_syms) + len(binance_syms)
+    if total_found == 0:
+        print(f"⚠️ No symbols from APIs! Using FALLBACK_WATCHLIST ({len(FALLBACK_WATCHLIST)} coins)")
+        return FALLBACK_WATCHLIST[:max_count]
 
-    # Предпочитаем символы присутствующие на ОБОИХ биржах (выше ликвидность)
+    # Объединяем
+    combined = list(bybit_syms | binance_syms)
+    combined.sort()
+
+    # Предпочитаем символы присутствующие на ОБОИХ биржах
     both = list(bybit_syms & binance_syms)
     only_one = [s for s in combined if s not in both]
 
-    # Приоритет: both > only_one
     result_list = (both + only_one)[:max_count]
     print(f"📊 Combined watchlist: {len(result_list)} symbols "
           f"(both={len(both)}, bybit_only={len(bybit_syms-binance_syms)}, "
           f"binance_only={len(binance_syms-bybit_syms)})")
+
+    # ✅ FIX: Дополнительная проверка
+    if len(result_list) == 0:
+        print(f"⚠️ Empty result! Using FALLBACK_WATCHLIST")
+        return FALLBACK_WATCHLIST[:max_count]
+
     return result_list
 
 
@@ -360,6 +377,9 @@ async def status():
 async def trigger_scan(background_tasks: BackgroundTasks):
     if not state.is_running:
         raise HTTPException(status_code=503, detail="Bot not running")
+    # ✅ FIX: Проверяем is_paused
+    if state.is_paused:
+        raise HTTPException(status_code=503, detail="Bot is paused — use /resume first")
     background_tasks.add_task(scan_market)
     return {"message": "Scan triggered", "timestamp": datetime.utcnow().isoformat()}
 
@@ -692,11 +712,14 @@ async def scan_market():
                 signal["tg_msg_id"] = tg_msg_id
                 state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-                if state.auto_trader and Config.AUTO_TRADING:
+                # ✅ FIX: Двойная проверка is_paused перед открытием позиции
+                if state.auto_trader and Config.AUTO_TRADING and not state.is_paused:
                     try:
                         await state.auto_trader.execute_signal(signal)
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
+                elif state.is_paused:
+                    print(f"⏸ Skipping trade {symbol} — bot is paused")
 
                 print(f"✅ SHORT: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                 new_signals += 1
