@@ -1163,53 +1163,6 @@ class TelegramCommandHandler:
             msg += f"   SL: {sl_count} | P&L: {sl_pnl:+.2f}%\n"
     
     await self._reply(reply_chat_id, msg)
-                opened = datetime.fromisoformat(t.get("opened_at", ""))
-                closed = datetime.fromisoformat(t.get("closed_at", ""))
-                durations.append((closed - opened).total_seconds())
-            except Exception:
-                pass
-        avg_dur = self._duration_str(sum(durations) / len(durations)) if durations else "N/A"
-
-        # TP breakdown
-        tp_counts: Dict[str, int] = {}
-        for t in wins:
-            tp_lvl = t.get("tp_level", "TP?")
-            tp_counts[tp_lvl] = tp_counts.get(tp_lvl, 0) + 1
-        tp_lines = ""
-        for tp, cnt in sorted(tp_counts.items()):
-            bar = "█" * cnt
-            tp_lines += f"  {tp}: {cnt} ✅  {bar}\n"
-
-        # Последние сделки (до 5)
-        last_trades = ""
-        for t in sorted(trades, key=lambda x: x.get("closed_at",""), reverse=True)[:5]:
-            sym  = t.get("symbol", "?")
-            side = t.get("direction", "?").upper()
-            pnl_ = t.get("pnl", 0)
-            tp_l = t.get("tp_level", "SL")
-            ico  = "✅" if pnl_ > 0 else "❌"
-            try:
-                dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
-                         datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
-                dur_str = self._duration_str(dur_s)
-            except Exception:
-                dur_str = "?"
-            last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
-
-        wr_emoji = self._wr_emoji(wr)
-        msg = (
-            f"📅 <b>Дневной отчёт {date}</b>\n\n"
-            f"📊 Win Rate: {wr_emoji} {wr}%\n"
-            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
-            f"📈 Всего закрыто: {total}\n"
-            f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
-            f"⏱ Ср. время: {avg_dur}\n"
-        )
-        if tp_lines:
-            msg += f"\n<b>Разбивка по TP:</b>\n{tp_lines}"
-        if last_trades:
-            msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
-        await self._reply(reply_chat_id, msg)
 
     async def cmd_weekly_report(self, args, reply_chat_id: str):
         """📅 /weekly_rep — недельный отчёт."""
