@@ -17,6 +17,12 @@ from typing import List, Dict, Optional, Tuple
 from enum import Enum
 from datetime import datetime
 
+# 🆕 Liquidation zones support
+try:
+    from .liquidation_detector import LiquidationAnalysis
+except ImportError:
+    LiquidationAnalysis = None
+
 
 class Direction(Enum):
     SHORT = "short"
@@ -159,6 +165,48 @@ class BaseScorer:
         if atr_pct > 2.0:
             return -3, f"Высокая волатильность ATR={atr_pct:.1f}% -3"
         return 0, ""
+
+    def calculate_liquidation_component(
+        self, 
+        liq_analysis: Optional[LiquidationAnalysis]
+    ) -> ScoreComponent:
+        """
+        🆕 Бонус/штраф от магнитов ликвидации.
+        
+        LONG: +15 если магнит выше на 2-8%, -10 если магнит ниже <1.5%
+        SHORT: +15 если магнит ниже на 2-8%, -10 если магнит выше <1.5%
+        """
+        if not liq_analysis or not liq_analysis.has_targets:
+            return ScoreComponent("Liquidation", 0, 15, "Нет данных")
+        
+        direction_str = "long" if self.direction == Direction.LONG else "short"
+        bonus = liq_analysis.get_score_bonus(direction_str)
+        
+        reasons = []
+        if bonus > 0:
+            if direction_str == "long" and liq_analysis.nearest_above:
+                dist = abs(liq_analysis.nearest_above.distance_pct)
+                reasons.append(f"🧲 Магнит +{dist:.1f}% — цель для TP")
+            elif direction_str == "short" and liq_analysis.nearest_below:
+                dist = abs(liq_analysis.nearest_below.distance_pct)
+                reasons.append(f"🧲 Магнит -{dist:.1f}% — цель для TP")
+        elif bonus < 0:
+            if direction_str == "long" and liq_analysis.nearest_below:
+                dist = abs(liq_analysis.nearest_below.distance_pct)
+                reasons.append(f"⚠️ Магнит -{dist:.1f}% близко — риск стопа")
+            elif direction_str == "short" and liq_analysis.nearest_above:
+                dist = abs(liq_analysis.nearest_above.distance_pct)
+                reasons.append(f"⚠️ Магнит +{dist:.1f}% близко — риск стопа")
+        else:
+            reasons.append("🎯 Магниты в нейтральной зоне")
+        
+        return ScoreComponent(
+            "Liquidation", 
+            bonus, 
+            15, 
+            " | ".join(reasons),
+            liq_analysis.long_liq_dominance if liq_analysis else None
+        )
 
 
 class ShortScorer(BaseScorer):
