@@ -369,6 +369,7 @@ class ShortPatternDetector:
     def detect_all(self, candles, hourly_deltas=None, market_data=None) -> List[PatternResult]:
         results = []
         for fn in [
+            self.detect_pump_dump_short,  # 🆕 NEW: Pump & Dump паттерн (высокий приоритет)
             self.detect_breakout_short,
             self.detect_momentum_short,
             self.detect_liquidity_sweep_short,
@@ -491,6 +492,76 @@ class ShortPatternDetector:
             reasons=[f"Ликвидность снята над {recent_sh:.4f}",
                      f"Sweep +{sweep_height:.2f}% выше свинг-хая | Volume {vol_spike:.1f}x",
                      "Разворот вниз подтверждён"],
+        )
+
+    def detect_pump_dump_short(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
+        """
+        🆕 PUMP_DUMP_SHORT: Резкий pump (+50-200%) → откат → вход в шорт.
+        
+        Как у DUMP Signals бота:
+        1. Резкий pump за 1-3 дня (+50%+)
+        2. Вершина сформирована (откат 5-20% от максимума)
+        3. Возвращение к зоне вершины для входа в шорт
+        4. Ожидаемый dump: -30% до -70%
+        """
+        if len(candles) < 100:  # Минимум ~1.5 дня на 15m
+            return None
+        
+        # Анализируем последние 3 дня (288 свечей 15m)
+        lookback = min(288, len(candles) - 10)
+        recent = candles[-lookback:]
+        
+        # Ищем максимум и минимум за период
+        max_high = max(c.high for c in recent)
+        min_low = min(c.low for c in recent)
+        
+        # Проверяем был ли pump
+        pump_pct = (max_high - min_low) / min_low * 100 if min_low else 0
+        
+        # Минимальный pump: +50% (как у DUMP Signals)
+        if pump_pct < 50:
+            return None
+        
+        last = candles[-1]
+        current_price = last.close
+        
+        # Проверяем откат от вершины (5-30% — зона входа)
+        pullback_pct = (max_high - current_price) / max_high * 100 if max_high else 0
+        
+        # Слишком рано (< 5% отката) или слишком поздно (> 35% — dump уже начался)
+        if pullback_pct < 5 or pullback_pct > 35:
+            return None
+        
+        # Проверяем объём (должен быть высоким)
+        vol_spike = _vol_spike(candles, 20)
+        if vol_spike < 1.5:
+            return None
+        
+        # Проверяем текущую свечу — должна быть медвежьей или с верхним wick
+        upper_wick = last.high - max(last.open, last.close)
+        body_size = abs(last.close - last.open)
+        
+        is_bearish = last.close < last.open
+        has_rejection = upper_wick > body_size * 0.8
+        
+        if not (is_bearish or has_rejection):
+            return None
+        
+        # Бонус зависит от размера pump и качества отката
+        bonus = min(30, int(20 + pump_pct * 0.1 + pullback_pct * 0.3))
+        
+        return PatternResult(
+            name="PUMP_DUMP_SHORT",
+            score_bonus=bonus,
+            confidence=min(0.85, 0.6 + pump_pct / 200),
+            direction="short",
+            suggested_sl_pct=round((max_high - current_price) / current_price * 100 + 2.0, 2),
+            reasons=[
+                f"🚀 Pump: +{pump_pct:.0f}% за 3 дня",
+                f"📉 Откат: {pullback_pct:.1f}% от вершины",
+                f"🎯 SHORT-зона: ${current_price:.6f}+",
+                f"Ожидаемый dump: -30% до -70%",
+            ],
         )
 
     def detect_distribution_break(self, candles, hourly_deltas=None, md=None) -> Optional[PatternResult]:
