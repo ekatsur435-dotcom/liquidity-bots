@@ -12,6 +12,7 @@ Telegram Bot Integration  v2.2
 """
 
 import os
+import json
 import asyncio
 from typing import Optional, Dict, List, Callable
 from datetime import datetime, timedelta
