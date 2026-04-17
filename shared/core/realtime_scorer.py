@@ -41,8 +41,15 @@ RealtimeScorer — shared/core/realtime_scorer.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, NamedTuple, Dict
 
+# 🆕 Multi-timeframe support
+from .multi_timeframe_detector import (
+    MultiTimeframeDetector, 
+    Timeframe, 
+    AggregatedSignal,
+    format_multi_tf_message
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RESULT TYPES
