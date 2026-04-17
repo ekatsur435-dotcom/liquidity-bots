@@ -10,7 +10,7 @@ Enhanced Trade Manager
 import json
 import os
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Dict
 from dataclasses import dataclass, asdict
 from enum import Enum
 
@@ -47,6 +47,9 @@ class TradePosition:
     entry_price: float
     total_qty: float
     remaining_qty: float
+    
+    # 🆕 Liquidation zones (магниты)
+    liquidation_data: Optional[Dict] = None  # Данные о магнитах ликвидации
     
     # Уровни
     stop_loss: float
@@ -170,6 +173,73 @@ class TradeManager:
         os.makedirs(self.data_dir, exist_ok=True)
         with open(self.stats_file, 'w') as f:
             json.dump(self.stats, f, indent=2, default=str)
+
+    def optimize_levels_with_liquidation(
+        self,
+        direction: str,
+        entry_price: float,
+        default_sl: float,
+        default_tp: float,
+        liq_analysis: Optional[Any],
+    ) -> Tuple[float, float, List[str]]:
+        """
+        🆕 Оптимизирует SL/TP на основе магнитов ликвидации.
+        
+        Returns:
+            (optimized_sl, optimized_tp, reasons)
+        """
+        if not liq_analysis:
+            return default_sl, default_tp, []
+        
+        reasons = []
+        sl = default_sl
+        tp = default_tp
+        
+        try:
+            if direction == "LONG":
+                # TP: к ближайшему магниту выше
+                if liq_analysis.nearest_above:
+                    magnet_price = liq_analysis.nearest_above.price_level
+                    dist_pct = abs(liq_analysis.nearest_above.distance_pct)
+                    
+                    if 2 <= dist_pct <= 10:  # Оптимальное расстояние
+                        # Ставим TP чуть ниже магнита (0.2% запас)
+                        tp = magnet_price * 0.998
+                        reasons.append(f"🧲 TP у магнита +{dist_pct:.1f}%")
+                
+                # SL: защищаем от магнита ниже
+                if liq_analysis.nearest_below:
+                    magnet_price = liq_analysis.nearest_below.price_level
+                    dist_pct = abs(liq_analysis.nearest_below.distance_pct)
+                    
+                    if dist_pct < 1.5:  # Магнит близко
+                        # Ставим SL ниже магнита (0.5% запас)
+                        sl = magnet_price * 0.995
+                        reasons.append(f"🛡️ SL за магнитом -{dist_pct:.1f}%")
+                        
+            else:  # SHORT
+                # TP: к ближайшему магниту ниже
+                if liq_analysis.nearest_below:
+                    magnet_price = liq_analysis.nearest_below.price_level
+                    dist_pct = abs(liq_analysis.nearest_below.distance_pct)
+                    
+                    if 2 <= dist_pct <= 10:
+                        tp = magnet_price * 1.002
+                        reasons.append(f"🧲 TP у магнита -{dist_pct:.1f}%")
+                
+                # SL: защищаем от магнита выше
+                if liq_analysis.nearest_above:
+                    magnet_price = liq_analysis.nearest_above.price_level
+                    dist_pct = abs(liq_analysis.nearest_above.distance_pct)
+                    
+                    if dist_pct < 1.5:
+                        sl = magnet_price * 1.005
+                        reasons.append(f"🛡️ SL за магнитом +{dist_pct:.1f}%")
+        
+        except Exception as e:
+            print(f"⚠️ Liquidation optimization error: {e}")
+        
+        return sl, tp, reasons
     
     def create_position(self,
                        symbol: str,
