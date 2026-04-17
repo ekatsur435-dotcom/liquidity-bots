@@ -402,6 +402,52 @@ class TradeManager:
             "trail_sl": pos.trail_sl_price
         }
     
+    def on_tp_hit(self, trade_id: str, tp_level: int, current_price: float):
+        """
+        🆕 Обработка срабатывания Take Profit
+        
+        - После TP1: переводим оставшуюся позицию в BE
+        - После TP3: активируем trailing stop
+        
+        Args:
+            tp_level: 1-6 (какой TP сработал)
+            current_price: текущая цена при срабатывании TP
+        """
+        if trade_id not in self.positions:
+            return
+        
+        pos = self.positions[trade_id]
+        
+        # 🆕 После TP1: переводим в BE (с небольшим запасом +0.3%)
+        if tp_level == 1 and not pos.be_activated:
+            pos.be_activated = True
+            pos.tp1_hit = True
+            
+            # BE = цена входа + 0.3% запас для LONG, -0.3% для SHORT
+            be_buffer = 0.003
+            if pos.direction == "LONG":
+                pos.stop_loss = pos.entry_price * (1 + be_buffer)
+            else:
+                pos.stop_loss = pos.entry_price * (1 - be_buffer)
+            
+            print(f"🛡️ BE activated for {pos.symbol} after TP1 | New SL: {pos.stop_loss:.4f}")
+        
+        # 🆕 После TP3: активируем trailing stop
+        if tp_level == 3 and not pos.trail_active:
+            pos.trail_active = True
+            pos.tp3_hit = True
+            
+            # Начальный trail на 2% от текущей цены
+            trail_distance = 0.02
+            if pos.direction == "LONG":
+                pos.trail_sl_price = current_price * (1 - trail_distance)
+            else:
+                pos.trail_sl_price = current_price * (1 + trail_distance)
+            
+            print(f"🔄 Trail activated for {pos.symbol} after TP3 | Trail SL: {pos.trail_sl_price:.4f}")
+        
+        self._save_positions()
+    
     def update_trail_stop(self, trade_id: str, current_price: float):
         """Обновить trail stop если цена движется в нашу сторону"""
         if trade_id not in self.positions:
@@ -417,12 +463,16 @@ class TradeManager:
         if is_short:
             new_trail = current_price * (1 + self.TRAIL_STEP_PCT)
             if new_trail < pos.trail_sl_price:
+                old_trail = pos.trail_sl_price
                 pos.trail_sl_price = new_trail
+                print(f"📉 Trail updated for {pos.symbol}: {old_trail:.4f} → {new_trail:.4f}")
         else:
             # Для LONG: цена растет - подтягиваем SL выше
             new_trail = current_price * (1 - self.TRAIL_STEP_PCT)
             if new_trail > pos.trail_sl_price:
+                old_trail = pos.trail_sl_price
                 pos.trail_sl_price = new_trail
+                print(f"📈 Trail updated for {pos.symbol}: {old_trail:.4f} → {new_trail:.4f}")
         
         self._save_positions()
     
