@@ -159,10 +159,9 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
-                    # ✅ AUTO-SYNC: при ошибке timestamp синхронизируем время
+                    # ✅ AUTO-SYNC: при ошибке timestamp сбрасываем offset
                     if code == 109400:
-                        import asyncio
-                        asyncio.create_task(self._sync_server_time())
+                        self._time_offset = 0   # сбросим, пересинхронизируем при следующем вызове
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
                 return data
