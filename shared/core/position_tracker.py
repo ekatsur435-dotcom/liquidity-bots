@@ -134,6 +134,7 @@ class PositionTracker:
     # =========================================================================
 
     async def _check_trailing(self, signal: Dict, price: float):
+        symbol          = signal.get("symbol", "")   # ✅ FIX: NameError fix
         entry           = _f(signal.get("entry_price", 0))
         direction       = signal.get("direction", "long")
         current_sl      = _f(signal.get("stop_loss", 0))
