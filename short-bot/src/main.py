@@ -70,11 +70,11 @@ class Config:
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    SL_BUFFER  = float(os.getenv("SHORT_SL_BUFFER", "1.5"))
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.5"))
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    TP_LEVELS  = [5.0, 7.5, 11.25, 16.88, 22.0, 28.0]
-    TP_WEIGHTS = [25, 20, 20, 15, 12, 8]
+    TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
+    TP_WEIGHTS = [25,  25,  20,  15,  10,   5]   # SHORT: больше на TP1-2
 
     # Trailing — SHORT активирует при +1% (лонг: +1.5%)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.010"))
