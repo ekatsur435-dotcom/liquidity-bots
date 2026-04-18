@@ -591,6 +591,8 @@ class TelegramCommandHandler:
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
             f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.3</b>\n\n"
+            "📊 /start — начало\n"
+            "🎯 /help — все команды\n"
             "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
@@ -606,6 +608,7 @@ class TelegramCommandHandler:
             "📅 /weekly_rep — Недельный отчёт\n"
             "📅 /monthly_rep — Месячный отчёт\n"
             "🏆 /leaderswr — Топ пар по Win Rate\n\n"
+            "🏆 /alltradestat — полная аналитика сделок\n\n"
             "<b>⚙️ Управление:</b>\n"
             "⏸ /pause — Остановить новые сигналы\n"
             "▶️ /resume — Возобновить\n"
