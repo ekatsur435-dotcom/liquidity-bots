@@ -254,9 +254,12 @@ class AutoTrader:
         print(f"{pfx} 📤 Sending order to BingX [{mode}]...")
         self._last_open_ts = time.time()
 
+        # ✅ FIX: НЕ передаём take_profit в основной ордер!
+        # takeProfit на основном ордере BingX закрывает ВСЮ позицию при срабатывании TP1.
+        # Все TP размещаются отдельно через _place_tp_orders_hedge с правильными размерами.
         order = await self.bingx.place_market_order(
             symbol=bingx_symbol, side=side, position_side=position_side,
-            size=size, stop_loss=stop_loss, take_profit=tp1_price,
+            size=size, stop_loss=stop_loss, take_profit=None,
         )
 
         # ── RETRY логика для code=101209 ──────────────────────────────────────
@@ -275,7 +278,7 @@ class AutoTrader:
 
                 order = await self.bingx.place_market_order(
                     symbol=bingx_symbol, side=side, position_side=position_side,
-                    size=retry_size, stop_loss=stop_loss, take_profit=tp1_price,
+                    size=retry_size, stop_loss=stop_loss, take_profit=None,  # ✅ FIX
                 )
                 if order:
                     size        = retry_size
@@ -305,15 +308,17 @@ class AutoTrader:
             )
             return None
 
-        # ── 10. TP2-TP6 (Hedge Mode — без reduceOnly) ─────────────────────────
-        if take_profits and len(take_profits) > 1:
+        # ── 10. TP1-TP6 — ALL как отдельные ордера с правильным qty ──────────
+        # ✅ FIX: передаём ВСЕ TPs включая TP1 (раньше TP1 шёл в основной ордер)
+        if take_profits:
             asyncio.create_task(
                 self._place_tp_orders_hedge(
                     bingx_symbol  = bingx_symbol,
                     position_side = position_side,
                     total_size    = order.size,
-                    take_profits  = take_profits[1:],
+                    take_profits  = take_profits,   # ✅ все TPs, не [1:]
                     direction     = direction,
+                    start_num     = 1,              # ✅ начинаем с TP1
                 )
             )
 
@@ -362,7 +367,8 @@ class AutoTrader:
     # =========================================================================
 
     async def _place_tp_orders_hedge(self, bingx_symbol, position_side,
-                                      total_size, take_profits, direction):
+                                      total_size, take_profits, direction,
+                                      start_num: int = 2):   # ✅ FIX: start_num param
         await asyncio.sleep(1.5)
         close_side = "SELL" if direction == "long" else "BUY"
         success = 0
@@ -383,7 +389,7 @@ class AutoTrader:
                     continue
 
                 tp_size       = total_size * tp_weight
-                tp_num        = i + 2
+                tp_num        = i + start_num  # ✅ FIX: используем start_num
                 rounded_price = await self.bingx._round_price(bingx_symbol, tp_price)
                 rounded_size  = await self.bingx._round_qty(bingx_symbol, tp_size)
 
