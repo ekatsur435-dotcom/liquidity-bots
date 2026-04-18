@@ -1,8 +1,9 @@
 services:
   - type: web
     name: liq-short-bot
-    runtime: python
-    plan: free
+    env: python
+    region: frankfurt
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -29,18 +30,18 @@ services:
         sync: false
 
       - key: SCAN_INTERVAL
-        value: "200"
+        value: "240"
       - key: MIN_SHORT_SCORE
         value: "60"             # Ниже чем LONG — SHORT сложнее найти
       - key: SHORT_LEVERAGE
         value: "5-50"
       - key: SHORT_SL_BUFFER
-        value: "2.5"            # Шире SL для SHORT (контртрендовый)
+        value: "1.5"            # Шире SL для SHORT (контртрендовый)
 
       - key: MAX_SHORT_POSITIONS
         value: "20"
       - key: MIN_VOLUME_USDT
-        value: "300000"
+        value: "150000"
       - key: MAX_WATCHLIST
         value: "300"
 
