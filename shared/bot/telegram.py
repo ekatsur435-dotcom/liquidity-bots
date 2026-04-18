@@ -45,16 +45,37 @@ class TelegramBot:
     def __init__(self,
                  bot_token: Optional[str] = None,
                  chat_id: Optional[str] = None,
-                 topic_id: Optional[str] = None):
-        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id   = chat_id   or os.getenv("TELEGRAM_CHAT_ID")
-        self.topic_id  = topic_id  or os.getenv("TELEGRAM_TOPIC_ID")
+                 topic_id: Optional[str] = None,
+                 bot_type: str = ""):
+        # ✅ v2.4 FIX: поддержка LONG_/SHORT_ префиксов + обычных имён
+        # Порядок: явный аргумент → {PREFIX}_TELEGRAM_ → TELEGRAM_ (общий)
+        prefix = (bot_type.upper() + "_") if bot_type else ""
+        self.bot_token = (bot_token
+                          or os.getenv(f"{prefix}TELEGRAM_BOT_TOKEN")
+                          or os.getenv("LONG_TELEGRAM_BOT_TOKEN")
+                          or os.getenv("SHORT_TELEGRAM_BOT_TOKEN")
+                          or os.getenv("TELEGRAM_BOT_TOKEN"))
+        self.chat_id   = (chat_id
+                          or os.getenv(f"{prefix}TELEGRAM_CHAT_ID")
+                          or os.getenv("LONG_TELEGRAM_CHAT_ID")
+                          or os.getenv("SHORT_TELEGRAM_CHAT_ID")
+                          or os.getenv("TELEGRAM_CHAT_ID"))
+        self.topic_id  = (topic_id
+                          or os.getenv(f"{prefix}TELEGRAM_TOPIC_ID")
+                          or os.getenv("LONG_TELEGRAM_TOPIC_ID")
+                          or os.getenv("SHORT_TELEGRAM_TOPIC_ID")
+                          or os.getenv("TELEGRAM_TOPIC_ID"))
 
         if not self.bot_token:
-            raise ValueError("Telegram bot token not provided")
+            raise ValueError(
+                "Telegram bot token not provided. "
+                "Set LONG_TELEGRAM_BOT_TOKEN or SHORT_TELEGRAM_BOT_TOKEN in Render env vars."
+            )
         if not self.chat_id:
-            raise ValueError("Telegram chat ID not provided")
-
+            raise ValueError(
+                "Telegram chat ID not provided. "
+                "Set LONG_TELEGRAM_CHAT_ID or SHORT_TELEGRAM_CHAT_ID in Render env vars."
+            )
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
         self.session: Optional[aiohttp.ClientSession] = None
 
