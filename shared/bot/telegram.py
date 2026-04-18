@@ -483,6 +483,8 @@ class TelegramCommandHandler:
                 "/weekly_rep":   self.cmd_weekly_report,
                 "/monthly_rep":  self.cmd_monthly_report,
                 "/leaderswr":    self.cmd_leaders_wr,
+                # 🆕 Полная аналитика
+                "/alltradestat": self.cmd_alltradestat,
             }
             await handlers[cmd](args, reply_chat_id)
             return True
