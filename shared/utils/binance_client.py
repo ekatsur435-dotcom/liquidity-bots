@@ -225,20 +225,30 @@ class BinanceFuturesClient:
 
     async def _bybit(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         await self._rate_limit()
-        try:
-            session = await self._get_session()
-            async with session.get(
-                f"{self.BYBIT_URL}{endpoint}",
-                params=params or {},
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("retCode") == 0:
-                        return data.get("result")
+        # ✅ FIX: Try multiple timeouts and log errors for debugging
+        for timeout_sec in [10, 15, 20]:
+            try:
+                session = await self._get_session()
+                async with session.get(
+                    f"{self.BYBIT_URL}{endpoint}",
+                    params=params or {},
+                    timeout=aiohttp.ClientTimeout(total=timeout_sec)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("retCode") == 0:
+                            return data.get("result")
+                        print(f"⚠️ Bybit {endpoint}: retCode={data.get('retCode')} msg={data.get('retMsg','')}")
+                        return None
+                    print(f"⚠️ Bybit {endpoint}: HTTP {resp.status}")
+                    return None
+            except asyncio.TimeoutError:
+                print(f"⚠️ Bybit {endpoint}: timeout {timeout_sec}s, retrying...")
+                continue
+            except Exception as e:
+                print(f"⚠️ Bybit {endpoint}: {e}")
                 return None
-        except Exception:
-            return None
+        return None
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         await self._rate_limit()
