@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: liq-short-bot
+    env: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn bots.short.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: SHORT_SL_BUFFER
+        value: "1.5"
+      - key: MIN_SHORT_SCORE
+        value: "60"
+      - key: SCAN_INTERVAL
+        value: "200"
+    healthCheckPath: /health
+
+  - type: web
+    name: liq-long-bot
+    env: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn bots.long.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: LONG_SL_BUFFER
+        value: "1.5"
+      - key: MIN_LONG_SCORE
+        value: "65"
