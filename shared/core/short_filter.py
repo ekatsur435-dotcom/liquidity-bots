@@ -60,8 +60,8 @@ class ShortFilter:
 
     # Режим рынка: блокируем шорт если BTC растёт
     # ✅ ADJUSTED: 2% → 3% (модерато настройка, меньше пропусков хороших шортов)
-    BTC_STRONG_UP_THRESHOLD = 3.0    # % за 1ч — "сильный аптренд" (было 2.0)
-    BTC_MODERATE_UP         = 1.5    # % за 1ч — "умеренный рост" (было 1.0)
+    BTC_STRONG_UP_THRESHOLD = 4.0    # ✅ FIX: было 3.0 — слишком часто блокировало
+    BTC_MODERATE_UP         = 2.0    # ✅ FIX: было 1.5 — штрафовало при любом росте BTC
 
     # Фандинг-спайк (самый мощный SHORT сигнал)
     FUNDING_EXTREME  = 0.10   # > 0.10% → экстремально перегрет
@@ -69,7 +69,7 @@ class ShortFilter:
     FUNDING_MODERATE = 0.02   # > 0.02%
 
     # Минимальный RSI для SHORT входа
-    RSI_MIN_FOR_SHORT = 58    # ниже 58 = не перекуплен, шортить рано
+    RSI_MIN_FOR_SHORT = 50    # ✅ FIX: было 58 — блокировало RSI 40-57 (типичный даунтренд)
 
     def check(
         self,
