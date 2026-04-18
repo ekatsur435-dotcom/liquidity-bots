@@ -1,9 +1,9 @@
+# long-bot/render.yaml  ← положи этот файл сюда
 services:
   - type: web
     name: liq-long-bot
     runtime: python
     plan: free
-    rootDir: long-bot
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -12,7 +12,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.8"
 
-      # ── SECRETS ──
+      # ═══ SECRETS ═══
       - key: REDIS_URL
         sync: false
       - key: BINGX_API_KEY
@@ -27,45 +27,42 @@ services:
         sync: false
       - key: COINGLASS_API_KEY
         sync: false
-      # PROXY нужен только если USE_BINANCE=true
       - key: PROXY_LIST
-        sync: false
+        sync: false         # нужен только если USE_BINANCE=true
 
-      # ── СТРАТЕГИЯ ──
+      # ═══ СТРАТЕГИЯ ═══
       - key: MIN_LONG_SCORE
         value: "65"
       - key: LONG_SL_BUFFER
-        value: "1.5"
+        value: "1.5"        # оптимум из backtest
       - key: LONG_LEVERAGE
         value: "5-50"
       - key: SCAN_INTERVAL
         value: "200"
       - key: MAX_LONG_POSITIONS
         value: "20"
+      - key: RISK_PER_TRADE
+        value: "0.0005"
 
-      # ── WATCHLIST ──
+      # ═══ WATCHLIST ═══
       - key: MIN_VOLUME_USDT
-        value: "500000"     # ✅ 1M$ фильтр мусора (было 300K)
+        value: "1000000"    # ✅ 1M$ фильтр мусора
       - key: MAX_WATCHLIST
         value: "300"
 
-      # ── TRADING ──
+      # ═══ БИРЖ / ДАННЫЕ ═══
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
         value: "true"
-      - key: RISK_PER_TRADE
-        value: "0.0005"
-
-      # ── ФИЧИ ──
+      - key: USE_BINANCE
+        value: "false"      # false = Bybit. true = Binance (нужен PROXY_LIST)
       - key: USE_SMC
         value: "true"
-      - key: USE_BINANCE
-        value: "false"       # false = Bybit (без прокси). true = Binance через PROXY_LIST
 
-      # ── TRAILING / BE ──
+      # ═══ TRAILING / BE ═══
       - key: ENABLE_BE_AFTER_TP1
-        value: "true"        # ✅ BE после TP1
+        value: "true"
       - key: TRAIL_DISTANCE_PERCENT
         value: "0.8"
       - key: BE_BUFFER_PERCENT
