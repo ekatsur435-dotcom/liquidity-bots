@@ -1,9 +1,9 @@
+# short-bot/render.yaml  ← положи этот файл сюда
 services:
   - type: web
     name: liq-short-bot
     runtime: python
     plan: free
-    rootDir: short-bot
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -12,7 +12,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.8"
 
-      # ── SECRETS (задай в Render Dashboard) ──
+      # ═══ SECRETS — НЕ МЕНЯТЬ ЗДЕСЬ, задавать в Dashboard ═══
       - key: REDIS_URL
         sync: false
       - key: BINGX_API_KEY
@@ -28,48 +28,46 @@ services:
       - key: COINGLASS_API_KEY
         sync: false
 
-      # ── СТРАТЕГИЯ ──
+      # ═══ СТРАТЕГИЯ ═══
       - key: MIN_SHORT_SCORE
         value: "60"
       - key: SHORT_SL_BUFFER
-        value: "1.5"         # ✅ ИЗМЕНЕНО: было 2.5 → 1.5 (из backtest)
+        value: "1.5"        # ✅ оптимум из backtest (было 2.5)
       - key: SHORT_LEVERAGE
         value: "5-50"
       - key: SCAN_INTERVAL
         value: "240"
       - key: MAX_SHORT_POSITIONS
         value: "20"
+      - key: RISK_PER_TRADE
+        value: "0.0005"
 
-      # ── WATCHLIST ──
+      # ═══ WATCHLIST ═══
       - key: MIN_VOLUME_USDT
-        value: "500000"
+        value: "150000"
       - key: MAX_WATCHLIST
         value: "300"
 
-      # ── TRADING ──
+      # ═══ БИРЖ / ДАННЫЕ ═══
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
         value: "true"
-      - key: RISK_PER_TRADE
-        value: "0.0005"      # 0.05% депозита на сделку
-
-      # ── ФИЧИ ──
+      - key: USE_BINANCE
+        value: "false"      # Bybit без прокси — ключи не нужны
       - key: USE_SMC
         value: "true"
-      - key: USE_BINANCE
-        value: "false"       # Bybit (без прокси)
 
-      # ── TRAILING / BE ──
+      # ═══ TRAILING / BE ═══
       - key: SHORT_TRAIL_ACTIVATION
         value: "0.010"
       - key: ENABLE_BE_AFTER_TP1
-        value: "true"        # ✅ BE после TP1 (из backtest)
+        value: "true"
       - key: TRAIL_DISTANCE_PERCENT
         value: "2.0"
       - key: BE_BUFFER_PERCENT
         value: "0.3"
 
-      # ── ФИЛЬТРЫ ──
+      # ═══ ФИЛЬТРЫ ═══
       - key: ENABLE_BTC_CORRELATION
         value: "true"
