@@ -3,7 +3,7 @@
 
 ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
-  ✅ MIN_SHORT_SCORE default = 60 (было 65)
+  ✅ MIN_LONG_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
   ✅ HEAD /health → 200 OK (UptimeRobot fix)
   ✅ Watchlist: объединяет Bybit + Binance (нет дублей, до 300 монет)
@@ -51,7 +51,6 @@ from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
-from core.realtime_scorer import get_realtime_scorer
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -61,7 +60,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 
 class Config:
     BOT_TYPE      = "long"
-    # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
+    # ✅ FIX: MIN_LONG_SCORE default = 60 (не 65!)
     MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "200"))
