@@ -63,8 +63,8 @@ class Config:
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))
 
-    TP_LEVELS  = [1.5, 3.0, 5.0, 6.3, 8.5, 12.2]
-    TP_WEIGHTS = [20,  20,  20,  15,  15,  10]
+    TP_LEVELS  = [5.0, 7.5, 11.25, 16.88, 22.0, 28.0]
+    TP_WEIGHTS = [20, 20, 20, 15, 15, 10]
 
     SIGNAL_TTL_HOURS = 24
 
