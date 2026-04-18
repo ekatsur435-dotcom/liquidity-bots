@@ -284,10 +284,11 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
+    # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
-        bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
-        chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID"),
-        topic_id=os.getenv("SHORT_TELEGRAM_TOPIC_ID"),
+        bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
+        topic_id=os.getenv("LONG_TELEGRAM_TOPIC_ID") or os.getenv("TELEGRAM_TOPIC_ID"),
     )
 
     redis_ok    = state.redis.health_check()
@@ -751,65 +752,145 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         return None
 
 
+async def _count_real_positions() -> int:
+    """
+    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
+    Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
+    """
+    if state.auto_trader:
+        try:
+            pos      = await state.auto_trader.bingx.get_positions()
+            long_pos = [p for p in pos
+                        if getattr(p, "side", "").upper() == "LONG"
+                        or getattr(p, "position_side", "").upper() == "LONG"]
+            return len(long_pos)
+        except Exception as e:
+            print(f"[LONG] _count_real_positions error: {e}")
+    cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
+    try:
+        all_active = state.redis.get_active_signals(Config.BOT_TYPE)
+        return sum(1 for s in all_active
+                   if datetime.fromisoformat(s.get("timestamp", "2000-01-01")) > cutoff)
+    except Exception:
+        return 0
+
+
+async def _get_btc_correlation() -> dict:
+    """
+    BTC корреляция — ТОЛЬКО как информация и модификатор score.
+    НЕ является блокером. Многие альты растут при падающем BTC и наоборот.
+    Возвращает: {"score_adj": float, "label": str, "change_1h": float}
+    """
+    try:
+        btc = await state.binance.get_complete_market_data("BTCUSDT")
+        if not btc:
+            return {"score_adj": 0, "label": "unknown", "change_1h": 0}
+        c1h  = getattr(btc, "price_change_1h", 0) or 0
+        c24h = getattr(btc, "price_change_24h", 0) or 0
+        # BTC растёт сильно → небольшой бонус к LONG сигналам
+        if c1h > 2.0:   adj, label = +3.0, f"BTC +{c1h:.1f}%/1h 🚀"
+        elif c1h > 0.5: adj, label = +1.5, f"BTC +{c1h:.1f}%/1h ↗"
+        # BTC падает сильно → небольшой штраф к LONG сигналам
+        elif c1h < -2.0: adj, label = -3.0, f"BTC {c1h:.1f}%/1h 🔴"
+        elif c1h < -0.5: adj, label = -1.5, f"BTC {c1h:.1f}%/1h ↘"
+        else:            adj, label =  0.0, f"BTC {c1h:.1f}%/1h ↔"
+        return {"score_adj": adj, "label": label, "change_1h": c1h, "change_24h": c24h}
+    except Exception:
+        return {"score_adj": 0, "label": "BTC N/A", "change_1h": 0}
+
+
 async def scan_market():
+    """
+    ✅ v2.4 АРХИТЕКТУРА:
+    - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20)
+    - Биржевое исполнение: только если active_count < MAX и не /pause
+    - BTC корреляция: только модификатор score (-3..+3), НЕ блокер
+    - Единственный блокер: команда /pause
+    """
     if state.is_paused:
         return
+
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
-    active_count = await _count_real_positions()
-    if active_count >= Config.MAX_POSITIONS:
-        print(f"⏸ Max positions ({active_count}/{Config.MAX_POSITIONS})")
-        state.last_scan = datetime.utcnow()
-        return
+    # BTC корреляция — только информация и мягкий модификатор score
+    btc_corr = await _get_btc_correlation()
+    print(f"📡 {btc_corr['label']} (score adj {btc_corr['score_adj']:+.0f})")
 
-    new_signals = 0
+    # Считаем активные LONG позиции на бирже
+    active_count  = await _count_real_positions()
+    exchange_full = active_count >= Config.MAX_POSITIONS
+    if exchange_full:
+        print(f"📊 Exchange LONG slots: {active_count}/{Config.MAX_POSITIONS} — "
+              f"сигналы в TG продолжаются, биржа ждёт освобождения")
+
+    new_signals   = 0
+    tg_only_count = 0  # сигналы отправленные только в TG (биржа полна)
+
     for symbol in state.watchlist:
-        if new_signals + active_count >= Config.MAX_POSITIONS:
-            break
         try:
+            # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
-            signal = await scan_symbol(symbol)
-            if signal:
-                tg_msg_id = await state.telegram.send_signal(
-                    direction="long", symbol=signal["symbol"],
-                    score=signal["score"], price=signal["price"],
-                    pattern=signal["best_pattern"] or "N/A",
-                    indicators=signal["indicators"],
-                    entry=signal["entry_price"],
-                    stop_loss=signal["stop_loss"],
-                    take_profits=signal["take_profits"],
-                    leverage=Config.LEVERAGE, risk="≤1% deposit",
-                )
-                signal["tg_msg_id"] = tg_msg_id
-                state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-                # ✅ FIX: Двойная проверка is_paused перед открытием позиции
-                if state.auto_trader and Config.AUTO_TRADING and not state.is_paused:
+            signal = await scan_symbol(symbol)
+            if not signal:
+                continue
+
+            # Применяем BTC корреляционный модификатор к score
+            original_score = signal["score"]
+            signal["score"] = round(original_score + btc_corr["score_adj"], 1)
+            signal["btc_corr_adj"] = btc_corr["score_adj"]
+            signal["btc_label"]    = btc_corr["label"]
+            # Если после поправки score упал ниже мин — пропускаем
+            if signal["score"] < Config.MIN_SCORE:
+                continue
+
+            # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
+            tg_msg_id = await state.telegram.send_signal(
+                direction="long", symbol=signal["symbol"],
+                score=signal["score"], price=signal["price"],
+                pattern=signal["best_pattern"] or "N/A",
+                indicators=signal["indicators"],
+                entry=signal["entry_price"],
+                stop_loss=signal["stop_loss"],
+                take_profits=signal["take_profits"],
+                leverage=Config.LEVERAGE, risk="≤1% deposit",
+            )
+            signal["tg_msg_id"] = tg_msg_id
+            state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
+
+            # ✅ Биржевое исполнение: только если есть слоты И не на паузе
+            if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
+                if state.auto_trader:
                     try:
                         await state.auto_trader.execute_signal(signal)
+                        active_count += 1
+                        exchange_full = active_count >= Config.MAX_POSITIONS
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
-                elif state.is_paused:
-                    print(f"⏸ Skipping trade {symbol} — bot is paused")
-
-                print(f"✅ SHORT: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                 new_signals += 1
+                print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+            else:
+                tg_only_count += 1
+                reason = "max positions" if exchange_full else "paused"
+                print(f"📡 LONG TG-only: {symbol} Score={signal['score']:.0f}% [{reason}]")
+
             await asyncio.sleep(0.4)
         except Exception as e:
             print(f"Error {symbol}: {e}")
 
-    state.daily_signals += new_signals
+    state.daily_signals += new_signals + tg_only_count
     state.last_scan      = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))
     state.redis.update_bot_state(Config.BOT_TYPE, {
-        "status": "paused" if state.is_paused else "running",
-        "last_scan": state.last_scan.isoformat(),
+        "status":        "paused" if state.is_paused else "running",
+        "last_scan":     state.last_scan.isoformat(),
         "daily_signals": state.daily_signals,
         "active_signals": state.active_signals,
     })
-    print(f"✅ Scan done. New: {new_signals} | Active: {state.active_signals}")
+    print(f"✅ Scan done. Executed: {new_signals} | TG-only: {tg_only_count} | "
+          f"Exchange: {active_count}/{Config.MAX_POSITIONS}")
 
 
 async def background_scanner():
