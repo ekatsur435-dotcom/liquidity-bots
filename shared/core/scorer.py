@@ -221,6 +221,7 @@ class ShortScorer(BaseScorer):
         elif rsi_1h >= 65: score, desc = 12, f"RSI {rsi_1h:.1f} — Начало перекупленности"
         elif rsi_1h >= 60: score, desc = 8,  f"RSI {rsi_1h:.1f} — Близко к перекупленности"
         elif rsi_1h >= 55: score, desc = 4,  f"RSI {rsi_1h:.1f} — Нейтрально-bullish"
+        elif rsi_1h >= 50: score, desc = 3,  f"RSI {rsi_1h:.1f} — Нейтраль 50-55"  # ✅ FIX
         elif rsi_1h < 30:  score, desc = 0,  f"RSI {rsi_1h:.1f} — Перепроданность (плохо для шорта)"
         else:              score, desc = 2,  f"RSI {rsi_1h:.1f} — Нейтральная зона"
         return ScoreComponent("RSI", score, 20, desc, rsi_1h)
