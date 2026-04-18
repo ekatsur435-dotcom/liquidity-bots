@@ -65,7 +65,6 @@ class ShortFilter:
 
     # Фандинг-спайк (самый мощный SHORT сигнал)
     FUNDING_EXTREME  = 0.10   # > 0.10% → экстремально перегрет
-    FUNDING_VERY_HIGH = 0.08   # +12 (новый порог)
     FUNDING_HIGH     = 0.05   # > 0.05%
     FUNDING_MODERATE = 0.02   # > 0.02%
 
@@ -222,13 +221,13 @@ class ShortFilter:
 
 # SHORT TP должны быть БЫСТРЕЕ чем LONG — шорт контртрендовый
 # Берём прибыль раньше, не ждём большого движения
-SHORT_TP_LEVELS_CONSERVATIVE = [3.5, 5.5, 8.25, 12.0, 17.0, 22.0]
-SHORT_TP_LEVELS_STANDARD = [5.0, 7.5, 11.25, 16.88, 22.0, 28.0]
+SHORT_TP_LEVELS_CONSERVATIVE  = [1.0, 2.0, 3.5, 5.0, 7.0, 10.0]  # осторожно
+SHORT_TP_LEVELS_STANDARD      = [1.5, 3.0, 5.0, 6.3, 8.5, 12.2]  # текущие (стандарт)
 SHORT_TP_LEVELS_AGGRESSIVE    = [2.0, 4.0, 6.5, 9.0, 12.0, 16.0] # агрессивно
 
 # Веса: для SHORT берём БОЛЬШЕ на первых TP (быстрая фиксация)
 SHORT_TP_WEIGHTS_CONSERVATIVE = [30, 25, 20, 15, 7, 3]   # 55% в TP1-2
-SHORT_TP_WEIGHTS_STANDARD = [25, 20, 20, 15, 12, 8]
+SHORT_TP_WEIGHTS_STANDARD     = [20, 20, 20, 15, 15, 10] # текущие
 SHORT_TP_WEIGHTS_FAST_EXIT    = [35, 30, 20, 10, 3, 2]   # 65% в TP1-2
 
 # Рекомендации по TP стилю:
