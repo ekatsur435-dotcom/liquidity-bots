@@ -735,6 +735,15 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "volume_spike": round(getattr(md, "volume_spike_ratio", 1.0), 2),
             "atr_pct":      round(getattr(md, "atr_14_pct", 0.5), 3),
             "reasons": reasons, "smc": smc_data,
+            # 🆕 Сырые рыночные данные для /alltradestat
+            "rsi_1h":           round(md.rsi_1h or 0, 1),
+            "funding_rate":     round(md.funding_rate, 4),
+            "oi_change":        round(md.oi_change_4d, 2),
+            "long_short_ratio": round(md.long_short_ratio, 1),
+            "volume_spike_ratio": round(getattr(md, "volume_spike_ratio", 1.0), 2),
+            "atr_14_pct":       round(getattr(md, "atr_14_pct", 0.5), 3),
+            "pattern":          patterns[0].name if patterns else "",
+            "smc_data":         smc_data,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
         }
