@@ -37,7 +37,7 @@ class PositionTracker:
 
     # ── Безубыток: переносим SL после этого тейка ────────────────────────────
     # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
-    BREAKEVEN_AFTER_TP = 2
+    BREAKEVEN_AFTER_TP = 1
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
