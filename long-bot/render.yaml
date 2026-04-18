@@ -45,7 +45,7 @@ services:
 
       # ── WATCHLIST ──
       - key: MIN_VOLUME_USDT
-        value: "1000000"     # ✅ 1M$ фильтр мусора (было 300K)
+        value: "500000"     # ✅ 1M$ фильтр мусора (было 300K)
       - key: MAX_WATCHLIST
         value: "300"
 
