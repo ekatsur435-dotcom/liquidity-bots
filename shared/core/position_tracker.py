@@ -37,7 +37,7 @@ class PositionTracker:
 
     # ── Безубыток: переносим SL после этого тейка ────────────────────────────
     # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
-    BREAKEVEN_AFTER_TP = 1
+    BREAKEVEN_AFTER_TP = 1   # ✅ FIX: BE после TP1 (было 2) — сокращает SL rate
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -306,10 +306,7 @@ class PositionTracker:
         was_trailing = signal.get("trailing_active", False)
         be_done      = signal.get("be_done", False)
 
-        # pnl_pct  = _pnl(direction, entry, current_price)
-        tp_pnl = _calc_weighted_pnl(...)        # TP1=+5% (25%) = +1.25%
-        remaining_weight = (100 - 25) / 100    # 75% позиции осталось
-        total_pnl = tp_pnl + (-1.5% × 0.75)   # +1.25% - 1.125% = +0.125% (WIN!)
+        pnl_pct  = _pnl(direction, entry, current_price)
         time_str = _time_in_trade(signal)
 
         signal["status"]      = "closed_sl"
@@ -395,24 +392,71 @@ class PositionTracker:
             except Exception as e:
                 print(f"[PT] daily_stats: {e}")
 
-            # История для отчётов
+            # 🆕 ПОЛНАЯ история для /alltradestat
             try:
+                opened_at = signal.get("timestamp", "")
+                closed_at = signal.get("close_time", datetime.utcnow().isoformat())
+                hold_secs = 0
+                try:
+                    t0 = datetime.fromisoformat(opened_at)
+                    t1 = datetime.fromisoformat(closed_at)
+                    hold_secs = int((t1 - t0).total_seconds())
+                except Exception:
+                    pass
+
+                entry = signal.get("entry_price", 0)
+                close_p = signal.get("close_price", 0)
+                sl_price = signal.get("stop_loss", 0)
+                tps = signal.get("take_profits", [])
+                taken = signal.get("taken_tps", [])
+
                 record = {
-                    "symbol":      symbol,
-                    "direction":   signal.get("direction", "?"),
-                    "entry_price": signal.get("entry_price", 0),
-                    "close_price": signal.get("close_price", 0),
-                    "pnl":         round(pnl_pct, 4),
-                    "tp_level":    tp_level,
-                    "close_type":  close_type,
-                    "opened_at":   signal.get("timestamp", ""),
-                    "closed_at":   signal.get("close_time", datetime.utcnow().isoformat()),
-                    "score":       signal.get("score", 0),
+                    # Базовые
+                    "symbol":       symbol,
+                    "direction":    signal.get("direction", "?"),
+                    "entry_price":  entry,
+                    "close_price":  close_p,
+                    "stop_loss":    sl_price,
+                    "pnl":          round(pnl_pct, 4),
+                    "tp_level":     tp_level,
+                    "close_type":   close_type,
+                    "opened_at":    opened_at,
+                    "closed_at":    closed_at,
+                    "hold_minutes": hold_secs // 60,
+                    # Скоринг и паттерны
+                    "score":        signal.get("score", 0),
+                    "pattern":      signal.get("pattern", ""),
+                    "leverage":     signal.get("leverage", "?"),
+                    "risk":         signal.get("risk", "?"),
+                    # Рыночные данные на момент входа
+                    "rsi_1h":       signal.get("rsi_1h", 0),
+                    "funding_rate": signal.get("funding_rate", 0),
+                    "oi_change":    signal.get("oi_change", 0),
+                    "long_short_ratio": signal.get("long_short_ratio", 0),
+                    "volume_spike": signal.get("volume_spike_ratio", 0),
+                    "atr_pct":      signal.get("atr_14_pct", 0),
+                    # SMC данные
+                    "smc_ob":       signal.get("smc_data", {}).get("has_ob", False),
+                    "smc_fvg":      signal.get("smc_data", {}).get("has_fvg", False),
+                    "smc_bonus":    signal.get("smc_data", {}).get("score_bonus", 0),
+                    # TP детали
+                    "tp_count":     len(tps),
+                    "tp_taken":     len(taken),
+                    "tp_prices":    [t[0] if isinstance(t, (list,tuple)) else t.get("price",0) for t in tps[:6]],
+                    # Причины сигнала
+                    "reasons":      signal.get("reasons", [])[:8],
+                    "realtime_factors": signal.get("realtime_factors", [])[:5],
                 }
+                # Пишем в общую историю бота
                 hkey = f"{self.bot_type}:history:{symbol}"
                 self.redis.client.lpush(hkey, json.dumps(record))
                 self.redis.client.ltrim(hkey, 0, 199)
                 self.redis.client.expire(hkey, 2592000)
+                # 🆕 Также пишем в глобальный лог для /alltradestat (все сделки)
+                all_key = f"{self.bot_type}:all_trades"
+                self.redis.client.lpush(all_key, json.dumps(record))
+                self.redis.client.ltrim(all_key, 0, 9999)   # 10k сделок
+                self.redis.client.expire(all_key, 7776000)  # 90 дней
             except Exception as e:
                 print(f"[PT] history: {e}")
 
