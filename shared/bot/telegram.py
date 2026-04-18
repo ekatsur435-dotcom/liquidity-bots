@@ -377,6 +377,7 @@ class TelegramCommandHandler:
         "/sync", "/flushdb",
         # Новые отчёты
         "/daily_rep", "/weekly_rep", "/monthly_rep", "/leaderswr",
+        "/alltradestat",   # 🆕 полная аналитика сделок
     }
 
     def __init__(self,
@@ -1146,6 +1147,141 @@ class TelegramCommandHandler:
         if last_trades:
             msg += f"\n<b>Последние сделки:</b>\n{last_trades}"
         await self._reply(reply_chat_id, msg)
+
+
+    async def cmd_alltradestat(self, args, reply_chat_id: str):
+        """📊 /alltradestat — полная статистика всех сделок для анализа."""
+        try:
+            all_key = f"{self.bot_type}:all_trades"
+            raw_list = self.redis.client.lrange(all_key, 0, 999)
+            if not raw_list:
+                await self._reply(reply_chat_id,
+                    "📊 <b>Полная статистика</b>\n\nСделок ещё нет.")
+                return
+
+            trades = []
+            for r in raw_list:
+                try:
+                    trades.append(json.loads(r))
+                except Exception:
+                    continue
+
+            if not trades:
+                await self._reply(reply_chat_id, "Нет данных.")
+                return
+
+            total = len(trades)
+            wins   = [t for t in trades if t.get("pnl", 0) > 0]
+            losses = [t for t in trades if t.get("pnl", 0) < 0]
+            be_tr  = [t for t in trades if t.get("tp_level") == "BE"]
+            wr     = round(len(wins) / total * 100, 1) if total else 0
+            pnl    = round(sum(t.get("pnl", 0) for t in trades), 2)
+
+            # TP распределение
+            tp_dist = {}
+            for t in trades:
+                lv = t.get("tp_level", "?")
+                tp_dist[lv] = tp_dist.get(lv, 0) + 1
+
+            # Лучшие / худшие паттерны
+            pattern_stats = {}
+            for t in trades:
+                p = t.get("pattern") or "Unknown"
+                if p not in pattern_stats:
+                    pattern_stats[p] = {"n": 0, "wins": 0, "pnl": 0}
+                pattern_stats[p]["n"] += 1
+                if t.get("pnl", 0) > 0:
+                    pattern_stats[p]["wins"] += 1
+                pattern_stats[p]["pnl"] += t.get("pnl", 0)
+
+            # Среднее время
+            holds = [t.get("hold_minutes", 0) for t in trades if t.get("hold_minutes")]
+            avg_hold = round(sum(holds) / len(holds)) if holds else 0
+
+            # Худший / лучший трейд
+            best  = max(trades, key=lambda t: t.get("pnl", 0))
+            worst = min(trades, key=lambda t: t.get("pnl", 0))
+
+            # Max consecutive losses
+            max_loss_streak = streak = 0
+            for t in sorted(trades, key=lambda t: t.get("opened_at", "")):
+                if t.get("pnl", 0) < 0:
+                    streak += 1
+                    max_loss_streak = max(max_loss_streak, streak)
+                else:
+                    streak = 0
+
+            # Score stats
+            scores = [t.get("score", 0) for t in trades if t.get("score", 0) > 0]
+            avg_score = round(sum(scores) / len(scores)) if scores else 0
+            score_wins = [t.get("score",0) for t in wins if t.get("score",0) > 0]
+            avg_score_win = round(sum(score_wins)/len(score_wins)) if score_wins else 0
+
+            msg = (
+                f"📊 <b>ПОЛНАЯ СТАТИСТИКА {self.bot_type.upper()} БОТА</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📈 <b>ОБЩЕЕ:</b>\n"
+                f"   Сделок: {total}\n"
+                f"   ✅ Прибыльных: {len(wins)} ({wr}%)\n"
+                f"   ❌ Убыточных: {len(losses)} ({round(len(losses)/total*100,1)}%)\n"
+                f"   ⚖️ BE: {len(be_tr)}\n"
+                f"   💰 Итого P&L: {pnl:+.2f}%\n"
+                f"   ⏱ Avg время: {avg_hold//60}ч {avg_hold%60}м\n"
+                f"   🔴 Макс. серия SL: {max_loss_streak}\n\n"
+                f"🎯 <b>РАСПРЕДЕЛЕНИЕ TP/SL:</b>\n"
+            )
+            for lv in sorted(tp_dist.keys()):
+                cnt = tp_dist[lv]
+                pct = round(cnt / total * 100, 1)
+                bar = "█" * max(1, int(pct / 5))
+                msg += f"   {lv:>4}: {cnt:>4} ({pct:>5.1f}%)  {bar}\n"
+
+            msg += f"\n📋 <b>ПО ПАТТЕРНАМ:</b>\n"
+            for pname, ps in sorted(pattern_stats.items(),
+                                    key=lambda x: x[1]["n"], reverse=True)[:8]:
+                if ps["n"] == 0:
+                    continue
+                p_wr = round(ps["wins"] / ps["n"] * 100)
+                msg += f"   {pname[:20]:<20}: {ps['n']:>3} сд | WR {p_wr}% | {ps['pnl']:+.2f}%\n"
+
+            msg += (
+                f"\n🏆 <b>ЛУЧШАЯ СДЕЛКА:</b>\n"
+                f"   {best.get('symbol')} {best.get('direction','').upper()} "
+                f"→ {best.get('tp_level')} | P&L: {best.get('pnl',0):+.2f}%\n"
+                f"   Score: {best.get('score',0)} | {best.get('pattern','')}\n\n"
+                f"☠️ <b>ХУДШАЯ СДЕЛКА:</b>\n"
+                f"   {worst.get('symbol')} {worst.get('direction','').upper()} "
+                f"→ {worst.get('tp_level')} | P&L: {worst.get('pnl',0):+.2f}%\n"
+                f"   Score: {worst.get('score',0)} | {worst.get('pattern','')}\n\n"
+                f"🔬 <b>КАЧЕСТВО СИГНАЛОВ:</b>\n"
+                f"   Avg Score всех: {avg_score}\n"
+                f"   Avg Score прибыльных: {avg_score_win}\n"
+            )
+            await self._reply(reply_chat_id, msg)
+
+            # Детальный лог последних 5 сделок
+            await asyncio.sleep(0.3)
+            detail_msg = "📝 <b>ПОСЛЕДНИЕ 5 СДЕЛОК (детали):</b>\n" + "─"*30 + "\n"
+            for t in trades[:5]:
+                ico = "✅" if t.get("pnl",0) > 0 else ("⚖️" if t.get("tp_level")=="BE" else "❌")
+                detail_msg += (
+                    f"\n{ico} <code>#{t.get('symbol')}</code> {t.get('direction','').upper()} "
+                    f"→ <b>{t.get('tp_level','?')}</b>\n"
+                    f"   Вход: ${t.get('entry_price',0):,.4f}\n"
+                    f"   Выход: ${t.get('close_price',0):,.4f}\n"
+                    f"   P&L: <b>{t.get('pnl',0):+.3f}%</b> | Время: {t.get('hold_minutes',0)//60}ч {t.get('hold_minutes',0)%60}м\n"
+                    f"   Score: {t.get('score',0)} | Паттерн: {t.get('pattern','?')}\n"
+                    f"   RSI: {t.get('rsi_1h',0):.1f} | FR: {t.get('funding_rate',0):.4f}%\n"
+                    f"   OI: {t.get('oi_change',0):+.1f}% | L/S: {t.get('long_short_ratio',0):.0f}%\n"
+                    f"   Vol spike: {t.get('volume_spike',0):.1f}x | ATR: {t.get('atr_pct',0):.2f}%\n"
+                )
+                reasons = t.get("reasons", [])
+                if reasons:
+                    detail_msg += f"   Причины: {' | '.join(str(r) for r in reasons[:3])}\n"
+            await self._reply(reply_chat_id, detail_msg)
+
+        except Exception as e:
+            await self._reply(reply_chat_id, f"❌ Ошибка alltradestat: {e}")
 
     async def cmd_weekly_report(self, args, reply_chat_id: str):
         """📅 /weekly_rep — недельный отчёт."""
