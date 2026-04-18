@@ -306,7 +306,10 @@ class PositionTracker:
         was_trailing = signal.get("trailing_active", False)
         be_done      = signal.get("be_done", False)
 
-        pnl_pct  = _pnl(direction, entry, current_price)
+        # pnl_pct  = _pnl(direction, entry, current_price)
+        tp_pnl = _calc_weighted_pnl(...)        # TP1=+5% (25%) = +1.25%
+        remaining_weight = (100 - 25) / 100    # 75% позиции осталось
+        total_pnl = tp_pnl + (-1.5% × 0.75)   # +1.25% - 1.125% = +0.125% (WIN!)
         time_str = _time_in_trade(signal)
 
         signal["status"]      = "closed_sl"
