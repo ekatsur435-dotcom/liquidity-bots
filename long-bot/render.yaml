@@ -1,109 +1,72 @@
+services:
   - type: web
     name: liq-long-bot
-    env: python
-    region: frankfurt
-    plan: starter
+    runtime: python
+    plan: free
+    rootDir: long-bot
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11.0"
+        value: "3.11.8"
 
-      # ── Redis ──────────────────────────────────────────────────────────────
+      # ── SECRETS ──
       - key: REDIS_URL
         sync: false
-
-      # ── Binance (рыночные данные) ──────────────────────────────────────────
-      - key: BINANCE_API_KEY
-        sync: false
-      - key: BINANCE_API_SECRET
-        sync: false
-
-      # ── BingX (исполнение сделок) ─────────────────────────────────────────
       - key: BINGX_API_KEY
         sync: false
       - key: BINGX_API_SECRET
         sync: false
-
-      # ── Telegram ──────────────────────────────────────────────────────────
       - key: LONG_TELEGRAM_BOT_TOKEN
         sync: false
       - key: LONG_TELEGRAM_CHAT_ID
         sync: false
       - key: LONG_TELEGRAM_TOPIC_ID
         sync: false
-
-      # ── CoinGlass ─────────────────────────────────────────────────────────
       - key: COINGLASS_API_KEY
         sync: false
+      # PROXY нужен только если USE_BINANCE=true
+      - key: PROXY_LIST
+        sync: false
 
-      # ── Сканер ────────────────────────────────────────────────────────────
-      - key: SCAN_INTERVAL
-        value: "240"            # 200 секунд между сканами
+      # ── СТРАТЕГИЯ ──
       - key: MIN_LONG_SCORE
         value: "65"
-      - key: LONG_LEVERAGE
-        value: "5-50"
       - key: LONG_SL_BUFFER
         value: "1.5"
-
-      # ── Позиции ───────────────────────────────────────────────────────────
+      - key: LONG_LEVERAGE
+        value: "5-50"
+      - key: SCAN_INTERVAL
+        value: "200"
       - key: MAX_LONG_POSITIONS
         value: "20"
-      - key: MIN_VOLUME_USDT
-        value: "300000"         # $300K минимальный объём (было 5M → слишком мало монет)
-      - key: MAX_WATCHLIST
-        value: "300"            # 300 монет для сканирования
 
-      # ── BingX торговля ────────────────────────────────────────────────────
+      # ── WATCHLIST ──
+      - key: MIN_VOLUME_USDT
+        value: "1000000"     # ✅ 1M$ фильтр мусора (было 300K)
+      - key: MAX_WATCHLIST
+        value: "300"
+
+      # ── TRADING ──
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
-        value: "true"           # DEMO — VST аккаунт
+        value: "true"
       - key: RISK_PER_TRADE
-        value: "0.0005"         # 0.05% от баланса на сделку
+        value: "0.0005"
 
-      # ── SMC/ICT анализ ────────────────────────────────────────────────────
+      # ── ФИЧИ ──
       - key: USE_SMC
         value: "true"
+      - key: USE_BINANCE
+        value: "false"       # false = Bybit (без прокси). true = Binance через PROXY_LIST
 
-      # 🆕 Multi-timeframe настройки (30m вместо 15m)
-      - key: TF_15M_WEIGHT
-        value: "0"
-      - key: TF_30M_WEIGHT
-        value: "50"           # 🆕 Новый основной ТФ
-      - key: TF_45M_WEIGHT
-        value: "25"
-      - key: TF_1H_WEIGHT
-        value: "15"
-      - key: TF_4H_WEIGHT
-        value: "10"
-
-      # 🆕 Стратегия BE + Trailing Stop
+      # ── TRAILING / BE ──
       - key: ENABLE_BE_AFTER_TP1
-        value: "true"        # Переводить в BE после TP1
-      - key: ENABLE_TRAIL_AFTER_TP3
-        value: "true"        # Активировать trail после TP3
+        value: "true"        # ✅ BE после TP1
       - key: TRAIL_DISTANCE_PERCENT
-        value: "2.0"         # 2% trail distance
+        value: "0.8"
       - key: BE_BUFFER_PERCENT
-        value: "0.3"          # 0.3% запас для BE
-
-      # 🆕 Корреляция с BTC и ETH
-      - key: ENABLE_BTC_CORRELATION
-        value: "true"
-      - key: ENABLE_ETH_CORRELATION
-        value: "true"
-
-      # 🆕 Leverage по ТФ
-      - key: LEVERAGE_30M
-        value: "10"
-      - key: LEVERAGE_45M
-        value: "10"
-      - key: LEVERAGE_1H
-        value: "8"
-      - key: LEVERAGE_4H
-        value: "5"
-
-    healthCheckPath: /health
-    autoDeploy: true
+        value: "0.1"
