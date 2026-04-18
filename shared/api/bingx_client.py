@@ -65,7 +65,7 @@ class BingXClient:
         101209: "Max position value exceeded — позиция превышает лимит для этого плеча. "
                 "Уменьши размер или снизи плечо. AutoTrader авто-уменьшит в следующий раз.",
         109201: "Leverage exceeds max allowed",
-        109400: "SL/TP type invalid — должен быть STOP_MARKET/TAKE_PROFIT_MARKET",
+        109400: "Timestamp invalid — разница времени между сервером и клиентом > 1000ms",
     }
 
     def __init__(self, api_key=None, api_secret=None, demo=True):
@@ -84,6 +84,7 @@ class BingXClient:
         self._symbols_loaded = False
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
+        self._time_offset: int = 0   # ✅ FIX: server time offset
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -99,6 +100,29 @@ class BingXClient:
     def _build_raw_qs(self, params: Dict[str, Any]) -> str:
         return "&".join(f"{k}={v}" for k, v in sorted(params.items()))
 
+    async def _sync_server_time(self):
+        """Получает время сервера BingX для корректного timestamp."""
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.base_url}/openApi/swap/v2/server/time",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get("code") == 0:
+                        server_ts = int(data.get("data", {}).get("serverTime", 0))
+                        if server_ts > 0:
+                            self._time_offset = server_ts - int(time.time() * 1000)
+                            return
+        except Exception:
+            pass
+        self._time_offset = 0
+
+    def _get_timestamp(self) -> int:
+        offset = getattr(self, "_time_offset", 0)
+        return int(time.time() * 1000) + offset
+
     async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
         try:
             session  = await self._get_session()
@@ -106,7 +130,8 @@ class BingXClient:
             if params: all_p.update(params)
             if body:   all_p.update(body)
             if signed:
-                all_p["timestamp"] = int(time.time() * 1000)
+                all_p["timestamp"] = self._get_timestamp()
+                all_p["recvWindow"] = 10000   # ✅ FIX: 10s окно (было не задано)
                 raw_qs = self._build_raw_qs(all_p)
                 full_url = f"{self.base_url}{endpoint}?{raw_qs}&signature={self._sign(raw_qs)}"
             else:
@@ -134,6 +159,10 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
+                    # ✅ AUTO-SYNC: при ошибке timestamp синхронизируем время
+                    if code == 109400:
+                        import asyncio
+                        asyncio.create_task(self._sync_server_time())
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
                 return data
