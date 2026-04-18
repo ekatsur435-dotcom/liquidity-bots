@@ -73,7 +73,7 @@ class Config:
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.5"))
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    TP_LEVELS  = [1.5, 3.0, 5.0, 6.3, 8.5, 12.2]
+    TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
     TP_WEIGHTS = [25,  25,  20,  15,  10,   5]   # SHORT: больше на TP1-2
 
     # Trailing — SHORT активирует при +1% (лонг: +1.5%)
@@ -117,6 +117,60 @@ class BotState:
         self.coinglass        = None
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
+
+
+# ============================================================================
+# 🆕 RSI WATCHLIST TRACKER — мониторинг монет с растущим RSI
+# ============================================================================
+
+class RSIWatchlistTracker:
+    """
+    Отслеживает монеты где RSI начал расти (пересёк 35 снизу вверх).
+    Эти монеты — кандидаты на LONG разворот или SHORT после отката.
+    Хранит в памяти (сбрасывается при рестарте) + Redis кеш.
+    """
+    def __init__(self):
+        self._rising: Dict[str, Dict] = {}   # symbol -> {rsi, since, prev_rsi}
+        self._fallen: Dict[str, float] = {}  # symbol -> timestamp когда упал обратно
+        
+    def update(self, symbol: str, rsi: float, prev_rsi: float = 0):
+        """Обновить RSI для символа"""
+        now = datetime.utcnow().timestamp()
+        
+        # RSI пересёк 35 снизу — начал расти
+        if rsi >= 35 and (prev_rsi < 35 or symbol not in self._rising):
+            if symbol not in self._rising:
+                self._rising[symbol] = {
+                    "rsi": rsi, "since": now,
+                    "prev_rsi": prev_rsi, "peak_rsi": rsi
+                }
+            else:
+                self._rising[symbol]["rsi"] = rsi
+                self._rising[symbol]["peak_rsi"] = max(
+                    self._rising[symbol]["peak_rsi"], rsi
+                )
+        # RSI упал ниже 30 — сброс
+        elif rsi < 30 and symbol in self._rising:
+            del self._rising[symbol]
+        
+    def is_rsi_rising(self, symbol: str) -> bool:
+        return symbol in self._rising
+    
+    def get_rising_symbols(self) -> List[str]:
+        return list(self._rising.keys())
+    
+    def get_info(self, symbol: str) -> Dict:
+        return self._rising.get(symbol, {})
+    
+    def cleanup_old(self, max_age_hours: int = 48):
+        """Удаляет монеты которые давно в списке"""
+        now = datetime.utcnow().timestamp()
+        to_del = [s for s, d in self._rising.items()
+                  if now - d["since"] > max_age_hours * 3600]
+        for s in to_del:
+            del self._rising[s]
+
+_rsi_tracker = RSIWatchlistTracker()
 
 state = BotState()
 
@@ -499,6 +553,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if not md:
             return None
 
+        # 🆕 RSI Watchlist tracking — обновляем трекер
+        rsi_current = md.rsi_1h or 0
+        _rsi_tracker.update(symbol, rsi_current)
+
         ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
@@ -605,6 +663,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         final_score = rt_result.final_score
         reasons.extend(rt_result.factors)
 
+        # 🆕 Бонус если монета в RSI watchlist (RSI растёт от 35)
+        if _rsi_tracker.is_rsi_rising(symbol):
+            rsi_info = _rsi_tracker.get_info(symbol)
+            peak = rsi_info.get("peak_rsi", 0)
+            if peak >= 55:   # RSI дошёл до зоны SHORT
+                final_score += 5
+                reasons.append(f"RSI watchlist: вырос с 35 до {peak:.0f} → +5")
+        
         if final_score < Config.MIN_SCORE:
             return None
 
