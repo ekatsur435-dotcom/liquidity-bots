@@ -13,6 +13,7 @@
 """
 
 import os
+import time
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
@@ -526,7 +527,7 @@ def _ohlcv(candles) -> List[List[float]]:
 # _count_real_positions: see full implementation below (filters LONG only)
 
 
-async def scan_symbol(symbol: str) -> Optional[Dict]:
+async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
     """
     LONG scan_symbol v2.3:
       - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
@@ -547,6 +548,25 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
 
+        # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
+        # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
+        rsi_4h_ok = True
+        try:
+            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            if ohlcv_4h and len(ohlcv_4h) >= 14:
+                closes_4h = [c.close for c in ohlcv_4h[-14:]]
+                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
+                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
+                ag = sum(gains)/13; al = sum(losses)/13
+                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
+                # Блокируем лонг если 4h RSI перекуплен (>70)
+                if rsi_4h > 70:
+                    rsi_4h_ok = False
+        except Exception:
+            pass
+        if not rsi_4h_ok:
+            return None  # 4h RSI перекуплен — ложный LONG сигнал
+
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_15m)
         patterns      = state.pattern_detector.detect_all(ohlcv_15m, hourly_deltas, md)
@@ -560,6 +580,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         try:
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+            # ✅ FIX L2: проверяем что OI данные свежие (не старше 30 мин)
+            # Если Bybit геоблокирован и fallback Binance — OI может быть stale
+            if oi_history:
+                latest_ts = oi_history[-1].get("timestamp", 0) if isinstance(oi_history[-1], dict) else 0
+                if latest_ts and (time.time() * 1000 - latest_ts) > 1_800_000:  # >30 мин
+                    oi_history = []  # данные устарели — не используем
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
                 vols = [c.quote_volume for c in ohlcv_15m[-5:]]
@@ -610,14 +636,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         final_score = score_result.total_score + oi_score_adj
         reasons     = list(score_result.reasons)
 
-        # ── LONG: BTC trend awareness ─────────────────────────────────────────
-        # Не входим в LONG если BTC в сильном нисходящем тренде
-        try:
-            btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-            if btc_md and (btc_md.price_change_1h or 0) < -3.0:
-                return None   # BTC рухает — не лонгуем
-        except Exception:
-            pass
+        # ── LONG: BTC trend awareness (используем кешированное значение) ────
+        # cached_btc_1h передаётся из scan_market (1 запрос на весь скан)
+        if cached_btc_1h is not None and cached_btc_1h < -3.0:
+            return None   # BTC рухает >3%/1ч — не лонгуем
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
@@ -816,7 +838,7 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol)
+            signal = await scan_symbol(symbol, btc_corr.get("change_1h"))
             if not signal:
                 continue
 
