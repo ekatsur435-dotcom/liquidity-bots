@@ -1,9 +1,9 @@
 """
-🔴 SHORT BOT v2.3 — FastAPI Application
+🟢 LONG BOT v2.3 — FastAPI Application
 
 ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
-  ✅ MIN_SHORT_SCORE default = 60 (было 65)
+  ✅ MIN_LONG_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
   ✅ HEAD /health → 200 OK (UptimeRobot fix)
   ✅ Watchlist: объединяет Bybit + Binance (нет дублей, до 300 монет)
@@ -13,6 +13,7 @@
 """
 
 import os
+import time
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
@@ -47,10 +48,9 @@ print(f"📁 shared path: {_SHARED}")
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
-from core.scorer import get_short_scorer
-from core.pattern_detector import ShortPatternDetector   # ← единый файл
+from core.scorer import get_long_scorer
+from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
-from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
@@ -60,24 +60,24 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 # ============================================================================
 
 class Config:
-    BOT_TYPE      = "short"
-    # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "60"))
+    BOT_TYPE      = "long"
+    # ✅ FIX: MIN_LONG_SCORE default = 60 (не 65!)
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "200"))
     # ✅ FIX: MAX_WATCHLIST default = 300
-    MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
-    LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
+    MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "20"))
+    LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
 
-    # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.5"))
+    # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))
 
-    # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
-    TP_WEIGHTS = [25,  25,  20,  15,  10,   5]   # SHORT: больше на TP1-2
+    # TP levels из Config
+    TP_LEVELS  = [2.5, 4.5, 7.5, 11.5, 16.0, 22.0]  # LONG: SL=1.5% TP1=2.5% → R:R≥1.6
+    TP_WEIGHTS = [25,  20,  20,  15,  12,   8]   # LONG: равномерно с акцентом TP1-2
 
-    # Trailing — SHORT активирует при +1% (лонг: +1.5%)
-    TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.010"))
+    # Trailing — LONG активирует при +1.5%
+    TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.015"))
 
     SIGNAL_TTL_HOURS = 24
 
@@ -89,8 +89,8 @@ class Config:
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
 
     # ✅ FIX: default MAX_WATCHLIST = 300
-    # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
+    # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
@@ -195,18 +195,16 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
     except Exception as e:
         print(f"⚠️ _init_source error: {e}")
 
-    # ── Bybit (основной источник) ─────────────────────────────────────────
-    # ✅ v2.4: При 403 (Render IP заблокирован Bybit) — автоматически
-    #          переключаемся на Binance фьючерсы как источник watchlist.
+    # Bybit (основной источник)
     total_bybit_checked = 0
-    total_bybit_usdt    = 0
-    bybit_ok = False
+    total_bybit_usdt = 0
     try:
         result = await binance_client._bybit("/v5/market/tickers", {"category": "linear"})
         if result and result.get("list"):
             EXCLUDE_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR", "3L", "3S")
             all_tickers = result.get("list", [])
             print(f"📊 Bybit API returned: {len(all_tickers)} total tickers")
+            
             for t in all_tickers:
                 total_bybit_checked += 1
                 sym = t.get("symbol", "")
@@ -216,21 +214,18 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
                 if any(sym.endswith(s) for s in EXCLUDE_SUFFIXES):
                     continue
                 vol = float(t.get("turnover24h", 0))
+                # ✅ DEBUG: Показываем топ волюмов
                 if vol >= min_vol:
                     bybit_syms.add(sym)
-            bybit_ok = len(bybit_syms) > 0
+                    
         print(f"✅ Bybit symbols: {len(bybit_syms)} (checked: {total_bybit_checked}, USDT: {total_bybit_usdt})")
         print(f"   Min volume threshold: ${min_vol:,.0f}")
     except Exception as e:
         print(f"⚠️ Bybit watchlist error: {e}")
 
-    # ── Binance (если есть прокси OR Bybit вернул 403/пусто) ─────────────
-    # ✅ v2.4: force_binance_fallback если Bybit заблокирован
-    force_binance = not bybit_ok
+    # Binance (если доступен через прокси)
     try:
-        if binance_client._use_binance or force_binance:
-            if force_binance:
-                print("⚡ Bybit 403/empty → AUTO-FALLBACK to Binance futures watchlist")
+        if binance_client._use_binance:
             tickers = await binance_client._binance("/fapi/v1/ticker/24hr")
             if tickers:
                 EXCLUDE_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR", "3L", "3S")
@@ -247,9 +242,6 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
     except Exception as e:
         print(f"⚠️ Binance watchlist error: {e}")
 
-    # ✅ DEBUG: Статистика до объединения
-    print(f"📈 Pre-merge: Bybit={len(bybit_syms)}, Binance={len(binance_syms)}, threshold=${min_vol:,.0f}")
-    
     # ✅ FIX: Fallback если оба источника пустые
     total_found = len(bybit_syms) + len(binance_syms)
     if total_found == 0:
@@ -283,17 +275,18 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v2.3...")
+    print("🚀 Starting LONG Bot v2.3...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
-    state.scorer           = get_short_scorer(Config.MIN_SCORE)
-    state.pattern_detector = ShortPatternDetector()
+    state.scorer           = get_long_scorer(Config.MIN_SCORE)
+    state.pattern_detector = LongPatternDetector()
+    # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
-        bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
-        chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID"),
-        topic_id=os.getenv("SHORT_TELEGRAM_TOPIC_ID"),
+        bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
+        topic_id=os.getenv("LONG_TELEGRAM_TOPIC_ID") or os.getenv("TELEGRAM_TOPIC_ID"),
     )
 
     redis_ok    = state.redis.health_check()
@@ -306,11 +299,20 @@ async def lifespan(app: FastAPI):
         scan_callback=scan_market, config=Config,
     )
 
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
     if render_url:
-        await state.telegram.setup_webhook(f"{render_url}/webhook")
+        wh_url = f"{render_url}/webhook"
+        ok = await state.telegram.setup_webhook(wh_url)
+        print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
+        if not ok:
+            # Retry once
+            import asyncio
+            await asyncio.sleep(3)
+            ok2 = await state.telegram.setup_webhook(wh_url)
+            print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
     else:
-        print("⚠️ RENDER_EXTERNAL_URL not set")
+        print("⚠️ RENDER_EXTERNAL_URL not set — Telegram commands won't work!")
+        print("   Set RENDER_EXTERNAL_URL=https://YOUR-SERVICE.onrender.com in Render env vars")
 
     # ── BingX AutoTrader ───────────────────────────────────────────────────────
     print(f"🔧 AUTO_TRADING={Config.AUTO_TRADING} | DEMO={Config.BINGX_DEMO}")
@@ -382,14 +384,14 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🔴 <b>SHORT Bot v2.3 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v2.3 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
         f"⚙️ Risk: {Config.RISK_PER_TRADE*100:.3f}% | Scan: {Config.SCAN_INTERVAL}s\n"
-        f"🔍 ShortFilter: ✅ | RealtimeScorer: ✅"
+        f"🔍 LongScorer: ✅ | RealtimeScorer: ✅"
     )
-    print(f"✅ SHORT Bot started! AutoTrader: {at_str}")
+    print(f"✅ LONG Bot started! AutoTrader: {at_str}")
 
     state.tracker = PositionTracker(
         bot_type=Config.BOT_TYPE, telegram=state.telegram,
@@ -403,15 +405,15 @@ async def lifespan(app: FastAPI):
     yield
 
     state.is_running = False
-    print("🛑 Shutting down SHORT Bot...")
+    print("🛑 Shutting down LONG Bot...")
     if state.binance:
         await state.binance.close()
     if state.auto_trader:
         await state.auto_trader.bingx.close()
-    print("👋 SHORT Bot stopped")
+    print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.3")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v2.3")
 
 
 # ============================================================================
@@ -421,14 +423,14 @@ app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.3")
 # ✅ HEAD + GET для UptimeRobot (405 → 200)
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return JSONResponse({"status": "ok", "bot": "short", "version": "2.3",
+    return JSONResponse({"status": "ok", "bot": "long", "version": "2.3",
                          "watchlist": len(state.watchlist),
                          "active": state.active_signals})
 
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v2.3", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v2.3", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -491,12 +493,22 @@ async def webhook_info():
     return {"error": "Telegram not initialized"}
 
 @app.get("/webhook/setup")
+@app.get("/webhook/reset")
 async def setup_webhook():
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    if render_url and state.telegram:
-        ok = await state.telegram.setup_webhook(f"{render_url}/webhook")
-        return {"ok": ok, "url": f"{render_url}/webhook"}
-    return {"error": "No RENDER_EXTERNAL_URL"}
+    """GET /webhook/setup OR /webhook/reset → принудительно регистрирует вебхук Telegram."""
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not render_url:
+        return {"error": "RENDER_EXTERNAL_URL not set in env vars"}
+    if not state.telegram:
+        return {"error": "Telegram not initialized"}
+    wh_url = f"{render_url}/webhook"
+    # Сначала удаляем старый вебхук
+    await state.telegram.delete_webhook()
+    import asyncio; await asyncio.sleep(1)
+    # Регистрируем новый
+    ok = await state.telegram.setup_webhook(wh_url)
+    info = await state.telegram.get_webhook_info()
+    return {"ok": ok, "url": wh_url, "webhook_info": info}
 
 
 # ============================================================================
@@ -529,51 +541,15 @@ def _is_fresh(existing: List[Dict]) -> bool:
 def _ohlcv(candles) -> List[List[float]]:
     return [[c.open, c.high, c.low, c.close, c.volume] for c in candles]
 
-async def _count_real_positions() -> int:
-    """
-    ✅ v2.4 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
-    БЫЛО: len(get_positions()) — считало ВСЕ позиции BingX включая
-          LONG бота (M-USDT SHORT, ASTER-USDT SHORT, UNI-USDT SHORT).
-          Результат: SHORT бот всегда видел 19-20 и был заблокирован навсегда!
-    СТАЛО: фильтр side == "SHORT" → считаем только наши шорты.
-    """
-    if state.auto_trader:
-        try:
-            pos = await state.auto_trader.bingx.get_positions()
-            # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            # ✅ FIX #5: BOTH mode support
-            # Hedge mode: positionSide = "LONG" / "SHORT"
-            # One-way mode: positionSide = "BOTH", side = "BUY"/"SELL"
-            short_pos = [p for p in pos if (
-                getattr(p, "position_side", "").upper() == "SHORT" or
-                getattr(p, "side", "").upper() == "SHORT" or
-                # BOTH mode: positionAmt < 0 = short
-                (getattr(p, "position_side", "").upper() == "BOTH" and
-                 getattr(p, "size", 0) < 0)
-            )]
-            if short_pos:
-                print(f"[SHORT] Open positions: {len(short_pos)} "
-                      f"({', '.join(getattr(p,'symbol','?') for p in short_pos[:5])})")
-            return len(short_pos)
-        except Exception as e:
-            print(f"[SHORT] _count_real_positions BingX error: {e}")
-    # Fallback: Redis active signals
-    cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
-    try:
-        all_active = state.redis.get_active_signals(Config.BOT_TYPE)
-        return sum(1 for s in all_active
-                   if datetime.fromisoformat(s.get("timestamp","2000-01-01")) > cutoff)
-    except Exception:
-        return 0
+# _count_real_positions: see full implementation below (filters LONG only)
 
 
 async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
     """
-    SHORT scan_symbol v2.3:
-      - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
-      - TP НИЖЕ входа (short: фиксируем прибыль при падении)
-      - ShortFilter: фильтрация по BTC trend, RSI, фандинг, свеча
-      - OI Proxy: bear_confirm / accumulation / weakness
+    LONG scan_symbol v2.3:
+      - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
+      - TP ВЫШЕ входа (long: фиксируем прибыль при росте)
+      - OI Proxy: bull_confirm / accumulation / weakness_long
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
@@ -602,16 +578,16 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
                 ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # Блокируем шорт если RSI 30m перепродан (<25) — слишком поздно для шорта
-                if rsi_30m < 25:
+                # Блокируем лонг если RSI 30m перекуплен (>75) — слишком поздно
+                if rsi_30m > 75:
                     rsi_30m_ok = False
         except Exception:
             pass
         if not rsi_30m_ok:
-            return None  # RSI 30m перепродан — ложный SHORT сигнал
+            return None  # RSI 30m перекуплен — ложный LONG сигнал
 
-        # ✅ Multi-TF RSI context — 4h RSI не должен быть слишком низким для SHORT
-        # Если RSI 1h перекуплен (>65) но RSI 4h нейтрален/перепродан (<30) — ложный SHORT
+        # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
+        # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
         rsi_4h_ok = True
         try:
             ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
@@ -621,51 +597,58 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
                 ag = sum(gains)/13; al = sum(losses)/13
                 rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # Блокируем шорт если RSI 4h перепродан (<30)
-                if rsi_4h < 30:
+                # Блокируем лонг если 4h RSI перекуплен (>70)
+                if rsi_4h > 70:
                     rsi_4h_ok = False
         except Exception:
             pass
         if not rsi_4h_ok:
-            return None  # 4h RSI перепродан — ложный SHORT сигнал
+            return None  # 4h RSI перекуплен — ложный LONG сигнал
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_15m)
         patterns      = state.pattern_detector.detect_all(ohlcv_15m, hourly_deltas, md)
         p4d           = await _get_price_change_4d(symbol, md.price_change_24h * 4)
 
-        # ── OI Proxy (SHORT специфика) ────────────────────────────────────────
-        oi_bear_confirm = False
-        oi_accumulation = False
-        oi_weakness_short = False
-        oi_score_adj    = 0.0
+        # ── OI Proxy (LONG специфика) ─────────────────────────────────────────
+        oi_bull_confirm  = False
+        oi_accumulation  = False
+        oi_weakness_long = False
+        oi_score_adj     = 0.0
 
         try:
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+            # ✅ FIX L2: проверяем что OI данные свежие (не старше 30 мин)
+            # Если Bybit геоблокирован и fallback Binance — OI может быть stale
+            if oi_history:
+                latest_ts = oi_history[-1].get("timestamp", 0) if isinstance(oi_history[-1], dict) else 0
+                if latest_ts and (time.time() * 1000 - latest_ts) > 1_800_000:  # >30 мин
+                    oi_history = []  # данные устарели — не используем
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
                 vols = [c.quote_volume for c in ohlcv_15m[-5:]]
 
-                # OI и объём падают вместе с ценой → медвежье подтверждение
-                oi_growing   = ois[-1] > ois[0] if ois[0] else False
-                vol_growing  = len(vols) >= 3 and vols[-1] > vols[-3]
-                price_down   = getattr(md, "price_change_1h", 0) < -0.5
+                oi_growing  = ois[-1] > ois[0] if ois[0] else False
+                vol_growing = len(vols) >= 3 and vols[-1] > vols[-3]
+                price_up    = getattr(md, "price_change_1h", 0) > 0.5
+                price_down  = getattr(md, "price_change_1h", 0) < -0.5
 
-                # Bear confirm: цена падает + OI растёт (шорты открываются)
-                oi_bear_confirm = price_down and oi_growing
-                if oi_bear_confirm:
+                # Bull confirm: цена растёт + OI растёт + объём растёт
+                oi_bull_confirm = oi_growing and vol_growing and price_up
+                if oi_bull_confirm:
                     oi_score_adj += 1.5
 
-                # OI стабильно растёт = реальные деньги идут в шорт
+                # OI стабильно растёт = реальные деньги входят в лонг
                 oi_accumulation = (all(ois[i] <= ois[i+1] for i in range(len(ois)-1))
                                    if len(ois) >= 3 else False)
                 if oi_accumulation:
                     oi_score_adj += 2.5
 
-                # Слабость: цена падает но OI тоже падает = шорты закрываются
-                oi_falling = ois[-1] < ois[0] if ois[0] else False
-                oi_weakness_short = price_down and oi_falling
-                if oi_weakness_short:
+                # Слабость: цена растёт но OI/объём падают = нет поддержки
+                oi_falling      = ois[-1] < ois[0] if ois[0] else False
+                vol_falling     = len(vols) >= 3 and vols[-1] < vols[-3]
+                oi_weakness_long = price_up and (oi_falling or vol_falling)
+                if oi_weakness_long:
                     oi_score_adj -= 2.0
         except Exception as e:
             print(f"OI Proxy error {symbol}: {e}")
@@ -691,32 +674,21 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         final_score = score_result.total_score + oi_score_adj
         reasons     = list(score_result.reasons)
 
-        # ── SHORT-специфичные фильтры ─────────────────────────────────────────
-        # ✅ FIX #1+4: BTC кешируется ОДИН РАЗ в scan_market(), здесь просто используем
-        btc_change_1h: Optional[float] = cached_btc_1h
-
-        sf   = get_short_filter()
-        filt = sf.check(
-            market_data=md, ohlcv_15m=ohlcv_15m,
-            hourly_deltas=hourly_deltas,
-            btc_price_1h_change=btc_change_1h,
-        )
-        if filt.blocked:
-            return None  # blocked — debug log suppressed for clean logs
-
-        final_score += filt.score_delta
-        reasons.extend(filt.reasons)
+        # ── LONG: BTC trend awareness (используем кешированное значение) ────
+        # cached_btc_1h передаётся из scan_market (1 запрос на весь скан)
+        if cached_btc_1h is not None and cached_btc_1h < -3.0:
+            return None   # BTC рухает >3%/1ч — не лонгуем
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
         rt_result = await rt.score(
-            direction="short", market_data=md,
+            direction="long", market_data=md,
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
         if rt_result.early_only:
             await state.telegram.send_message(
-                f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
-                f"🔴 <code>#{symbol}</code>  ${price:,.6f}\n"
+                f"🛰️ <b>РАННИЙ LONG WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
+                f"🟢 <code>#{symbol}</code>  ${price:,.6f}\n"
                 + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
                 + "\n\n⏳ <i>Ждём подтверждения.</i>"
             )
@@ -725,43 +697,37 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         final_score = rt_result.final_score
         reasons.extend(rt_result.factors)
 
-        # 🆕 Бонус если монета в RSI watchlist (RSI растёт от 35)
-        if _rsi_tracker.is_rsi_rising(symbol):
-            rsi_info = _rsi_tracker.get_info(symbol)
-            peak = rsi_info.get("peak_rsi", 0)
-            if peak >= 55:   # RSI дошёл до зоны SHORT
-                final_score += 5
-                reasons.append(f"RSI watchlist: вырос с 35 до {peak:.0f} → +5")
+        # 🆕 Бонус если RSI восстанавливается от низов (LONG сигнал)
+        rsi_now = md.rsi_1h or 0
+        if 30 <= rsi_now <= 50 and rsi_current > 0:
+            final_score += 3
+            reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
         
         if final_score < Config.MIN_SCORE:
             return None
 
         # OI proxy — тихо (убраны verbose debug logs)
 
-        # ── Динамические TP для SHORT ─────────────────────────────────────────
+        # ── LONG TP уровни из Config ──────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
-        btc_trend    = ("down" if (btc_change_1h or 0) < -0.5 else
-                        "up"   if (btc_change_1h or 0) > 0.5 else "sideways")
-        tp_levels, tp_weights = get_short_tp_config(
-            funding_rate=md.funding_rate,
-            pattern_name=best_pattern,
-            btc_trend=btc_trend,
-        )
+        # LONG: TP levels & weights from Config (optimised)
+        tp_levels  = Config.TP_LEVELS
+        tp_weights = Config.TP_WEIGHTS
 
-        # ── SL ВЫШЕ входа, TP НИЖЕ входа (SHORT) ─────────────────────────────
-        stop_loss   = price * (1 + Config.SL_BUFFER / 100)
+        # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
+        stop_loss   = price * (1 - Config.SL_BUFFER / 100)   # SL ниже цены
         entry_price = price
         smc_data    = {}
 
         if Config.USE_SMC:
             try:
                 from core.smc_ict_detector import get_smc_result   # ✅ FIX: core not utils
-                smc = get_smc_result(_ohlcv(ohlcv_15m), "short",
+                smc = get_smc_result(_ohlcv(ohlcv_15m), "long",    # ✅ FIX: "long" not "short"
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
                     final_score += smc.score_bonus
                     reasons.extend(smc.reasons)
-                if smc.refined_sl and smc.refined_sl > price:
+                if smc.refined_sl and smc.refined_sl < price:      # ✅ FIX: SL must be below
                     stop_loss = smc.refined_sl
                 if smc.ob_entry:
                     entry_price = smc.ob_entry
@@ -773,20 +739,19 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if final_score < Config.MIN_SCORE:
             return None
 
-        # ✅ SL для SHORT: минимум = SL_BUFFER%, не захардкоженный 1%
-        min_sl_dist = Config.SL_BUFFER / 100
-        if (stop_loss - price) / price < min_sl_dist:
-            stop_loss = price * (1 + Config.SL_BUFFER / 100)
+        # ✅ FIX: Проверка SL для LONG — должен быть НИЖЕ цены
+        if (price - stop_loss) / price < 0.005:       # минимум 0.5% SL
+            stop_loss = price * (1 - Config.SL_BUFFER / 100)
 
-        # TP НИЖЕ входа для SHORT
+        # ✅ FIX: TP ВЫШЕ входа для LONG
         take_profits = [
-            (round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+            (round(price * (1 + tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
             for i, tp in enumerate(tp_levels)
         ]
 
-        sl_pct = round((stop_loss - price) / price * 100, 2)
+        sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
         return {
-            "symbol": symbol, "direction": "short",
+            "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
             "confidence": score_result.confidence.value,
             "price": price, "entry_price": entry_price,
@@ -802,9 +767,9 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 "Price 4d": f"{p4d:+.1f}%",
             },
             "oi_proxy": {
-                "bear_confirm": oi_bear_confirm,
+                "bull_confirm": oi_bull_confirm,
                 "accumulation": oi_accumulation,
-                "weakness":     oi_weakness_short,
+                "weakness":     oi_weakness_long,
                 "score_adj":    round(oi_score_adj, 2),
             },
             "volume_spike": round(getattr(md, "volume_spike_ratio", 1.0), 2),
@@ -827,88 +792,106 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         return None
 
 
-
-async def _get_btc_short_correlation(cached_c1h: Optional[float] = None) -> dict:
+async def _count_real_positions() -> int:
     """
-    BTC корреляция для SHORT — ТОЛЬКО модификатор score, НЕ блокер.
-    ✅ FIX: принимает кешированный c1h из scan_market() чтобы не делать лишний запрос.
+    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
+    Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
+    """
+    if state.auto_trader:
+        try:
+            pos      = await state.auto_trader.bingx.get_positions()
+            long_pos = [p for p in pos
+                        if getattr(p, "side", "").upper() == "LONG"
+                        or getattr(p, "position_side", "").upper() == "LONG"]
+            return len(long_pos)
+        except Exception as e:
+            print(f"[LONG] _count_real_positions error: {e}")
+    cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
+    try:
+        all_active = state.redis.get_active_signals(Config.BOT_TYPE)
+        return sum(1 for s in all_active
+                   if datetime.fromisoformat(s.get("timestamp", "2000-01-01")) > cutoff)
+    except Exception:
+        return 0
+
+
+async def _get_btc_correlation() -> dict:
+    """
+    BTC корреляция — ТОЛЬКО как информация и модификатор score.
+    НЕ является блокером. Многие альты растут при падающем BTC и наоборот.
+    Возвращает: {"score_adj": float, "label": str, "change_1h": float}
     """
     try:
-        c1h = cached_c1h
-        if c1h is None:
-            btc = await state.binance.get_complete_market_data("BTCUSDT")
-            if not btc:
-                return {"score_adj": 0, "label": "BTC N/A"}
-            c1h = getattr(btc, "price_change_1h", 0) or 0
-        if c1h < -2.0:  adj, label = +3.0, f"BTC {c1h:.1f}%/1h 🔴"   # BTC падает → SHORT бонус
-        elif c1h < -0.5: adj, label = +1.5, f"BTC {c1h:.1f}%/1h ↘"
-        elif c1h > 2.0:  adj, label = -3.0, f"BTC +{c1h:.1f}%/1h 🚀"  # BTC растёт → SHORT штраф
-        elif c1h > 0.5:  adj, label = -1.5, f"BTC +{c1h:.1f}%/1h ↗"
+        btc = await state.binance.get_complete_market_data("BTCUSDT")
+        if not btc:
+            return {"score_adj": 0, "label": "unknown", "change_1h": 0}
+        c1h  = getattr(btc, "price_change_1h", 0) or 0
+        c24h = getattr(btc, "price_change_24h", 0) or 0
+        # BTC растёт сильно → небольшой бонус к LONG сигналам
+        if c1h > 2.0:   adj, label = +3.0, f"BTC +{c1h:.1f}%/1h 🚀"
+        elif c1h > 0.5: adj, label = +1.5, f"BTC +{c1h:.1f}%/1h ↗"
+        # BTC падает сильно → небольшой штраф к LONG сигналам
+        elif c1h < -2.0: adj, label = -3.0, f"BTC {c1h:.1f}%/1h 🔴"
+        elif c1h < -0.5: adj, label = -1.5, f"BTC {c1h:.1f}%/1h ↘"
         else:            adj, label =  0.0, f"BTC {c1h:.1f}%/1h ↔"
-        return {"score_adj": adj, "label": label, "change_1h": c1h}
+        return {"score_adj": adj, "label": label, "change_1h": c1h, "change_24h": c24h}
     except Exception:
-        return {"score_adj": 0, "label": "BTC N/A"}
+        return {"score_adj": 0, "label": "BTC N/A", "change_1h": 0}
 
 
 async def scan_market():
     """
-    ✅ v2.4 АРХИТЕКТУРА (SHORT):
-    - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20 SHORT на бирже)
-    - Биржевое исполнение: только если active_short < MAX и не /pause
+    ✅ v2.4 АРХИТЕКТУРА:
+    - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20)
+    - Биржевое исполнение: только если active_count < MAX и не /pause
     - BTC корреляция: только модификатор score (-3..+3), НЕ блокер
     - Единственный блокер: команда /pause
     """
     if state.is_paused:
         return
 
-    print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+    print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
-    # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
-    _btc_cache_1h: Optional[float] = None
-    try:
-        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-        if _btc_md:
-            _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
-    except Exception as e:
-        print(f"⚠️ BTC cache failed: {e}")
-
-    # BTC корреляция — мягкий модификатор, не блокер
-    btc_corr  = await _get_btc_short_correlation(_btc_cache_1h)
+    # BTC корреляция — только информация и мягкий модификатор score
+    btc_corr  = await _get_btc_correlation()
     score_adj = int(btc_corr.get("score_adj", 0) or 0)
     btc_label = btc_corr.get("label") or "BTC N/A"
     print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
 
-    # Считаем только SHORT позиции этого бота
+    # Считаем активные LONG позиции на бирже
     active_count  = await _count_real_positions()
     exchange_full = active_count >= Config.MAX_POSITIONS
     if exchange_full:
-        print(f"📊 Exchange SHORT slots: {active_count}/{Config.MAX_POSITIONS} — "
+        print(f"📊 Exchange LONG slots: {active_count}/{Config.MAX_POSITIONS} — "
               f"сигналы в TG продолжаются, биржа ждёт освобождения")
 
     new_signals   = 0
-    tg_only_count = 0
+    tg_only_count = 0  # сигналы отправленные только в TG (биржа полна)
 
     for symbol in state.watchlist:
         try:
+            # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol, _btc_cache_1h)
+            signal = await scan_symbol(symbol, btc_corr.get("change_1h"))
             if not signal:
                 continue
 
-            # BTC корреляционный модификатор к score
+            # Применяем BTC корреляционный модификатор к score
             original_score = signal["score"]
-            signal["score"]       = round(original_score + btc_corr["score_adj"], 1)
-            signal["btc_corr_adj"] = btc_corr["score_adj"]
-            signal["btc_label"]    = btc_corr["label"]
+            btc_score_adj = btc_corr.get("score_adj", 0) or 0
+            signal["score"] = round(original_score + btc_score_adj, 1)
+            signal["btc_corr_adj"] = btc_score_adj
+            signal["btc_label"]    = btc_corr.get("label", "BTC N/A")
+            # Если после поправки score упал ниже мин — пропускаем
             if signal["score"] < Config.MIN_SCORE:
                 continue
 
-            # ✅ ВСЕГДА: Telegram сигнал
+            # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
             tg_msg_id = await state.telegram.send_signal(
-                direction="short", symbol=signal["symbol"],
+                direction="long", symbol=signal["symbol"],
                 score=signal["score"], price=signal["price"],
                 pattern=signal["best_pattern"] or "N/A",
                 indicators=signal["indicators"],
@@ -920,7 +903,7 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # Биржевое исполнение: только если есть SHORT слоты и не на паузе
+            # ✅ Биржевое исполнение: только если есть слоты И не на паузе
             if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
                 if state.auto_trader:
                     try:
@@ -930,11 +913,11 @@ async def scan_market():
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
                 new_signals += 1
-                print(f"✅ SHORT executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+                print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
             else:
                 tg_only_count += 1
-                reason = "max SHORT positions" if exchange_full else "paused"
-                print(f"📡 SHORT TG-only: {symbol} Score={signal['score']:.0f}% [{reason}]")
+                reason = "max positions" if exchange_full else "paused"
+                print(f"📡 LONG TG-only: {symbol} Score={signal['score']:.0f}% [{reason}]")
 
             await asyncio.sleep(0.4)
         except Exception as e:
@@ -944,13 +927,13 @@ async def scan_market():
     state.last_scan      = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))
     state.redis.update_bot_state(Config.BOT_TYPE, {
-        "status":         "paused" if state.is_paused else "running",
-        "last_scan":      state.last_scan.isoformat(),
-        "daily_signals":  state.daily_signals,
+        "status":        "paused" if state.is_paused else "running",
+        "last_scan":     state.last_scan.isoformat(),
+        "daily_signals": state.daily_signals,
         "active_signals": state.active_signals,
     })
     print(f"✅ Scan done. Executed: {new_signals} | TG-only: {tg_only_count} | "
-          f"Exchange SHORT: {active_count}/{Config.MAX_POSITIONS}")
+          f"Exchange: {active_count}/{Config.MAX_POSITIONS}")
 
 
 async def background_scanner():
