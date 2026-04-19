@@ -689,10 +689,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if final_score < Config.MIN_SCORE:
             return None
 
-        # OI proxy лог
-        if oi_bull_confirm:  print(f"[OI] {symbol}: bull confirm +1.5")
-        if oi_accumulation:  print(f"[OI] {symbol}: accumulation +2.5")
-        if oi_weakness_long: print(f"[OI] {symbol}: weakness -2.0")
+        # OI proxy — тихо (убраны verbose debug logs)
 
         # ── LONG TP уровни из Config ──────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
@@ -840,9 +837,10 @@ async def scan_market():
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
     # BTC корреляция — только информация и мягкий модификатор score
-    btc_corr = await _get_btc_correlation()
-    score_adj = btc_corr.get('score_adj', 0) or 0
-    print(f"📡 {btc_corr['label']} (score adj {score_adj:+.0f})")
+    btc_corr  = await _get_btc_correlation()
+    score_adj = int(btc_corr.get("score_adj", 0) or 0)
+    btc_label = btc_corr.get("label") or "BTC N/A"
+    print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
 
     # Считаем активные LONG позиции на бирже
     active_count  = await _count_real_positions()
