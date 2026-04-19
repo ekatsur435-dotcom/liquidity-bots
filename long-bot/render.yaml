@@ -27,17 +27,17 @@ services:
       - key: PROXY_LIST
         sync: false
       - key: MIN_LONG_SCORE
-        value: "65"
+        value: "60"
       - key: LONG_SL_BUFFER
         value: "1.5"
       - key: MAX_LONG_POSITIONS
-        value: "20"
+        value: "15"
       - key: MIN_VOLUME_USDT
         value: "300000"
       - key: MAX_WATCHLIST
         value: "300"
       - key: SCAN_INTERVAL
-        value: "200"
+        value: "240"
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
@@ -50,3 +50,11 @@ services:
         value: "false"
       - key: ENABLE_BE_AFTER_TP1
         value: "true"
+      - key: SHORT_TRAIL_ACTIVATION
+        value: "0.010"
+      - key: ENABLE_BTC_CORRELATION
+        value: "true"
+      - key: PROXY_LIST
+        sync: false          # http://user:pass@ip1:port,http://user:pass@ip2:port
+      - key: USE_BINANCE
+        value: "false"       # true только если PROXY_LIST задан
