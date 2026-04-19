@@ -69,7 +69,7 @@ class ShortFilter:
     FUNDING_MODERATE = 0.02   # > 0.02%
 
     # Минимальный RSI для SHORT входа
-    RSI_MIN_FOR_SHORT = 50    # ✅ FIX: было 58 — блокировало RSI 40-57 (типичный даунтренд)
+    RSI_MIN_FOR_SHORT = 35    # ✅ FIX #2: было 50 — блокировало RSI 35-49 (лучшие шорт сетапы)
 
     def check(
         self,
@@ -108,10 +108,14 @@ class ShortFilter:
         if rsi is not None and rsi < self.RSI_MIN_FOR_SHORT:
             return ShortFilterResult(
                 blocked      = True,
-                block_reason = f"RSI {rsi:.1f} < {self.RSI_MIN_FOR_SHORT} — монета не перекуплена",
+                block_reason = f"RSI {rsi:.1f} < {self.RSI_MIN_FOR_SHORT} — монета в зоне перепроданности",
                 score_delta  = 0,
                 reasons      = [],
             )
+        # ✅ FIX #2: RSI 35-50 — даунтренд зона, добавляем бонус
+        if rsi is not None and rsi < 50:
+            score_delta += 5
+            reasons.append(f"RSI {rsi:.1f} в зоне даунтренда (35-50) — подтверждение шорта +5")
 
         # ── 3. Фандинг-спайк (главный SHORT фактор) ──────────────────────
         funding = getattr(market_data, "funding_rate", 0) / 100  # уже в долях
