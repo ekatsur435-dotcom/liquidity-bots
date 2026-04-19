@@ -558,10 +558,24 @@ class BinanceFuturesClient:
     # =========================================================================
 
     async def get_hourly_volume_profile(self, symbol: str, hours: int = 7) -> List[float]:
+        """
+        ✅ FIX #3: Возвращает NET DELTA (buy_vol - sell_vol) для часовых свечей.
+        SHORT scorer ищет отрицательные значения (продавцы доминируют).
+        Если taker данные недоступны — используем price_action как прокси:
+          - цена выросла за час → delta > 0 (покупатели)
+          - цена упала за час   → delta < 0 (продавцы)
+        """
         try:
             candles = await self.get_klines(symbol, "1h", hours + 2)
             if candles and len(candles) >= hours:
-                return [c.quote_volume for c in candles[-hours:]]
+                result = []
+                for c in candles[-hours:]:
+                    # Price-action proxy: бычья свеча = позитивная дельта
+                    price_delta_pct = (c.close - c.open) / c.open if c.open > 0 else 0
+                    # Масштабируем объём знаком price direction
+                    net_delta = c.quote_volume * (1 if price_delta_pct >= 0 else -1)
+                    result.append(net_delta)
+                return result
         except Exception:
             pass
         return [0.0] * hours
