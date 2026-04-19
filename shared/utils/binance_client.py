@@ -891,7 +891,8 @@ class BinanceFuturesClient:
                 funding_accumulated=funding_acc,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
-                long_short_ratio=float(ratio) if ratio else 50.0,
+                # ✅ FIX L/S: санитарная проверка — если ratio вне 25-75% → 50 (API баг)
+                long_short_ratio=float(ratio) if ratio and 10 <= float(ratio) <= 90 else 50.0,
                 volume_24h=float(ticker.get("quoteVolume", 0)) if isinstance(ticker, dict) else 0.0,
                 volume_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
                 price_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
