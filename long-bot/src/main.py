@@ -242,9 +242,6 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
     except Exception as e:
         print(f"⚠️ Binance watchlist error: {e}")
 
-    # ✅ DEBUG: Статистика до объединения
-    print(f"📈 Pre-merge: Bybit={len(bybit_syms)}, Binance={len(binance_syms)}, threshold=${min_vol:,.0f}")
-    
     # ✅ FIX: Fallback если оба источника пустые
     total_found = len(bybit_syms) + len(binance_syms)
     if total_found == 0:
@@ -473,17 +470,11 @@ async def get_positions():
 async def telegram_webhook(request: Request):
     try:
         update = await request.json()
-        print(f"📩 Webhook received: {update}")
         if state.cmd_handler:
-            result = await state.cmd_handler.handle_update(update)
-            print(f"✅ Command handled: {result}")
-        else:
-            print(f"❌ cmd_handler not initialized")
+            await state.cmd_handler.handle_update(update)
         return {"ok": True}
     except Exception as e:
         print(f"Webhook error: {e}")
-        import traceback
-        traceback.print_exc()
         return {"ok": False}
 
 @app.get("/webhook/info")
