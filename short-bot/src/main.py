@@ -558,7 +558,7 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def scan_symbol(symbol: str) -> Optional[Dict]:
+async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
     """
     SHORT scan_symbol v2.3:
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
@@ -643,13 +643,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         reasons     = list(score_result.reasons)
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
-        btc_change_1h: Optional[float] = None
-        try:
-            btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-            if btc_md:
-                btc_change_1h = btc_md.price_change_24h / 24
-        except Exception:
-            pass
+        # ✅ FIX #1+4: BTC кешируется ОДИН РАЗ в scan_market(), здесь просто используем
+        btc_change_1h: Optional[float] = cached_btc_1h
 
         sf   = get_short_filter()
         filt = sf.check(
@@ -787,17 +782,18 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 
 
-async def _get_btc_short_correlation() -> dict:
+async def _get_btc_short_correlation(cached_c1h: Optional[float] = None) -> dict:
     """
     BTC корреляция для SHORT — ТОЛЬКО модификатор score, НЕ блокер.
-    BTC растёт → небольшой штраф к SHORT (но альт может падать независимо).
-    BTC падает → небольшой бонус к SHORT.
+    ✅ FIX: принимает кешированный c1h из scan_market() чтобы не делать лишний запрос.
     """
     try:
-        btc = await state.binance.get_complete_market_data("BTCUSDT")
-        if not btc:
-            return {"score_adj": 0, "label": "BTC N/A"}
-        c1h = getattr(btc, "price_change_1h", 0) or 0
+        c1h = cached_c1h
+        if c1h is None:
+            btc = await state.binance.get_complete_market_data("BTCUSDT")
+            if not btc:
+                return {"score_adj": 0, "label": "BTC N/A"}
+            c1h = getattr(btc, "price_change_1h", 0) or 0
         if c1h < -2.0:  adj, label = +3.0, f"BTC {c1h:.1f}%/1h 🔴"   # BTC падает → SHORT бонус
         elif c1h < -0.5: adj, label = +1.5, f"BTC {c1h:.1f}%/1h ↘"
         elif c1h > 2.0:  adj, label = -3.0, f"BTC +{c1h:.1f}%/1h 🚀"  # BTC растёт → SHORT штраф
@@ -823,7 +819,8 @@ async def scan_market():
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
     # BTC корреляция — мягкий модификатор, не блокер
-    btc_corr = await _get_btc_short_correlation()
+    # ✅ FIX: передаём кешированный BTC change (1 запрос на весь скан)
+    btc_corr = await _get_btc_short_correlation(_btc_cache_1h)
     print(f"📡 {btc_corr['label']} (score adj {btc_corr['score_adj']:+.0f})")
 
     # Считаем только SHORT позиции этого бота
@@ -836,12 +833,21 @@ async def scan_market():
     new_signals   = 0
     tg_only_count = 0
 
+    # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
+    _btc_cache_1h: Optional[float] = None
+    try:
+        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
+        if _btc_md:
+            _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
+    except Exception as e:
+        print(f"⚠️ BTC cache failed: {e}")
+
     for symbol in state.watchlist:
         try:
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol)
+            signal = await scan_symbol(symbol, _btc_cache_1h)
             if not signal:
                 continue
 
