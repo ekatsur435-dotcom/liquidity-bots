@@ -378,7 +378,7 @@ class TradeManager:
         pos.remaining_qty -= close_qty
         pos.highest_tp_hit = max(pos.highest_tp_hit, tp_level)
         
-        # Активируем trail stop после TP1
+        # Активируем trail stop после TP2 (TRAIL_ACTIVATION_TP=2)
         if tp_level >= self.TRAIL_ACTIVATION_TP and not pos.trail_active:
             pos.trail_active = True
             # Ставим SL на точку безубытка + буфер
