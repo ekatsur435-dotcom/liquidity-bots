@@ -584,9 +584,49 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
+        # ✅ Multi-TF загрузка: 15m + 30m параллельно
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 100)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
+        ohlcv_15m, ohlcv_30m = await asyncio.gather(ohlcv_15m_task, ohlcv_30m_task)
+
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
+
+        # ✅ RSI 30m — промежуточный фильтр между 15m и 1h
+        rsi_30m_ok = True
+        try:
+            if ohlcv_30m and len(ohlcv_30m) >= 14:
+                closes_30m = [c.close for c in ohlcv_30m[-14:]]
+                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
+                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+                rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
+                # Блокируем шорт если RSI 30m перепродан (<25) — слишком поздно для шорта
+                if rsi_30m < 25:
+                    rsi_30m_ok = False
+        except Exception:
+            pass
+        if not rsi_30m_ok:
+            return None  # RSI 30m перепродан — ложный SHORT сигнал
+
+        # ✅ Multi-TF RSI context — 4h RSI не должен быть слишком низким для SHORT
+        # Если RSI 1h перекуплен (>65) но RSI 4h нейтрален/перепродан (<30) — ложный SHORT
+        rsi_4h_ok = True
+        try:
+            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            if ohlcv_4h and len(ohlcv_4h) >= 14:
+                closes_4h = [c.close for c in ohlcv_4h[-14:]]
+                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
+                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
+                ag = sum(gains)/13; al = sum(losses)/13
+                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
+                # Блокируем шорт если RSI 4h перепродан (<30)
+                if rsi_4h < 30:
+                    rsi_4h_ok = False
+        except Exception:
+            pass
+        if not rsi_4h_ok:
+            return None  # 4h RSI перепродан — ложный SHORT сигнал
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_15m)
@@ -669,7 +709,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
-        rt_result = rt.score(
+        rt_result = await rt.score(
             direction="short", market_data=md,
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
