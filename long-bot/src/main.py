@@ -473,11 +473,17 @@ async def get_positions():
 async def telegram_webhook(request: Request):
     try:
         update = await request.json()
+        print(f"📩 Webhook received: {update}")
         if state.cmd_handler:
-            await state.cmd_handler.handle_update(update)
+            result = await state.cmd_handler.handle_update(update)
+            print(f"✅ Command handled: {result}")
+        else:
+            print(f"❌ cmd_handler not initialized")
         return {"ok": True}
     except Exception as e:
         print(f"Webhook error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"ok": False}
 
 @app.get("/webhook/info")
