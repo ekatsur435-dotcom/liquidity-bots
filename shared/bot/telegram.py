@@ -823,16 +823,12 @@ class TelegramCommandHandler:
             # ✅ FIX: Фильтруем позиции по стороне бота
             # SHORT бот видит только SHORT, LONG — только LONG
             expected_side = self.bot_type.upper()
-            print(f"[DEBUG] bot_type={expected_side}, all_positions={len(all_positions)}")
-            for p in all_positions:
-                print(f"[DEBUG] pos: {getattr(p, 'symbol', '?')} side={getattr(p, 'side', '?')} pos_side={getattr(p, 'position_side', '?')} size={getattr(p, 'size', 0)}")
             positions = [p for p in all_positions if (
                 getattr(p, "position_side", "").upper() == expected_side or
                 getattr(p, "side", "").upper() == expected_side or
                 (expected_side == "SHORT" and getattr(p, "size", 0) < 0) or
                 (expected_side == "LONG" and getattr(p, "size", 0) > 0)
             )]
-            print(f"[DEBUG] filtered_positions={len(positions)}")
             
             if not positions:
                 await self._reply(reply_chat_id, f"📈 Нет открытых {expected_side} позиций [{mode}]")
