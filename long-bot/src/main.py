@@ -62,7 +62,7 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "long"
     # ✅ FIX: MIN_LONG_SCORE default = 60 (не 65!)
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "200"))
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -544,9 +544,30 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        ohlcv_15m = await state.binance.get_klines(symbol, "15m", 100)
+        # ✅ Multi-TF загрузка: 15m + 30m параллельно
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 100)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
+        ohlcv_15m, ohlcv_30m = await asyncio.gather(ohlcv_15m_task, ohlcv_30m_task)
+
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
+
+        # ✅ RSI 30m — промежуточный фильтр между 15m и 1h
+        rsi_30m_ok = True
+        try:
+            if ohlcv_30m and len(ohlcv_30m) >= 14:
+                closes_30m = [c.close for c in ohlcv_30m[-14:]]
+                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
+                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+                rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
+                # Блокируем лонг если RSI 30m перекуплен (>75) — слишком поздно
+                if rsi_30m > 75:
+                    rsi_30m_ok = False
+        except Exception:
+            pass
+        if not rsi_30m_ok:
+            return None  # RSI 30m перекуплен — ложный LONG сигнал
 
         # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
         # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
@@ -643,7 +664,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
-        rt_result = rt.score(
+        rt_result = await rt.score(
             direction="long", market_data=md,
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
