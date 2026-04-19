@@ -826,6 +826,15 @@ async def scan_market():
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
+    # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
+    _btc_cache_1h: Optional[float] = None
+    try:
+        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
+        if _btc_md:
+            _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
+    except Exception as e:
+        print(f"⚠️ BTC cache failed: {e}")
+
     # BTC корреляция — мягкий модификатор, не блокер
     # ✅ FIX: передаём кешированный BTC change (1 запрос на весь скан)
     btc_corr = await _get_btc_short_correlation(_btc_cache_1h)
@@ -840,15 +849,6 @@ async def scan_market():
 
     new_signals   = 0
     tg_only_count = 0
-
-    # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
-    _btc_cache_1h: Optional[float] = None
-    try:
-        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-        if _btc_md:
-            _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
-    except Exception as e:
-        print(f"⚠️ BTC cache failed: {e}")
 
     for symbol in state.watchlist:
         try:
