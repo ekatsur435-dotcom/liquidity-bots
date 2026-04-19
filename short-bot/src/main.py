@@ -70,7 +70,7 @@ class Config:
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ backtest: было 2.5
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.5"))
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
@@ -288,15 +288,6 @@ async def lifespan(app: FastAPI):
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
-    # ✅ Auto-detect: if Bybit is geo-blocked, force Binance proxy mode
-    try:
-        test = await state.binance._bybit("/v5/market/time", {})
-        if test is None:  # 403 or error
-            from utils.binance_client import BinanceFuturesClient
-            BinanceFuturesClient._bybit_blocked = True
-            print("⛔ Bybit unreachable at startup → Binance-only mode")
-    except Exception:
-        pass
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
     state.telegram = TelegramBot(
@@ -392,7 +383,7 @@ async def lifespan(app: FastAPI):
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
         f"🔴 <b>SHORT Bot v2.3 запущен</b>\n\n"
-        f"📊 Watchlist: {len(state.watchlist)} монет (Binance)\n"
+        f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
         f"⚙️ Risk: {Config.RISK_PER_TRADE*100:.3f}% | Scan: {Config.SCAN_INTERVAL}s\n"
@@ -724,7 +715,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         if Config.USE_SMC:
             try:
-                from core.smc_ict_detector import get_smc_result   # ✅ FIX: core not utils
+                from utils.smc_ict_detector import get_smc_result
                 smc = get_smc_result(_ohlcv(ohlcv_15m), "short",
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
@@ -743,9 +734,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             return None
 
         # Проверка SL корректности для SHORT
-        # ✅ Минимальный SL = SL_BUFFER (не меньше)
-        if (stop_loss - price) / price < Config.SL_BUFFER / 100:
-            stop_loss = price * (1 + Config.SL_BUFFER / 100)
+        if (stop_loss - price) / price < 0.01:
+            stop_loss = price * 1.01
 
         # TP НИЖЕ входа для SHORT
         take_profits = [
