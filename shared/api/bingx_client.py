@@ -280,7 +280,7 @@ class BingXClient:
                         continue
                     positions.append(BingXPosition(
                         symbol=d.get("symbol",""),
-                        side="LONG" if d.get("positionSide")=="LONG" else "SHORT",
+                        side="LONG" if d.get("positionSide") in ("LONG", "BOTH") and float(d.get("positionAmt",0))>=0 else "SHORT",
                         position_side=d.get("positionSide",""),
                         size=size,
                         entry_price=float(d.get("avgPrice",0)),
