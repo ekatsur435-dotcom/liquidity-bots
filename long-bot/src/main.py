@@ -299,11 +299,20 @@ async def lifespan(app: FastAPI):
         scan_callback=scan_market, config=Config,
     )
 
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
     if render_url:
-        await state.telegram.setup_webhook(f"{render_url}/webhook")
+        wh_url = f"{render_url}/webhook"
+        ok = await state.telegram.setup_webhook(wh_url)
+        print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
+        if not ok:
+            # Retry once
+            import asyncio
+            await asyncio.sleep(3)
+            ok2 = await state.telegram.setup_webhook(wh_url)
+            print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
     else:
-        print("⚠️ RENDER_EXTERNAL_URL not set")
+        print("⚠️ RENDER_EXTERNAL_URL not set — Telegram commands won't work!")
+        print("   Set RENDER_EXTERNAL_URL=https://YOUR-SERVICE.onrender.com in Render env vars")
 
     # ── BingX AutoTrader ───────────────────────────────────────────────────────
     print(f"🔧 AUTO_TRADING={Config.AUTO_TRADING} | DEMO={Config.BINGX_DEMO}")
@@ -484,12 +493,22 @@ async def webhook_info():
     return {"error": "Telegram not initialized"}
 
 @app.get("/webhook/setup")
+@app.get("/webhook/reset")
 async def setup_webhook():
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    if render_url and state.telegram:
-        ok = await state.telegram.setup_webhook(f"{render_url}/webhook")
-        return {"ok": ok, "url": f"{render_url}/webhook"}
-    return {"error": "No RENDER_EXTERNAL_URL"}
+    """GET /webhook/setup OR /webhook/reset → принудительно регистрирует вебхук Telegram."""
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not render_url:
+        return {"error": "RENDER_EXTERNAL_URL not set in env vars"}
+    if not state.telegram:
+        return {"error": "Telegram not initialized"}
+    wh_url = f"{render_url}/webhook"
+    # Сначала удаляем старый вебхук
+    await state.telegram.delete_webhook()
+    import asyncio; await asyncio.sleep(1)
+    # Регистрируем новый
+    ok = await state.telegram.setup_webhook(wh_url)
+    info = await state.telegram.get_webhook_info()
+    return {"ok": ok, "url": wh_url, "webhook_info": info}
 
 
 # ============================================================================
