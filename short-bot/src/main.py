@@ -607,10 +607,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         except Exception:
             pass
         if not rsi_30m_ok:
-            print(f"[MultiTF DEBUG] {symbol}: RSI 30m < 25 — BLOCKED")
             return None  # RSI 30m перепродан — ложный SHORT сигнал
-
-        print(f"[MultiTF DEBUG] {symbol}: RSI 30m OK, proceeding...")
 
         # ✅ Multi-TF RSI context — 4h RSI не должен быть слишком низким для SHORT
         # Если RSI 1h перекуплен (>65) но RSI 4h нейтрален/перепродан (<30) — ложный SHORT
@@ -881,7 +878,8 @@ async def scan_market():
     # BTC корреляция — мягкий модификатор, не блокер
     # ✅ FIX: передаём кешированный BTC change (1 запрос на весь скан)
     btc_corr = await _get_btc_short_correlation(_btc_cache_1h)
-    print(f"📡 {btc_corr['label']} (score adj {btc_corr['score_adj']:+.0f})")
+    score_adj = btc_corr.get('score_adj', 0) or 0
+    print(f"📡 {btc_corr['label']} (score adj {score_adj:+.0f})")
 
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
