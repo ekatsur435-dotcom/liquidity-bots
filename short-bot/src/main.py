@@ -312,7 +312,6 @@ async def lifespan(app: FastAPI):
         ok = await state.telegram.setup_webhook(wh_url)
         print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
         if not ok:
-            import asyncio
             await asyncio.sleep(3)
             ok2 = await state.telegram.setup_webhook(wh_url)
             print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
@@ -509,7 +508,7 @@ async def setup_webhook():
         return {"error": "Telegram not initialized"}
     wh_url = f"{render_url}/webhook"
     await state.telegram.delete_webhook()
-    import asyncio; await asyncio.sleep(1)
+    await asyncio.sleep(1)
     ok = await state.telegram.setup_webhook(wh_url)
     info = await state.telegram.get_webhook_info()
     return {"ok": ok, "url": wh_url, "webhook_info": info}
