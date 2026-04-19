@@ -7,7 +7,8 @@ RealtimeScorer — shared/core/realtime_scorer.py
   • Top trader L/S       → до +10
   • Ликвидации           → до +10
   • Объём spike          → до +5
-  Max бонус: +50 баллов (поверх основного scorer)
+  • CoinGecko trending   → до +5
+  Max бонус: +55 баллов (поверх основного scorer)
 
 Также генерирует EARLY сигналы (score 45–64) — watchlist без сделки.
 
@@ -19,7 +20,7 @@ RealtimeScorer — shared/core/realtime_scorer.py
     rt = RealtimeScorer()
 
     # После основного score_result:
-    rt_result = rt.score(
+    rt_result = await rt.score(
         direction   = "long",           # "long" | "short"
         market_data = market_data,      # MarketData из binance_client
         base_score  = score_result.total_score,
@@ -41,12 +42,15 @@ RealtimeScorer — shared/core/realtime_scorer.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Any, NamedTuple, Dict
+from typing import List, Optional, Any, NamedTuple, Dict, Set
+from datetime import datetime, timedelta
+import aiohttp
+import asyncio
 
 # 🆕 Multi-timeframe support
 from .multi_timeframe_detector import (
-    MultiTimeframeDetector, 
-    Timeframe, 
+    MultiTimeframeDetector,
+    Timeframe,
     AggregatedSignal,
     format_multi_tf_message
 )
@@ -95,12 +99,56 @@ class RealtimeScorer:
     LIQ_LARGE    = 1_000_000   # $1M
     LIQ_EXTREME  = 5_000_000   # $5M
 
-    def score(
+    # 🆕 CoinGecko trending cache
+    _trending_cache: Set[str] = set()
+    _trending_last_update: Optional[datetime] = None
+    _trending_ttl_seconds: int = 300  # 5 минут кэш
+
+    async def _fetch_trending_symbols(self) -> Set[str]:
+        """
+        Получить топ-7 трендовых монет с CoinGecko.
+        Кэшируется на 5 минут для снижения нагрузки.
+        """
+        now = datetime.utcnow()
+
+        # Проверяем кэш
+        if (self._trending_last_update and
+            self._trending_cache and
+            (now - self._trending_last_update).seconds < self._trending_ttl_seconds):
+            return self._trending_cache
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.coingecko.com/api/v3/search/trending",
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        coins = data.get("coins", [])
+                        # Извлекаем символы (coin_id → symbol через search)
+                        symbols = set()
+                        for coin in coins[:7]:  # топ-7
+                            item = coin.get("item", {})
+                            symbol = item.get("symbol", "").upper()
+                            if symbol:
+                                symbols.add(symbol)
+
+                        RealtimeScorer._trending_cache = symbols
+                        RealtimeScorer._trending_last_update = now
+                        return symbols
+        except Exception:
+            pass
+
+        return set()
+
+    async def score(
         self,
         direction:     str,
         market_data:   Any,           # MarketData из binance_client
         base_score:    int,
         hourly_deltas: List[float],
+        trending_symbols: Optional[Set[str]] = None,
     ) -> RealtimeResult:
         """
         Рассчитать realtime бонус.
@@ -110,9 +158,19 @@ class RealtimeScorer:
             market_data:   MarketData (price, taker_buy_sell_ratio, etc.)
             base_score:    результат основного scorer (0–100)
             hourly_deltas: список дельт по часам (из binance_client)
+            trending_symbols: CoinGecko trending symbols (optional)
         """
         bonus   = 0
         factors: List[str] = []
+
+        # 🆕 CoinGecko trending bonus (до +5)
+        if trending_symbols is None:
+            trending_symbols = await self._fetch_trending_symbols()
+
+        symbol_base = getattr(market_data, "symbol", "").replace("USDT", "").upper()
+        if symbol_base in trending_symbols:
+            bonus += 5
+            factors.append(f"🔥 {symbol_base} в CoinGecko топ-7 trending")
 
         # ── 1. OI trend 15m (до +15) ──────────────────────────────────────
         oi_trend = getattr(market_data, "oi_trend", None)
