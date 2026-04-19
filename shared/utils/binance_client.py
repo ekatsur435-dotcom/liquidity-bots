@@ -850,9 +850,6 @@ class BinanceFuturesClient:
                 liq_side = liq_data.get("dominant_side")
             top_trader_long_short_ratio = None if isinstance(top_trader_ls, Exception) else top_trader_ls
 
-            # 🆕 DEBUG: Логируем realtime метрики
-            liq_str = f"${recent_liquidations_usd:,.0f}" if recent_liquidations_usd else "None"
-            print(f"[MarketData DEBUG] {symbol}: taker={taker_buy_sell_ratio}, liq={liq_str}, top_ls={top_trader_long_short_ratio}")
 
             # ── Breakout метрики из 15м ───────────────────────────────────────
             vol_spike      = 1.0
