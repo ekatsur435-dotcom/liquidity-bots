@@ -115,7 +115,8 @@ class TradeManager:
     
     TRAIL_ACTIVATION_TP = 1  # Активировать trail после TP1
     TRAIL_STEP_PCT = 0.01    # Шаг трейла 1%
-    BREAKEVEN_BUFFER = 0.005  # Буфер безубытка 0.5%
+    # 🆕 Увеличено с 0.5% до 1%: защищаем сделку но не выбиваем рано
+    BREAKEVEN_BUFFER = float(os.getenv("TRAIL_BE_BUFFER_PCT", "0.010"))  # 1% от ТВХ
     
     def __init__(self, data_dir: str = None):
         self.data_dir = data_dir or os.getenv("DATA_DIR", "/tmp")
