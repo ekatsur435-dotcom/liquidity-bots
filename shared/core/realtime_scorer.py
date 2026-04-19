@@ -118,7 +118,9 @@ class RealtimeScorer:
             return self._trending_cache
 
         try:
-            async with aiohttp.ClientSession() as session:
+            # trust_env=False — игнорируем прокси для CoinGecko (избегаем TLS in TLS)
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector, trust_env=False) as session:
                 async with session.get(
                     "https://api.coingecko.com/api/v3/search/trending",
                     timeout=aiohttp.ClientTimeout(total=10)
