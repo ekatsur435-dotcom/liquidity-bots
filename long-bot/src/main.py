@@ -567,10 +567,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         except Exception:
             pass
         if not rsi_30m_ok:
-            print(f"[MultiTF DEBUG] {symbol}: RSI 30m > 75 — BLOCKED")
             return None  # RSI 30m перекуплен — ложный LONG сигнал
-
-        print(f"[MultiTF DEBUG] {symbol}: RSI 30m OK, proceeding...")
 
         # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
         # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
@@ -844,7 +841,8 @@ async def scan_market():
 
     # BTC корреляция — только информация и мягкий модификатор score
     btc_corr = await _get_btc_correlation()
-    print(f"📡 {btc_corr['label']} (score adj {btc_corr['score_adj']:+.0f})")
+    score_adj = btc_corr.get('score_adj', 0) or 0
+    print(f"📡 {btc_corr['label']} (score adj {score_adj:+.0f})")
 
     # Считаем активные LONG позиции на бирже
     active_count  = await _count_real_positions()
@@ -868,9 +866,10 @@ async def scan_market():
 
             # Применяем BTC корреляционный модификатор к score
             original_score = signal["score"]
-            signal["score"] = round(original_score + btc_corr["score_adj"], 1)
-            signal["btc_corr_adj"] = btc_corr["score_adj"]
-            signal["btc_label"]    = btc_corr["label"]
+            btc_score_adj = btc_corr.get("score_adj", 0) or 0
+            signal["score"] = round(original_score + btc_score_adj, 1)
+            signal["btc_corr_adj"] = btc_score_adj
+            signal["btc_label"]    = btc_corr.get("label", "BTC N/A")
             # Если после поправки score упал ниже мин — пропускаем
             if signal["score"] < Config.MIN_SCORE:
                 continue
