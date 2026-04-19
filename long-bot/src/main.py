@@ -799,9 +799,15 @@ async def _count_real_positions() -> int:
     if state.auto_trader:
         try:
             pos      = await state.auto_trader.bingx.get_positions()
-            long_pos = [p for p in pos
-                        if getattr(p, "side", "").upper() == "LONG"
-                        or getattr(p, "position_side", "").upper() == "LONG"]
+            long_pos = [p for p in pos if (
+                getattr(p, "position_side", "").upper() == "LONG" or
+                getattr(p, "side", "").upper() == "LONG" or
+                (getattr(p, "position_side", "").upper() == "BOTH" and
+                 getattr(p, "size", 0) < 0)
+            )]
+            if long_pos:
+                print(f"[LONG] Open positions: {len(long_pos)} "
+                      f"({', '.join(getattr(p,'symbol','?') for p in long_pos[:5])})")
             return len(long_pos)
         except Exception as e:
             print(f"[LONG] _count_real_positions error: {e}")
