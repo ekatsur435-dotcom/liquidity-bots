@@ -444,7 +444,10 @@ class TelegramCommandHandler:
 
     async def handle_update(self, update: Dict) -> bool:
         try:
-            message = update.get("message") or update.get("channel_post")
+            # ✅ FIX: handle regular messages + edited messages
+            message = (update.get("message") 
+                      or update.get("channel_post")
+                      or update.get("edited_message"))
             if not message:
                 return False
 
@@ -462,12 +465,20 @@ class TelegramCommandHandler:
 
             print(f"📨 Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
 
-            if chat_type == "private":
-                admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
-                if admin_ids_raw:
-                    allowed = {s.strip() for s in admin_ids_raw.split(",")}
-                    if user_id not in allowed:
-                        print(f"⛔ Unauthorized: user {user_id}")
+            # ✅ FIX: Admin check для private И group чатов
+            # В group/supergroup — только если user_id в ADMIN_USER_IDS
+            admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
+            if admin_ids_raw:
+                allowed = {s.strip() for s in admin_ids_raw.split(",")}
+                # Проверяем и строки и числа (Telegram может слать int или str)
+                if user_id not in allowed and str(user_id) not in allowed:
+                    # В private — блокируем; в group — логируем но пропускаем
+                    if chat_type == "private":
+                        print(f"⛔ Unauthorized private: user {user_id}")
+                        await self._reply(reply_chat_id, "⛔ Нет доступа.")
+                        return False
+                    else:
+                        print(f"⚠️ Non-admin group command from {user_id} — skip")
                         return False
 
             if cmd not in self.ALLOWED_COMMANDS:
