@@ -425,9 +425,10 @@ async def health():
                          "watchlist": len(state.watchlist),
                          "active": state.active_signals})
 
-@app.get("/")
+# ✅ HEAD + GET для Render health checks (405 → 200)
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return {"bot": "SHORT Bot v2.3", "status": "running" if state.is_running else "stopped"}
+    return JSONResponse({"bot": "SHORT Bot v2.3", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
