@@ -299,28 +299,44 @@ class PositionTracker:
     # =========================================================================
 
     async def _close_sl(self, signal: Dict, current_price: float):
+        """
+        ✅ v2.4 FIX: Итоговый P&L учитывает уже взятые TP.
+        Было: pnl = _pnl(entry, price) = всегда -1.5% (игнорировал TP1..5).
+        Стало: tp_profit + sl_loss × remaining_weight.
+        Пример: TP1=+5% (25%) взят → SL=-1.5%(75%) → net=+0.125% (WIN!)
+        """
         direction    = signal["direction"]
         entry        = _f(signal["entry_price"])
         sl_price     = _f(signal["stop_loss"])
         symbol       = signal["symbol"]
         was_trailing = signal.get("trailing_active", False)
         be_done      = signal.get("be_done", False)
+        taken        = list(signal.get("taken_tps", []))
+        tps_raw      = signal.get("take_profits", [])
 
-        pnl_pct  = _pnl(direction, entry, current_price)
+        # P&L от уже взятых TP
+        tp_pnl = _calc_weighted_pnl(direction, entry, tps_raw, taken) if taken else 0.0
+
+        # Вес оставшейся позиции
+        taken_weight = sum(_parse_tp(tps_raw[i])[1] for i in taken if i < len(tps_raw))
+        remaining_w  = max(0.0, 100.0 - taken_weight) / 100.0
+
+        # Итоговый P&L = прибыль TP + убыток по стопу на остаток
+        raw_sl_pnl = _pnl(direction, entry, current_price)
+        total_pnl  = round(tp_pnl + raw_sl_pnl * remaining_w, 4)
+
         time_str = _time_in_trade(signal)
-
         signal["status"]      = "closed_sl"
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
-        signal["pnl_pct"]     = round(pnl_pct, 4)
+        signal["pnl_pct"]     = total_pnl
         signal["tp_level"]    = "SL"
-
         self._save(symbol, signal)
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
         sl_type  = ("трейлинг-стоп" if was_trailing else
-                    "безубыток" if be_done else "стоп-лосс")
-        pnl_sign = "+" if pnl_pct >= 0 else ""
+                    "безубыток"     if be_done      else "стоп-лосс")
+        pnl_sign = "+" if total_pnl >= 0 else ""
 
         lines = [
             f"🛑 <b>Стоп выбит</b>  ({sl_type})",
@@ -329,15 +345,19 @@ class PositionTracker:
             f"📍 Вход:      <b>${entry:,.6f}</b>",
             f"🛑 Стоп:      <b>${sl_price:,.6f}</b>",
             f"💰 Закрыто:   <b>${current_price:,.6f}</b>",
-            f"📊 P&L:       <b>{pnl_sign}{pnl_pct:.2f}%</b>",
+        ]
+        if taken:
+            lines.append(f"🎯 TP взято:  {len(taken)} шт.  (вклад {tp_pnl:+.2f}%)")
+        lines += [
+            f"📊 Итог P&L:  <b>{pnl_sign}{total_pnl:.2f}%</b>",
             f"⏱ В сделке:  {time_str}",
             f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
         ]
-        if be_done and pnl_pct >= -0.1:
+        if be_done and total_pnl >= -0.1:
             lines.append("\n<i>Закрыто в безубытке. Риск = 0.</i>")
 
         await self._notify(signal, "\n".join(lines))
-        await self._record_pnl(signal, pnl_pct, "sl", "SL")
+        await self._record_pnl(signal, total_pnl, "sl", "SL")
 
     async def _expire(self, signal: Dict):
         symbol   = signal.get("symbol", "?")
