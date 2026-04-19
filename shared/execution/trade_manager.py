@@ -1,7 +1,7 @@
 """
 Enhanced Trade Manager
 Управление позициями с:
-- TP Splitting (4 уровня фиксации прибыли)
+- TP Splitting (6 уровня фиксации прибыли)
 - Trail Stop (подтягивание SL после TP1)
 - Win Rate Statistics (отслеживание по TP1/TP2/TP3/TP4)
 - Scale In (добавление к позиции)
@@ -22,6 +22,8 @@ class PositionStatus(Enum):
     TP2_HIT = "tp2_hit"
     TP3_HIT = "tp3_hit"
     TP4_HIT = "tp4_hit"
+    TP4_HIT = "tp5_hit"
+    TP4_HIT = "tp6_hit"
     SL_HIT = "sl_hit"
     CLOSED = "closed"
 
@@ -29,9 +31,9 @@ class PositionStatus(Enum):
 @dataclass
 class TakeProfitLevel:
     """Уровень Take Profit"""
-    level: int  # 1-4
+    level: int  # 1-6
     price: float
-    size_pct: float  # % позиции для закрытия (40%, 30%, 20%, 10%)
+    size_pct: float  # % позиции для закрытия (30%, 30%, 10%, 10%, 10%, 10%)
     hit: bool = False
     hit_time: Optional[str] = None
     pnl: float = 0.0
@@ -111,9 +113,12 @@ class TradeManager:
         {"level": 2, "size_pct": 0.30, "price_pct": 0.050},  # 5%
         {"level": 3, "size_pct": 0.20, "price_pct": 0.080},  # 8%
         {"level": 4, "size_pct": 0.10, "price_pct": 0.120},  # 12%
+        {"level": 5, "size_pct": 0.10, "price_pct": 0.120},  # 12%
+        {"level": 6, "size_pct": 0.10, "price_pct": 0.120},  # 12%
     ]
     
-    TRAIL_ACTIVATION_TP = 1  # Активировать trail после TP1
+    # 🆕 Trail активируется после TP2 (не TP1), на +1% от ТВХ
+    TRAIL_ACTIVATION_TP = 2  # Активировать trail после TP2
     TRAIL_STEP_PCT = 0.01    # Шаг трейла 1%
     # 🆕 Увеличено с 0.5% до 1%: защищаем сделку но не выбиваем рано
     BREAKEVEN_BUFFER = float(os.getenv("TRAIL_BE_BUFFER_PCT", "0.010"))  # 1% от ТВХ
@@ -407,8 +412,8 @@ class TradeManager:
         """
         🆕 Обработка срабатывания Take Profit
         
-        - После TP1: переводим оставшуюся позицию в BE
-        - После TP3: активируем trailing stop
+        - После TP1: переводим оставшуюся позицию в BE (без трейла)
+        - После TP2: активируем trailing stop (+1% от ТВХ)
         
         Args:
             tp_level: 1-6 (какой TP сработал)
