@@ -800,12 +800,23 @@ class TelegramCommandHandler:
             await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
             return
         try:
-            positions = await self.state.auto_trader.bingx.get_positions()
+            all_positions = await self.state.auto_trader.bingx.get_positions()
             mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
+            
+            # ✅ FIX: Фильтруем позиции по стороне бота
+            # SHORT бот видит только SHORT, LONG — только LONG
+            expected_side = self.bot_type.upper()
+            positions = [p for p in all_positions if (
+                getattr(p, "position_side", "").upper() == expected_side or
+                getattr(p, "side", "").upper() == expected_side or
+                (expected_side == "SHORT" and getattr(p, "size", 0) < 0) or
+                (expected_side == "LONG" and getattr(p, "size", 0) > 0)
+            )]
+            
             if not positions:
-                await self._reply(reply_chat_id, f"📈 Нет открытых позиций [{mode}]")
+                await self._reply(reply_chat_id, f"📈 Нет открытых {expected_side} позиций [{mode}]")
                 return
-            msg = f"📈 <b>Позиции [{mode}] ({len(positions)}):</b>\n\n"
+            msg = f"📈 <b>{expected_side} Позиции [{mode}] ({len(positions)}):</b>\n\n"
             total_upnl = 0.0
             for p in positions:
                 d_emoji = "🟢" if p.side == "LONG" else "🔴"
