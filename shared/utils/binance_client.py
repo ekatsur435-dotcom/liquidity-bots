@@ -82,6 +82,21 @@ class MarketData:
     # Расстояние до 24h low в %
     pct_from_low_24h:     float = 5.0
 
+    # ── Realtime метрики (из Pump Detector) ──────────────────────────────────
+    # Taker buy/sell ratio: 0.0 = все продают, 1.0 = все покупают
+    # >0.6 = агрессивные покупки (бычье давление), <0.4 = агрессивные продажи
+    taker_buy_sell_ratio: Optional[float] = None
+
+    # Ликвидации в USD за последний период (15m/1h)
+    recent_liquidations_usd: Optional[float] = None
+
+    # Сторона доминирующих ликвидаций: "LONG" | "SHORT" | None
+    liq_side: Optional[str] = None
+
+    # Top trader L/S ratio - "умные деньги" позиции
+    # >1.5 = топы в лонгах, <0.8 = топы в шортах
+    top_trader_long_short_ratio: Optional[float] = None
+
 
 @dataclass
 class BreakoutData:
@@ -553,6 +568,75 @@ class BinanceFuturesClient:
                 return float(buy) * 100 if buy else 50.0
         return 50.0
 
+    async def get_taker_buy_sell_ratio(self, symbol: str,
+                                        period: str = "15m") -> Optional[float]:
+        """
+        Получить Taker Buy/Sell Volume Ratio.
+        0.0 = все продают агрессивно, 1.0 = все покупают агрессивно.
+        """
+        await self._init_source()
+        if self._use_binance:
+            d = await self._binance("/futures/data/takerBuySellVolRatio",
+                                    {"symbol": symbol, "period": period, "limit": 1})
+            if d and len(d) > 0:
+                buy_vol = float(d[0].get("buyVol", 0))
+                sell_vol = float(d[0].get("sellVol", 0))
+                total = buy_vol + sell_vol
+                return buy_vol / total if total > 0 else None
+        return None
+
+    async def get_liquidations(self, symbol: str,
+                                limit: int = 100) -> Optional[Dict]:
+        """
+        Получить данные о ликвидациях за последние сделки.
+        Возвращает сумму в USD и доминирующую сторону.
+        """
+        await self._init_source()
+        if self._use_binance:
+            try:
+                d = await self._binance("/fapi/v1/allForceOrders",
+                                        {"symbol": symbol, "limit": limit})
+                if d:
+                    long_liq = 0.0
+                    short_liq = 0.0
+                    for order in d:
+                        qty = float(order.get("origQty", 0))
+                        price = float(order.get("avgPrice", 0))
+                        side = order.get("side", "").upper()
+                        usd = qty * price
+                        if side == "SELL":
+                            # SELL liquidation = LONG position liquidated
+                            long_liq += usd
+                        else:
+                            # BUY liquidation = SHORT position liquidated
+                            short_liq += usd
+                    total = long_liq + short_liq
+                    return {
+                        "total_usd": total,
+                        "long_liq_usd": long_liq,
+                        "short_liq_usd": short_liq,
+                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT" if short_liq > long_liq else None
+                    }
+            except Exception:
+                pass
+        return None
+
+    async def get_top_trader_position_ratio(self, symbol: str,
+                                             period: str = "15m") -> Optional[float]:
+        """
+        Получить Long/Short Position Ratio для топ-трейдеров.
+        >1.5 = топы в лонгах, <0.8 = топы в шортах.
+        """
+        await self._init_source()
+        if self._use_binance:
+            d = await self._binance("/futures/data/topLongShortPositionRatio",
+                                    {"symbol": symbol, "period": period, "limit": 1})
+            if d and len(d) > 0:
+                long_pos = float(d[0].get("longPosition", 0))
+                short_pos = float(d[0].get("shortPosition", 0))
+                return long_pos / short_pos if short_pos > 0 else None
+        return None
+
     # =========================================================================
     # VOLUME PROFILE
     # =========================================================================
@@ -748,6 +832,24 @@ class BinanceFuturesClient:
             oi_change   = await self.get_oi_change(symbol, 4)
             hourly_vols = await self.get_hourly_volume_profile(symbol, 7)
 
+            # ── Realtime метрики (параллельно для скорости) ───────────────────
+            realtime_results = await asyncio.gather(
+                self.get_taker_buy_sell_ratio(symbol, "15m"),
+                self.get_liquidations(symbol, 100),
+                self.get_top_trader_position_ratio(symbol, "15m"),
+                return_exceptions=True
+            )
+            taker_ratio, liq_data, top_trader_ls = realtime_results
+
+            # Обработка realtime метрик
+            taker_buy_sell_ratio = None if isinstance(taker_ratio, Exception) else taker_ratio
+            recent_liquidations_usd = None
+            liq_side = None
+            if not isinstance(liq_data, Exception) and liq_data:
+                recent_liquidations_usd = liq_data.get("total_usd")
+                liq_side = liq_data.get("dominant_side")
+            top_trader_long_short_ratio = None if isinstance(top_trader_ls, Exception) else top_trader_ls
+
             # ── Breakout метрики из 15м ───────────────────────────────────────
             vol_spike      = 1.0
             price_chg_1h   = 0.0
@@ -804,6 +906,11 @@ class BinanceFuturesClient:
                 low_24h=low_24h,
                 pct_from_high_24h=round(pct_from_high, 3),
                 pct_from_low_24h=round(pct_from_low, 3),
+                # ── Realtime метрики ───────────────────────────────────────
+                taker_buy_sell_ratio=taker_buy_sell_ratio,
+                recent_liquidations_usd=recent_liquidations_usd,
+                liq_side=liq_side,
+                top_trader_long_short_ratio=top_trader_long_short_ratio,
             )
         except Exception as e:
             print(f"Market data error {symbol}: {e}")
