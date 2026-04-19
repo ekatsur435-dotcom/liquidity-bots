@@ -701,8 +701,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             btc_price_1h_change=btc_change_1h,
         )
         if filt.blocked:
-            print(f"[ShortFilter] {symbol}: {filt.block_reason}")
-            return None
+            return None  # blocked — debug log suppressed for clean logs
 
         final_score += filt.score_delta
         reasons.extend(filt.reasons)
@@ -736,10 +735,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if final_score < Config.MIN_SCORE:
             return None
 
-        # OI proxy лог
-        if oi_bear_confirm: print(f"[OI] {symbol}: bear confirm +1.5")
-        if oi_accumulation: print(f"[OI] {symbol}: accumulation +2.5")
-        if oi_weakness_short: print(f"[OI] {symbol}: weakness -2.0")
+        # OI proxy — тихо (убраны verbose debug logs)
 
         # ── Динамические TP для SHORT ─────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
@@ -758,7 +754,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         if Config.USE_SMC:
             try:
-                from utils.smc_ict_detector import get_smc_result
+                from core.smc_ict_detector import get_smc_result   # ✅ FIX: core not utils
                 smc = get_smc_result(_ohlcv(ohlcv_15m), "short",
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
@@ -776,9 +772,10 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if final_score < Config.MIN_SCORE:
             return None
 
-        # Проверка SL корректности для SHORT
-        if (stop_loss - price) / price < 0.01:
-            stop_loss = price * 1.01
+        # ✅ SL для SHORT: минимум = SL_BUFFER%, не захардкоженный 1%
+        min_sl_dist = Config.SL_BUFFER / 100
+        if (stop_loss - price) / price < min_sl_dist:
+            stop_loss = price * (1 + Config.SL_BUFFER / 100)
 
         # TP НИЖЕ входа для SHORT
         take_profits = [
@@ -876,10 +873,10 @@ async def scan_market():
         print(f"⚠️ BTC cache failed: {e}")
 
     # BTC корреляция — мягкий модификатор, не блокер
-    # ✅ FIX: передаём кешированный BTC change (1 запрос на весь скан)
-    btc_corr = await _get_btc_short_correlation(_btc_cache_1h)
-    score_adj = btc_corr.get('score_adj', 0) or 0
-    print(f"📡 {btc_corr['label']} (score adj {score_adj:+.0f})")
+    btc_corr  = await _get_btc_short_correlation(_btc_cache_1h)
+    score_adj = int(btc_corr.get("score_adj", 0) or 0)
+    btc_label = btc_corr.get("label") or "BTC N/A"
+    print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
 
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
