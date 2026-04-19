@@ -540,8 +540,16 @@ async def _count_real_positions() -> int:
         try:
             pos = await state.auto_trader.bingx.get_positions()
             # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SHORT"
-                        or getattr(p, "position_side", "").upper() == "SHORT"]
+            # ✅ FIX #5: BOTH mode support
+            # Hedge mode: positionSide = "LONG" / "SHORT"
+            # One-way mode: positionSide = "BOTH", side = "BUY"/"SELL"
+            short_pos = [p for p in pos if (
+                getattr(p, "position_side", "").upper() == "SHORT" or
+                getattr(p, "side", "").upper() == "SHORT" or
+                # BOTH mode: positionAmt < 0 = short
+                (getattr(p, "position_side", "").upper() == "BOTH" and
+                 getattr(p, "size", 0) < 0)
+            )]
             if short_pos:
                 print(f"[SHORT] Open positions: {len(short_pos)} "
                       f"({', '.join(getattr(p,'symbol','?') for p in short_pos[:5])})")
