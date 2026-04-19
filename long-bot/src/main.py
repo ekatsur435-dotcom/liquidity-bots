@@ -89,7 +89,7 @@ class Config:
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))  # ✅ 1M$ фильтр мусора
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
