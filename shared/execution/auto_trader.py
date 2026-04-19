@@ -368,7 +368,7 @@ class AutoTrader:
 
     async def _place_tp_orders_hedge(self, bingx_symbol, position_side,
                                       total_size, take_profits, direction,
-                                      start_num: int = 2):   # ✅ FIX: start_num param
+                                      start_num: int = 1):   # ✅ FIX: TP1 starts at 1
         await asyncio.sleep(1.5)
         close_side = "SELL" if direction == "long" else "BUY"
         success = 0
