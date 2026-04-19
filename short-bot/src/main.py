@@ -90,7 +90,7 @@ class Config:
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "150000"))  # Было: 300000
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
