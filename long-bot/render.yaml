@@ -1,4 +1,3 @@
-# long-bot/render.yaml  ← положи этот файл сюда
 services:
   - type: web
     name: liq-long-bot
@@ -11,8 +10,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.8"
-
-      # ═══ SECRETS ═══
       - key: REDIS_URL
         sync: false
       - key: BINGX_API_KEY
@@ -28,42 +25,28 @@ services:
       - key: COINGLASS_API_KEY
         sync: false
       - key: PROXY_LIST
-        sync: false         # нужен только если USE_BINANCE=true
-
-      # ═══ СТРАТЕГИЯ ═══
+        sync: false
       - key: MIN_LONG_SCORE
         value: "65"
       - key: LONG_SL_BUFFER
-        value: "1.5"        # оптимум из backtest
-      - key: LONG_LEVERAGE
-        value: "5-50"
-      - key: SCAN_INTERVAL
-        value: "200"
+        value: "1.5"
       - key: MAX_LONG_POSITIONS
         value: "20"
-      - key: RISK_PER_TRADE
-        value: "0.0005"
-
-      # ═══ WATCHLIST ═══
       - key: MIN_VOLUME_USDT
-        value: "1000000"    # ✅ 1M$ фильтр мусора
+        value: "300000"
       - key: MAX_WATCHLIST
         value: "300"
-
-      # ═══ БИРЖ / ДАННЫЕ ═══
+      - key: SCAN_INTERVAL
+        value: "200"
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
         value: "true"
-      - key: USE_BINANCE
-        value: "false"      # false = Bybit. true = Binance (нужен PROXY_LIST)
+      - key: RISK_PER_TRADE
+        value: "0.0005"
       - key: USE_SMC
         value: "true"
-
-      # ═══ TRAILING / BE ═══
+      - key: USE_BINANCE
+        value: "false"
       - key: ENABLE_BE_AFTER_TP1
         value: "true"
-      - key: TRAIL_DISTANCE_PERCENT
-        value: "0.8"
-      - key: BE_BUFFER_PERCENT
-        value: "0.1"
