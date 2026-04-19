@@ -567,7 +567,10 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         except Exception:
             pass
         if not rsi_30m_ok:
+            print(f"[MultiTF DEBUG] {symbol}: RSI 30m > 75 — BLOCKED")
             return None  # RSI 30m перекуплен — ложный LONG сигнал
+
+        print(f"[MultiTF DEBUG] {symbol}: RSI 30m OK, proceeding...")
 
         # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
         # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
