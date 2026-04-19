@@ -398,7 +398,7 @@ class TelegramCommandHandler:
         "/sync", "/flushdb",
         # Новые отчёты
         "/daily_rep", "/weekly_rep", "/monthly_rep", "/leaderswr",
-        "/alltradestat",   # 🆕 полная аналитика сделок
+        "/alltradestat",
     }
 
     def __init__(self,
@@ -606,6 +606,7 @@ class TelegramCommandHandler:
             "📅 /weekly_rep — Недельный отчёт\n"
             "📅 /monthly_rep — Месячный отчёт\n"
             "🏆 /leaderswr — Топ пар по Win Rate\n\n"
+            "📊 /alltradestat — полная статистика всех сделок для анализа"
             "<b>⚙️ Управление:</b>\n"
             "⏸ /pause — Остановить новые сигналы\n"
             "▶️ /resume — Возобновить\n"
