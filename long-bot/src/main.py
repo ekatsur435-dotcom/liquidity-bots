@@ -523,20 +523,7 @@ def _is_fresh(existing: List[Dict]) -> bool:
 def _ohlcv(candles) -> List[List[float]]:
     return [[c.open, c.high, c.low, c.close, c.volume] for c in candles]
 
-async def _count_real_positions() -> int:
-    if state.auto_trader:
-        try:
-            pos = await state.auto_trader.bingx.get_positions()
-            return len(pos)
-        except Exception:
-            pass
-    cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
-    try:
-        all_active = state.redis.get_active_signals(Config.BOT_TYPE)
-        return sum(1 for s in all_active
-                   if datetime.fromisoformat(s.get("timestamp","2000-01-01")) > cutoff)
-    except Exception:
-        return 0
+# _count_real_positions: see full implementation below (filters LONG only)
 
 
 async def scan_symbol(symbol: str) -> Optional[Dict]:
