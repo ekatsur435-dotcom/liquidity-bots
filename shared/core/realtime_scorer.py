@@ -170,6 +170,7 @@ class RealtimeScorer:
             trending_symbols = await self._fetch_trending_symbols()
 
         symbol_base = getattr(market_data, "symbol", "").replace("USDT", "").upper()
+        print(f"[Realtime DEBUG] {symbol_base}: trending_symbols={trending_symbols}, match={symbol_base in trending_symbols}")
         if symbol_base in trending_symbols:
             bonus += 5
             factors.append(f"🔥 {symbol_base} в CoinGecko топ-7 trending")
