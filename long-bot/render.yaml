@@ -31,7 +31,7 @@ services:
       - key: LONG_SL_BUFFER
         value: "1.5"
       - key: MAX_LONG_POSITIONS
-        value: "15"
+        value: "20"
       - key: MIN_VOLUME_USDT
         value: "300000"
       - key: MAX_WATCHLIST
