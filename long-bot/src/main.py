@@ -306,7 +306,6 @@ async def lifespan(app: FastAPI):
         print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
         if not ok:
             # Retry once
-            import asyncio
             await asyncio.sleep(3)
             ok2 = await state.telegram.setup_webhook(wh_url)
             print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
@@ -504,7 +503,7 @@ async def setup_webhook():
     wh_url = f"{render_url}/webhook"
     # Сначала удаляем старый вебхук
     await state.telegram.delete_webhook()
-    import asyncio; await asyncio.sleep(1)
+    await asyncio.sleep(1)
     # Регистрируем новый
     ok = await state.telegram.setup_webhook(wh_url)
     info = await state.telegram.get_webhook_info()
