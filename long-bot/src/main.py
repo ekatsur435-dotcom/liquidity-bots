@@ -560,12 +560,14 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: 15m + 30m параллельно
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 100)
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
-        ohlcv_15m, ohlcv_30m = await asyncio.gather(ohlcv_15m_task, ohlcv_30m_task)
+        # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 100)
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
+        ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
 
-        if not ohlcv_15m or len(ohlcv_15m) < 20:
+        # Используем 30m как основной ТФ для анализа (вместо 15m)
+        ohlcv_15m = ohlcv_30m  # совместимость с existing code
+        if not ohlcv_30m or len(ohlcv_30m) < 20:
             return None
 
         # ✅ RSI 30m — промежуточный фильтр между 15m и 1h
@@ -605,8 +607,8 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             return None  # 4h RSI перекуплен — ложный LONG сигнал
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
-        price_trend   = state.pattern_detector._get_price_trend(ohlcv_15m)
-        patterns      = state.pattern_detector.detect_all(ohlcv_15m, hourly_deltas, md)
+        price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
+        patterns      = state.pattern_detector.detect_all(ohlcv_30m, hourly_deltas, md)
         p4d           = await _get_price_change_4d(symbol, md.price_change_24h * 4)
 
         # ── OI Proxy (LONG специфика) ─────────────────────────────────────────
@@ -625,7 +627,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                     oi_history = []  # данные устарели — не используем
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
-                vols = [c.quote_volume for c in ohlcv_15m[-5:]]
+                vols = [c.quote_volume for c in ohlcv_30m[-5:]]
 
                 oi_growing  = ois[-1] > ois[0] if ois[0] else False
                 vol_growing = len(vols) >= 3 and vols[-1] > vols[-3]
@@ -685,12 +687,14 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
         if rt_result.early_only:
-            await state.telegram.send_message(
-                f"🛰️ <b>РАННИЙ LONG WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
-                f"🟢 <b>#{symbol}</b>  ${price:,.6f}\n"
-                + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
-                + "\n\n⏳ <i>Ждём подтверждения.</i>"
-            )
+            # ✅ FIX: Проверяем MIN_SCORE даже для ранних watch сигналов
+            if rt_result.final_score >= Config.MIN_SCORE:
+                await state.telegram.send_message(
+                    f"🛰️ <b>РАННИЙ LONG WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
+                    f"🟢 <b>#{symbol}</b>  ${price:,.6f}\n"
+                    + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
+                    + "\n\n⏳ <i>Ждём подтверждения.</i>"
+                )
             return None
 
         final_score = rt_result.final_score
@@ -799,12 +803,7 @@ async def _count_real_positions() -> int:
     if state.auto_trader:
         try:
             pos      = await state.auto_trader.bingx.get_positions()
-            long_pos = [p for p in pos if (
-                getattr(p, "position_side", "").upper() == "LONG" or
-                getattr(p, "side", "").upper() == "LONG" or
-                (getattr(p, "position_side", "").upper() == "BOTH" and
-                 getattr(p, "size", 0) < 0)
-            )]
+            long_pos = [p for p in pos if getattr(p, "side", "").upper() == "LONG"]
             if long_pos:
                 print(f"[LONG] Open positions: {len(long_pos)} "
                       f"({', '.join(getattr(p,'symbol','?') for p in long_pos[:5])})")
@@ -850,6 +849,7 @@ async def scan_market():
     - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20)
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - BTC корреляция: только модификатор score (-3..+3), НЕ блокер
+    - BTC RSI 4h > 40 фильтр (не лонгуем в глубоком даунтренде)
     - Единственный блокер: команда /pause
     """
     if state.is_paused:
@@ -860,6 +860,21 @@ async def scan_market():
 
     # BTC корреляция — только информация и мягкий модификатор score
     btc_corr  = await _get_btc_correlation()
+    _btc_rsi_4h: float = 50.0
+    try:
+        btc_data = await state.binance.get_complete_market_data("BTCUSDT")
+        if btc_data:
+            _btc_rsi_4h = getattr(btc_data, 'rsi_4h', 50.0) or 50.0
+    except Exception:
+        pass
+
+    # ✅ BTC RSI 4h фильтр для LONG (бэктест): только если BTC RSI 4h > 40
+    # Если BTC в глубоком даунтренде (RSI 4h < 40) — блокируем LONG
+    if _btc_rsi_4h < 40:
+        print(f"⛔ LONG blocked: BTC RSI 4h = {_btc_rsi_4h:.1f} < 40 (deep downtrend)")
+        return  # полная блокировка сканирования
+    elif _btc_rsi_4h < 45:
+        print(f"⚠️ BTC RSI 4h = {_btc_rsi_4h:.1f} (weak market) — reduced scoring")
     score_adj = int(btc_corr.get("score_adj", 0) or 0)
     btc_label = btc_corr.get("label") or "BTC N/A"
     print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
