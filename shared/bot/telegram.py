@@ -465,6 +465,11 @@ class TelegramCommandHandler:
 
             print(f"📨 Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
 
+            # ✅ FIX: Игнорируем команду /liq в публичном чате 1003867089540
+            if cmd == "/liq" and reply_chat_id == "1003867089540":
+                print(f"⛔ Ignoring /liq in public chat {reply_chat_id}")
+                return False
+
             # ✅ FIX: Admin check для private И group чатов
             # В group/supergroup — только если user_id в ADMIN_USER_IDS
             admin_ids_raw = os.getenv("ADMIN_USER_IDS", "")
