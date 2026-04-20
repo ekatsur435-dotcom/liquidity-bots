@@ -264,7 +264,7 @@ class TelegramBot:
         return (
             f"\n{emoji} <b>LONG SIGNAL | {strength}</b>\n"
             f"<b>Score: {score:.0f}%</b>\n\n"
-            f"<b>💎 SYMBOL: #{symbol}</b>\n"
+            f"<b>💎 SYMBOL:</b> <b>#{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
@@ -304,7 +304,7 @@ class TelegramBot:
         return (
             f"\n{emoji} <b>SHORT SIGNAL | {strength}</b>\n"
             f"<b>Score: {score:.0f}%</b>\n\n"
-            f"<b>💎 SYMBOL: #{symbol}</b>\n"
+            f"<b>💎 SYMBOL:</b> <b>#{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
@@ -852,8 +852,8 @@ class TelegramCommandHandler:
                 total_upnl += upnl
                 pnl_sign = "+" if upnl >= 0 else ""
                 msg += (
-                    f"{d_emoji} <code>#{p.symbol}</code> {p.side}\n"
-                    f"   Вход: {fmt_price(p.entry_price)} | Размер: {p.size}\n"
+                    f"{d_emoji} <b>#{p.symbol}</b> {p.side}\n"
+                    f"   Вход: <b>{fmt_price(p.entry_price)}</b> | Размер: <b>{p.size}</b>\n"
                     f"   uPNL: <b>{pnl_sign}${upnl:.2f}</b> | Плечо: {p.leverage}x\n\n"
                 )
             pnl_sign = "+" if total_upnl >= 0 else ""
@@ -1194,7 +1194,7 @@ class TelegramCommandHandler:
                 dur_str = self._duration_str(dur_s)
             except Exception:
                 dur_str = "?"
-            last_trades += f"{ico} <code>#{sym}</code> {side} → {tp_l} ({dur_str})\n"
+            last_trades += f"{ico} <b>#{sym}</b> {side} → {tp_l} ({dur_str})\n"
 
         wr_emoji = self._wr_emoji(wr)
         msg = (
@@ -1328,7 +1328,7 @@ class TelegramCommandHandler:
             for t in trades[:5]:
                 ico = "✅" if t.get("pnl",0) > 0 else ("⚖️" if t.get("tp_level")=="BE" else "❌")
                 detail_msg += (
-                    f"\n{ico} <code>#{t.get('symbol')}</code> {t.get('direction','').upper()} "
+                    f"\n{ico} <b>#{t.get('symbol')}</b> {t.get('direction','').upper()} "
                     f"→ <b>{t.get('tp_level','?')}</b>\n"
                     f"   Вход: ${t.get('entry_price',0):,.4f}\n"
                     f"   Выход: ${t.get('close_price',0):,.4f}\n"
@@ -1384,7 +1384,7 @@ class TelegramCommandHandler:
             sym = t.get("symbol", "?")
             sym_count[sym] = sym_count.get(sym, 0) + 1
         top_syms = sorted(sym_count.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_lines = "\n".join(f"  <code>#{sym}</code>: {cnt}" for sym, cnt in top_syms)
+        top_lines = "\n".join(f"  <b>#{sym}</b>: {cnt}" for sym, cnt in top_syms)
 
         wr_emoji = self._wr_emoji(wr)
         date_from = start.strftime("%d.%m")
@@ -1449,7 +1449,7 @@ class TelegramCommandHandler:
             sym = t.get("symbol","?")
             sym_count[sym] = sym_count.get(sym, 0) + 1
         top_syms = sorted(sym_count.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_lines = "\n".join(f"  <code>#{sym}</code>: {cnt}" for sym, cnt in top_syms)
+        top_lines = "\n".join(f"  <b>#{sym}</b>: {cnt}" for sym, cnt in top_syms)
 
         wr_emoji = self._wr_emoji(wr)
         month_name = now.strftime("%B %Y")
@@ -1512,7 +1512,7 @@ class TelegramCommandHandler:
                                    for k,v in sorted(s["tps"].items()))
             medal = medals[i] if i < len(medals) else "▪️"
             best_lines += (
-                f"{medal} <code>#{s['sym']}</code> — WR {s['wr']}%"
+                f"{medal} <b>#{s['sym']}</b> — WR {s['wr']}%"
                 f" ({s['wins']}W/{s['losses']}L из {s['total']})\n"
                 + (f"   {tp_summary}\n" if tp_summary else "")
             )
@@ -1523,7 +1523,7 @@ class TelegramCommandHandler:
         worst_lines = ""
         for s in worst[:5]:
             worst_lines += (
-                f"🔻 <code>#{s['sym']}</code> — WR {s['wr']}%"
+                f"🔻 <b>#{s['sym']}</b> — WR {s['wr']}%"
                 f" ({s['wins']}W/{s['losses']}L)\n"
             )
 
