@@ -451,6 +451,17 @@ class AutoTrader:
         print(f"{status} TP orders {bingx_symbol}: {success} placed, {fails} failed")
 
     # =========================================================================
+    # UPDATE SL (BE + Trailing)
+    # =========================================================================
+
+    async def update_stop_loss(self, symbol: str, position_side: str, new_sl: float) -> bool:
+        """
+        ✅ Обновить Stop Loss на бирже (для BE и трейлинга)
+        """
+        bingx_symbol = self._to_bingx_symbol(symbol)
+        return await self.bingx.update_stop_loss(bingx_symbol, position_side, new_sl)
+
+    # =========================================================================
     # CLOSE
     # =========================================================================
 
