@@ -339,9 +339,11 @@ async def lifespan(app: FastAPI):
                     max_positions=Config.MAX_POSITIONS,
                     risk_per_trade=Config.RISK_PER_TRADE,
                     min_score_for_trade=Config.MIN_SCORE,
+                    bot_type=Config.BOT_TYPE,  # ✅ FIX: для фильтрации позиций
                 )
                 state.auto_trader = AutoTrader(
-                    bingx_client=bingx, config=trade_cfg, telegram=state.telegram
+                    bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
+                    bot_type=Config.BOT_TYPE  # ✅ FIX: передаём bot_type
                 )
                 mode = "DEMO" if Config.BINGX_DEMO else "REAL"
                 print(f"✅ BingX AutoTrader ready ({mode})")
