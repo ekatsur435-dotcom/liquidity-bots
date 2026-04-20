@@ -746,7 +746,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if rt_result.early_only:
             await state.telegram.send_message(
                 f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
-                f"🔴 <code>#{symbol}</code>  ${price:,.6f}\n"
+                f"🔴 <b>#{symbol}</b>  ${price:,.6f}\n"
                 + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
                 + "\n\n⏳ <i>Ждём подтверждения.</i>"
             )
