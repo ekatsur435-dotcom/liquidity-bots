@@ -28,9 +28,9 @@ services:
       - key: PROXY_LIST
         sync: false
       - key: MIN_LONG_SCORE
-        value: "60"
+        value: "75"
       - key: LONG_SL_BUFFER
-        value: "2.0"
+        value: "1.5"
       - key: MAX_LONG_POSITIONS
         value: "20"
       - key: MIN_VOLUME_USDT
@@ -38,7 +38,7 @@ services:
       - key: MAX_WATCHLIST
         value: "300"
       - key: SCAN_INTERVAL
-        value: "180"
+        value: "120"
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
