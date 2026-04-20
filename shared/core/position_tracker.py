@@ -326,11 +326,20 @@ class PositionTracker:
         total_pnl  = round(tp_pnl + raw_sl_pnl * remaining_w, 4)
 
         time_str = _time_in_trade(signal)
+
+        # ✅ Определяем тип закрытия для статистики
+        if was_trailing:
+            tp_level_label = "SL-TRAIL"
+        elif be_done and total_pnl >= -0.1:
+            tp_level_label = "BE"
+        else:
+            tp_level_label = "SL"
+
         signal["status"]      = "closed_sl"
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = total_pnl
-        signal["tp_level"]    = "SL"
+        signal["tp_level"]    = tp_level_label  # ✅ FIX: SL / SL-TRAIL / BE
         self._save(symbol, signal)
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
@@ -357,7 +366,7 @@ class PositionTracker:
             lines.append("\n<i>Закрыто в безубытке. Риск = 0.</i>")
 
         await self._notify(signal, "\n".join(lines))
-        await self._record_pnl(signal, total_pnl, "sl", "SL")
+        await self._record_pnl(signal, total_pnl, "sl", tp_level_label)
 
     async def _expire(self, signal: Dict):
         symbol   = signal.get("symbol", "?")
