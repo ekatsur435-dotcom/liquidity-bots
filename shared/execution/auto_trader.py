@@ -459,7 +459,16 @@ class AutoTrader:
         ✅ Обновить Stop Loss на бирже (для BE и трейлинга)
         """
         bingx_symbol = self._to_bingx_symbol(symbol)
-        return await self.bingx.update_stop_loss(bingx_symbol, position_side, new_sl)
+        print(f"[AT][UPDATE_SL][{symbol}] START: position_side={position_side} new_sl={new_sl:.6f}")
+        try:
+            result = await self.bingx.update_stop_loss(bingx_symbol, position_side, new_sl)
+            print(f"[AT][UPDATE_SL][{symbol}] RESULT: {'✅ SUCCESS' if result else '❌ FAILED'}")
+            return result
+        except Exception as e:
+            print(f"[AT][UPDATE_SL][{symbol}] EXCEPTION: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     # =========================================================================
     # CLOSE
