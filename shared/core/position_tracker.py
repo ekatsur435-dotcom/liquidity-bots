@@ -214,6 +214,17 @@ class PositionTracker:
         signal["stop_loss"] = round(new_sl, 8)
         self._save(symbol, signal)
 
+        # ✅ FIX: Обновляем SL на бирже через AutoTrader
+        exchange_updated = False
+        if self.auto_trader:
+            try:
+                position_side = "LONG" if direction == "long" else "SHORT"
+                exchange_updated = await self.auto_trader.update_stop_loss(symbol, position_side, new_sl)
+                if not exchange_updated:
+                    print(f"⚠️ [PT] BingX SL update failed for {symbol}, but Redis updated")
+            except Exception as e:
+                print(f"❌ [PT] AutoTrader update_stop_loss error: {e}")
+
         d_emoji = "🟢" if direction == "long" else "🔴"
         icon    = "🔒" if move_type == "безубыток" else "🔄"
         sl_pnl  = _pnl(direction, entry, new_sl)
@@ -233,8 +244,14 @@ class PositionTracker:
         if move_type == "безубыток":
             lines.append(f"\n<i>Сработало после TP{self.BREAKEVEN_AFTER_TP} — позиция в безубытке.</i>")
 
+        # ✅ FIX: Добавляем статус биржи в уведомление
+        if exchange_updated:
+            lines.append(f"\n✅ <b>BingX:</b> SL обновлён на бирже")
+        else:
+            lines.append(f"\n⚠️ <b>BingX:</b> Ошибка обновления SL (только в Redis)")
+
         await self._notify(signal, "\n".join(lines))
-        print(f"[PositionTracker] SL {move_type}: {symbol} {old_sl:.6f} → {new_sl:.6f}")
+        print(f"[PositionTracker] SL {move_type}: {symbol} {old_sl:.6f} → {new_sl:.6f} | Exchange: {'✅' if exchange_updated else '❌'}")
 
     # =========================================================================
     # CLOSE TP
