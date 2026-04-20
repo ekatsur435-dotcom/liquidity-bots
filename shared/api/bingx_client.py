@@ -410,11 +410,14 @@ class BingXClient:
         ✅ Обновить Stop Loss для существующей позиции
         Используется для BE (безубыток) и трейлинга
         """
+        print(f"[BX][UPDATE_SL][{symbol}] START: position_side={position_side} new_sl={new_sl:.6f}")
         try:
             rounded_sl = await self._round_price(symbol, new_sl)
             if not rounded_sl:
-                print(f"❌ BingX: Invalid SL price {new_sl}")
+                print(f"❌ [BX][UPDATE_SL][{symbol}] Invalid SL price {new_sl}")
                 return False
+
+            print(f"[BX][UPDATE_SL][{symbol}] rounded_sl={rounded_sl:.6f}")
 
             body = {
                 "symbol": symbol,
@@ -425,22 +428,27 @@ class BingXClient:
                 ),
             }
 
+            print(f"[BX][UPDATE_SL][{symbol}] API CALL: POST /openApi/swap/v2/trade/stopLossTakeProfit")
             result = await self._make_request(
                 "POST",
                 "/openApi/swap/v2/trade/stopLossTakeProfit",
                 body=body
             )
 
+            print(f"[BX][UPDATE_SL][{symbol}] API RESULT: {result}")
+
             ok = result and result.get("code") == 0
             if ok:
-                print(f"✅ BingX SL updated: {symbol} {position_side} → SL={rounded_sl}")
+                print(f"✅ [BX][UPDATE_SL][{symbol}] SUCCESS: {position_side} → SL={rounded_sl}")
             else:
                 err = result.get("msg", "unknown") if result else self.last_error
-                print(f"❌ BingX SL update failed: {symbol} | {err}")
+                print(f"❌ [BX][UPDATE_SL][{symbol}] FAILED: code={result.get('code') if result else 'N/A'} | {err}")
             return ok
 
         except Exception as e:
-            print(f"❌ BingX update_stop_loss exception: {e}")
+            print(f"❌ [BX][UPDATE_SL][{symbol}] EXCEPTION: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     # =========================================================================
