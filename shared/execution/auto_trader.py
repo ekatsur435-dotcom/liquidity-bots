@@ -58,15 +58,18 @@ class TradeConfig:
     max_position_usdt:   float = 5000.0    # глобальный потолок
     notional_safety_pct: float = 0.92      # 92% от лимита (запас 8%)
     open_cooldown_sec:   float = 30.0      # антидубль
+    bot_type:            str   = "short"   # "long" или "short" для фильтрации позиций
 
 
 class AutoTrader:
 
-    def __init__(self, bingx_client=None, config=None, telegram=None):
+    def __init__(self, bingx_client=None, config=None, telegram=None, bot_type=None):
         self.config   = config or TradeConfig()
         self.bingx    = bingx_client or BingXClient(demo=self.config.demo_mode)
         self.redis    = get_redis_client()
         self.telegram = telegram
+        # ✅ FIX: bot_type для фильтрации позиций
+        self.bot_type = bot_type or self.config.bot_type or "short"
 
         self.daily_pnl    = 0.0   # в % (напр. -2.5 = убыток 2.5%)
         self.daily_trades = 0
@@ -165,16 +168,21 @@ class AutoTrader:
             print(f"{pfx} ❌ get_positions failed: {e}")
             return None
 
-        n_pos    = len(current_positions)
-        pos_list = " | ".join(f"{p.symbol}({p.side})" for p in current_positions)
-        print(f"{pfx} 📊 Open: {n_pos}/{self.config.max_positions}")
+        # ✅ FIX: Фильтруем только позиции текущего бота (LONG/SHORT)
+        expected_side = self.bot_type.upper()
+        bot_positions = [p for p in current_positions if (
+            getattr(p, "side", "").upper() == expected_side
+        )]
+        n_pos = len(bot_positions)
+        pos_list = " | ".join(f"{p.symbol}({p.side})" for p in bot_positions)
+        print(f"{pfx} 📊 {expected_side} positions: {n_pos}/{self.config.max_positions}")
         if pos_list:
             print(f"{pfx} 📋 {pos_list}")
 
         if n_pos >= self.config.max_positions:
-            print(f"{pfx} ⏸ SKIP — max positions")
+            print(f"{pfx} ⏸ SKIP — max {expected_side} positions")
             await self._tg_reply(
-                f"⏸ <b>Биржа заполнена</b> ({n_pos}/{self.config.max_positions})\n"
+                f"⏸ <b>{expected_side} лимит достигнут</b> ({n_pos}/{self.config.max_positions})\n"
                 f"<b>#{symbol}</b> — сигнал пропущен", tg_msg_id
             )
             return None
