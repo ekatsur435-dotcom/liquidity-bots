@@ -152,7 +152,7 @@ class AutoTrader:
         if self.daily_pnl <= -self.config.max_daily_risk:
             print(f"{pfx} ⏸ SKIP — daily risk limit {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%")
             await self._tg(
-                f"⏸ <b>[{mode}] #{symbol}:</b> "
+                f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: "
                 f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
             )
             return None
@@ -173,33 +173,22 @@ class AutoTrader:
 
         if n_pos >= self.config.max_positions:
             print(f"{pfx} ⏸ SKIP — max positions")
-            # ✅ FIX: reply к исходному сигналу — биржа заполнена, сигнал в TG
-            if tg_msg_id and self.telegram:
-                dir_emoji = "🟢" if direction == "long" else "🔴"
-                await self._tg_reply(
-                    f"⏸ <b>Биржа заполнена ({n_pos}/{self.config.max_positions})</b>\n"
-                    f"{dir_emoji} <b>#{symbol}</b> — сигнал отправлен в TG, ордер не открыт",
-                    tg_msg_id,
-                )
+            await self._tg_reply(
+                f"⏸ <b>Биржа заполнена</b> ({n_pos}/{self.config.max_positions})\n"
+                f"<b>#{symbol}</b> — сигнал пропущен", tg_msg_id
+            )
             return None
 
-        # ── 3. Duplicate check ────────────────────────────────────────────────
+        # ── 3. Duplicate ──────────────────────────────────────────────────────
         bingx_symbol = self._to_bingx_symbol(symbol)
         existing = [p for p in current_positions
                     if p.symbol.replace("-", "") == symbol.replace("-", "")]
         if existing:
-            existing_side = existing[0].side
-            print(f"{pfx} ⏸ SKIP — already open ({existing_side})")
-            # ✅ FIX: уведомить в Telegram о дубликате с reply на исходный сигнал
-            if tg_msg_id and self.telegram:
-                dir_emoji = "🟢" if direction == "long" else "🔴"
-                await self._tg_reply(
-                    f"ℹ️ <b>Позиция уже открыта ранее</b>\n"
-                    f"{dir_emoji} <b>#{symbol}</b> {direction.upper()}\n"
-                    f"   Биржа: {existing_side} уже есть ({existing[0].entry_price})\n"
-                    f"   Новый ордер не размещён — дубликат.",
-                    tg_msg_id,
-                )
+            print(f"{pfx} ⏸ SKIP — already open ({existing[0].side})")
+            await self._tg_reply(
+                f"ℹ️ <b>Позиция уже открыта</b>\n"
+                f"<b>#{symbol}</b> — {existing[0].side} уже активен", tg_msg_id
+            )
             return None
 
         # ── 4. Symbol online? ─────────────────────────────────────────────────
@@ -320,7 +309,7 @@ class AutoTrader:
             print(f"{pfx} ❌ ORDER FAILED — code={code} | {err}")
             await self._tg(
                 f"❌ <b>AutoTrader [{mode}] — ОРДЕР ОТКЛОНЁН</b>\n\n"
-                f"<b>#{symbol}</b> {direction.upper()}\n"
+                f"<code>#{symbol}</code> {direction.upper()}\n"
                 f"Score: {signal_score:.0f}% | SL: {stop_loss}\n\n"
                 f"🔴 code={code}: <code>{err}</code>"
                 + (f"\n💡 {hint}" if hint else "")
@@ -371,7 +360,7 @@ class AutoTrader:
         d_emoji    = "🟢" if direction == "long" else "🔴"
         notify_msg = (
             f"🤖 <b>AUTO-TRADE [{mode}]</b>\n\n"
-            f"{d_emoji} <b>#{symbol}</b> {direction.upper()}\n"
+            f"{d_emoji} <code>#{symbol}</code> {direction.upper()}\n"
             f"📍 Entry: <b>{entry_price}</b>\n"
             f"🛑 SL: <b>{stop_loss}</b>\n"
             f"📊 Size: {order.size} | {leverage}x | {actual_risk*100:.3f}% risk\n"
