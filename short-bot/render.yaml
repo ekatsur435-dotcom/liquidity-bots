@@ -55,5 +55,3 @@ services:
         value: "true"
       - key: PROXY_LIST
         sync: false
-      - key: USE_BINANCE
-        value: "false"
