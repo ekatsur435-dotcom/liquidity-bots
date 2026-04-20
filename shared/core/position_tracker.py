@@ -223,7 +223,7 @@ class PositionTracker:
         lines = [
             f"{icon} <b>Стоп передвинут — {move_type.upper()}</b>",
             "",
-            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}",
             f"📍 Вход:      <b>${entry:,.6f}</b>",
             f"🛑 Было SL:   <b>${old_sl:,.6f}</b>  ({old_pnl:+.2f}%)",
             f"✅ Теперь SL: <b>${new_sl:,.6f}</b>  ({sl_pnl:+.2f}%)",
@@ -273,7 +273,7 @@ class PositionTracker:
         lines = [
             f"{icon} <b>{tp_label}/{total} взят!</b>",
             "",
-            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}",
             f"📍 Вход:       <b>${entry:,.6f}</b>",
             f"🎯 {tp_label}:      <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)",
             f"📊 P&L:        <b>+{pnl_pct:.2f}%</b>",
@@ -341,7 +341,7 @@ class PositionTracker:
         lines = [
             f"🛑 <b>Стоп выбит</b>  ({sl_type})",
             "",
-            f"{d_emoji} <code>#{symbol}</code>  {direction.upper()}",
+            f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}",
             f"📍 Вход:      <b>${entry:,.6f}</b>",
             f"🛑 Стоп:      <b>${sl_price:,.6f}</b>",
             f"💰 Закрыто:   <b>${current_price:,.6f}</b>",
@@ -369,7 +369,7 @@ class PositionTracker:
         d_emoji = "🔴" if signal.get("direction") == "short" else "🟢"
         await self._send(
             f"⏰ <b>Сигнал истёк (24ч)</b>\n"
-            f"{d_emoji} <code>#{symbol}</code>\n"
+            f"{d_emoji} <b>#{symbol}</b>\n"
             f"📍 Вход: <b>${entry:,.6f}</b>  |  ⏱ {time_str}"
         )
 
