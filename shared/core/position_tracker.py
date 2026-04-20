@@ -145,6 +145,11 @@ class PositionTracker:
         if not entry or not current_sl:
             return
 
+        # 🆕 DEBUG LOGGING for Render
+        profit_pct = (price - entry) / entry if direction == "long" else (entry - price) / entry
+        print(f"[PT][TRAIL][{symbol}] price={price:.6f} entry={entry:.6f} profit={profit_pct:.2%} "
+              f"be_done={be_done} trailing_active={trailing_active} taken_tps={len(taken_tps)}")
+
         # ✅ FIX: Проверяем be_done — если уже в безубытке, не обновляем повторно
         if be_done:
             trailing_active = True  # активируем трейлинг если BE уже был
@@ -157,6 +162,8 @@ class PositionTracker:
 
             if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
                 new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
+                print(f"[PT][BE][{symbol}] Triggered! taken_count={taken_count} >= {self.BREAKEVEN_AFTER_TP} "
+                      f"new_sl={new_sl:.6f} current_sl={current_sl:.6f}")
                 # ✅ FIX: Минимальный порог 0.05% для изменения SL (избегаем микро-движений)
                 min_move_threshold = current_sl * 0.0005  # 0.05%
                 
@@ -211,19 +218,28 @@ class PositionTracker:
         direction = signal["direction"]
         entry     = _f(signal["entry_price"])
 
+        print(f"[PT][MOVE_SL][{symbol}] START {move_type}: {old_sl:.6f} → {new_sl:.6f} | auto_trader={'✅' if self.auto_trader else '❌'}")
+
         signal["stop_loss"] = round(new_sl, 8)
         self._save(symbol, signal)
+        print(f"[PT][MOVE_SL][{symbol}] Redis updated: stop_loss={new_sl:.6f}")
 
         # ✅ FIX: Обновляем SL на бирже через AutoTrader
         exchange_updated = False
         if self.auto_trader:
             try:
                 position_side = "LONG" if direction == "long" else "SHORT"
+                print(f"[PT][MOVE_SL][{symbol}] Calling AutoTrader.update_stop_loss({symbol}, {position_side}, {new_sl:.6f})")
                 exchange_updated = await self.auto_trader.update_stop_loss(symbol, position_side, new_sl)
+                print(f"[PT][MOVE_SL][{symbol}] AutoTrader result: {'✅ SUCCESS' if exchange_updated else '❌ FAILED'}")
                 if not exchange_updated:
                     print(f"⚠️ [PT] BingX SL update failed for {symbol}, but Redis updated")
             except Exception as e:
-                print(f"❌ [PT] AutoTrader update_stop_loss error: {e}")
+                print(f"❌ [PT][MOVE_SL][{symbol}] AutoTrader update_stop_loss error: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"⚠️ [PT][MOVE_SL][{symbol}] No auto_trader available! SL only in Redis")
 
         d_emoji = "🟢" if direction == "long" else "🔴"
         icon    = "🔒" if move_type == "безубыток" else "🔄"
@@ -267,6 +283,8 @@ class PositionTracker:
         tp_num    = tp_idx + 1
         tp_label  = f"TP{tp_num}"
 
+        print(f"[PT][TP][{symbol}] TP{tp_num} HIT! price={tp_price:.6f} is_last={is_last} taken={len(signal.get('taken_tps', []))+1}/{total}")
+
         pnl_pct  = _pnl(direction, entry, tp_price)
         time_str = _time_in_trade(signal)
 
@@ -281,8 +299,10 @@ class PositionTracker:
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
             signal["tp_level"]    = tp_label
+            print(f"[PT][TP][{symbol}] LAST TP! total_pnl={total_pnl:.2f}% status=closed_tp")
 
         self._save(symbol, signal)
+        print(f"[PT][TP][{symbol}] Saved to Redis: taken_tps={len(taken)}")
 
         d_emoji = "🔴" if direction == "short" else "🟢"
         icon    = "🏆" if is_last else "🎯"
@@ -331,6 +351,9 @@ class PositionTracker:
         taken        = list(signal.get("taken_tps", []))
         tps_raw      = signal.get("take_profits", [])
 
+        print(f"[PT][SL][{symbol}] SL HIT! price={current_price:.6f} entry={entry:.6f} "
+              f"was_trailing={was_trailing} be_done={be_done} taken_tps={len(taken)}")
+
         # P&L от уже взятых TP
         tp_pnl = _calc_weighted_pnl(direction, entry, tps_raw, taken) if taken else 0.0
 
@@ -358,6 +381,7 @@ class PositionTracker:
         signal["pnl_pct"]     = total_pnl
         signal["tp_level"]    = tp_level_label  # ✅ FIX: SL / SL-TRAIL / BE
         self._save(symbol, signal)
+        print(f"[PT][SL][{symbol}] CLOSED! tp_level={tp_level_label} pnl={total_pnl:.2f}% status=closed_sl")
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
         sl_type  = ("трейлинг-стоп" if was_trailing else
