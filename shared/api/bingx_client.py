@@ -402,6 +402,48 @@ class BingXClient:
                                        stop_loss=stop_loss, take_profit=take_profit)
 
     # =========================================================================
+    # UPDATE SL/TP for existing position
+    # =========================================================================
+
+    async def update_stop_loss(self, symbol: str, position_side: str, new_sl: float) -> bool:
+        """
+        ✅ Обновить Stop Loss для существующей позиции
+        Используется для BE (безубыток) и трейлинга
+        """
+        try:
+            rounded_sl = await self._round_price(symbol, new_sl)
+            if not rounded_sl:
+                print(f"❌ BingX: Invalid SL price {new_sl}")
+                return False
+
+            body = {
+                "symbol": symbol,
+                "positionSide": position_side,
+                "stopLoss": json.dumps(
+                    {"type": "STOP_MARKET", "stopPrice": rounded_sl, "workingType": "MARK_PRICE"},
+                    separators=(',', ':')
+                ),
+            }
+
+            result = await self._make_request(
+                "POST",
+                "/openApi/swap/v2/trade/stopLossTakeProfit",
+                body=body
+            )
+
+            ok = result and result.get("code") == 0
+            if ok:
+                print(f"✅ BingX SL updated: {symbol} {position_side} → SL={rounded_sl}")
+            else:
+                err = result.get("msg", "unknown") if result else self.last_error
+                print(f"❌ BingX SL update failed: {symbol} | {err}")
+            return ok
+
+        except Exception as e:
+            print(f"❌ BingX update_stop_loss exception: {e}")
+            return False
+
+    # =========================================================================
     # LEVERAGE
     # =========================================================================
 
