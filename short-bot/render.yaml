@@ -28,7 +28,7 @@ services:
       - key: PROXY_LIST
         sync: false
       - key: MIN_SHORT_SCORE
-        value: "67"
+        value: "57"
       - key: SHORT_SL_BUFFER
         value: "2.0"
       - key: MAX_SHORT_POSITIONS
