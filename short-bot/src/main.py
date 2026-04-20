@@ -556,16 +556,7 @@ async def _count_real_positions() -> int:
         try:
             pos = await state.auto_trader.bingx.get_positions()
             # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            # ✅ FIX #5: BOTH mode support
-            # Hedge mode: positionSide = "LONG" / "SHORT"
-            # One-way mode: positionSide = "BOTH", side = "BUY"/"SELL"
-            short_pos = [p for p in pos if (
-                getattr(p, "position_side", "").upper() == "SHORT" or
-                getattr(p, "side", "").upper() == "SHORT" or
-                # BOTH mode: positionAmt < 0 = short
-                (getattr(p, "position_side", "").upper() == "BOTH" and
-                 getattr(p, "size", 0) < 0)
-            )]
+            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SHORT"]
             if short_pos:
                 print(f"[SHORT] Open positions: {len(short_pos)} "
                       f"({', '.join(getattr(p,'symbol','?') for p in short_pos[:5])})")
@@ -584,12 +575,13 @@ async def _count_real_positions() -> int:
 
 async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
     """
-    SHORT scan_symbol v2.3:
+    SHORT scan_symbol v2.4:
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
       - TP НИЖЕ входа (short: фиксируем прибыль при падении)
       - ShortFilter: фильтрация по BTC trend, RSI, фандинг, свеча
       - OI Proxy: bear_confirm / accumulation / weakness
       - volume_spike_ratio + atr_14_pct → scorer
+      - ✅ Multi-TF priority: 2h/4h для исполнения, 15m/30m/1h → watch only
     """
     try:
         md = await state.binance.get_complete_market_data(symbol)
@@ -600,13 +592,37 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: 15m + 30m параллельно
+        # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
         ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 100)
         ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
-        ohlcv_15m, ohlcv_30m = await asyncio.gather(ohlcv_15m_task, ohlcv_30m_task)
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
+        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
+        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 14)
+        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
+            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
+        )
 
         if not ohlcv_15m or len(ohlcv_15m) < 20:
             return None
+
+        # Определяем лучший ТФ для сигнала (приоритет: 4h > 2h > 1h > 30m > 15m)
+        primary_tf = "15m"  # default
+        best_score_tf = 0
+        tf_priority = {"4h": 5, "2h": 4, "1h": 3, "30m": 2, "15m": 1}
+
+        # Проверяем паттерны на каждом ТФ и выбираем лучший
+        for tf_name, tf_ohlcv in [("4h", ohlcv_4h), ("2h", ohlcv_2h), ("1h", ohlcv_1h), ("30m", ohlcv_30m), ("15m", ohlcv_15m)]:
+            if tf_ohlcv and len(tf_ohlcv) >= 20:
+                tf_patterns = state.pattern_detector.detect_all(tf_ohlcv, [], md)
+                if tf_patterns:
+                    tf_score = tf_priority.get(tf_name, 0) * 10 + len(tf_patterns) * 2
+                    if tf_score > best_score_tf:
+                        best_score_tf = tf_score
+                        primary_tf = tf_name
+
+        # Используем свечи лучшего ТФ для основного анализа
+        tf_map = {"15m": ohlcv_15m, "30m": ohlcv_30m, "1h": ohlcv_1h, "2h": ohlcv_2h, "4h": ohlcv_4h}
+        ohlcv_primary = tf_map.get(primary_tf, ohlcv_15m)
 
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
@@ -634,7 +650,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         rsi_4h = 50.0  # дефолт
         rsi_4h_score_adj = 0
         try:
-            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            # ohlcv_4h уже загружен выше
             if ohlcv_4h and len(ohlcv_4h) >= 14:
                 closes_4h = [c.close for c in ohlcv_4h[-14:]]
                 gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
@@ -654,8 +670,8 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             pass
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
-        price_trend   = state.pattern_detector._get_price_trend(ohlcv_15m)
-        patterns      = state.pattern_detector.detect_all(ohlcv_15m, hourly_deltas, md)
+        price_trend   = state.pattern_detector._get_price_trend(ohlcv_primary)
+        patterns      = state.pattern_detector.detect_all(ohlcv_primary, hourly_deltas, md)
         p4d           = await _get_price_change_4d(symbol, md.price_change_24h * 4)
 
         # ── OI Proxy (SHORT специфика) ────────────────────────────────────────
@@ -668,7 +684,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
-                vols = [c.quote_volume for c in ohlcv_15m[-5:]]
+                vols = [c.quote_volume for c in ohlcv_primary[-5:]]
 
                 # OI и объём падают вместе с ценой → медвежье подтверждение
                 oi_growing   = ois[-1] > ois[0] if ois[0] else False
@@ -744,12 +760,14 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
         if rt_result.early_only:
-            await state.telegram.send_message(
-                f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
-                f"🔴 <b>#{symbol}</b>  ${price:,.6f}\n"
-                + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
-                + "\n\n⏳ <i>Ждём подтверждения.</i>"
-            )
+            # ✅ FIX: Проверяем MIN_SCORE даже для ранних watch сигналов
+            if rt_result.final_score >= Config.MIN_SCORE:
+                await state.telegram.send_message(
+                    f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
+                    f"🔴 <b>#{symbol}</b>  ${price:,.6f}\n"
+                    + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
+                    + "\n\n⏳ <i>Ждём подтверждения.</i>"
+                )
             return None
 
         final_score = rt_result.final_score
@@ -786,7 +804,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         if Config.USE_SMC:
             try:
                 from core.smc_ict_detector import get_smc_result   # ✅ FIX: core not utils
-                smc = get_smc_result(_ohlcv(ohlcv_15m), "short",
+                smc = get_smc_result(_ohlcv(ohlcv_primary), "short",
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
                     final_score += smc.score_bonus
@@ -824,6 +842,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
             "best_pattern": patterns[0].name if patterns else None,
+            "primary_tf": primary_tf,  # ✅ ТФ сигнала (2h/4h для исполнения)
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
                 "Funding": f"{md.funding_rate:+.3f}%",
@@ -896,12 +915,22 @@ async def scan_market():
 
     # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
     _btc_cache_1h: Optional[float] = None
+    _btc_rsi_4h: float = 50.0  # нейтральное значение по умолчанию
     try:
         _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
         if _btc_md:
             _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
+            _btc_rsi_4h = getattr(_btc_md, 'rsi_4h', 50.0) or 50.0
     except Exception as e:
         print(f"⚠️ BTC cache failed: {e}")
+
+    # ✅ BTC RSI 4h фильтр для SHORT (бэктест): только если BTC RSI 4h < 55
+    # Если BTC в сильном росте (RSI 4h > 55) — блокируем SHORT
+    if _btc_rsi_4h > 55:
+        print(f"⛔ SHORT blocked: BTC RSI 4h = {_btc_rsi_4h:.1f} > 55 (strong uptrend)")
+        return  # полная блокировка сканирования
+    elif _btc_rsi_4h > 45:
+        print(f"⚠️ BTC RSI 4h = {_btc_rsi_4h:.1f} (moderate uptrend) — reduced scoring")
 
     # BTC корреляция — мягкий модификатор, не блокер
     btc_corr  = await _get_btc_short_correlation(_btc_cache_1h)
@@ -950,8 +979,13 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # Биржевое исполнение: только если есть SHORT слоты и не на паузе
-            if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
+            # ✅ TF фильтр (бэктест): только 2h/4h на биржу, остальное → Telegram only
+            primary_tf = signal.get("primary_tf", "15m")
+            tf_for_execution = primary_tf in ("2h", "4h")
+
+            # Биржевое исполнение: только если есть SHORT слоты, не на паузе, и ТФ = 2h/4h
+            if (not exchange_full and Config.AUTO_TRADING and not state.is_paused 
+                and tf_for_execution):
                 if state.auto_trader:
                     try:
                         await state.auto_trader.execute_signal(signal)
@@ -960,11 +994,16 @@ async def scan_market():
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
                 new_signals += 1
-                print(f"✅ SHORT executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+                print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
             else:
                 tg_only_count += 1
-                reason = "max SHORT positions" if exchange_full else "paused"
-                print(f"📡 SHORT TG-only: {symbol} Score={signal['score']:.0f}% [{reason}]")
+                if not tf_for_execution:
+                    reason = f"{primary_tf} (needs 2h/4h for exec)"
+                elif exchange_full:
+                    reason = "max SHORT positions"
+                else:
+                    reason = "paused"
+                print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] Score={signal['score']:.0f}% [{reason}]")
 
             await asyncio.sleep(0.4)
         except Exception as e:
