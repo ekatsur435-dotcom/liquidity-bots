@@ -264,7 +264,7 @@ class TelegramBot:
         return (
             f"\n{emoji} <b>LONG SIGNAL | {strength}</b>\n"
             f"<b>Score: {score:.0f}%</b>\n\n"
-            f"<b>💎 SYMBOL:</b> <code>#{symbol}</code>\n"
+            f"<b>💎 SYMBOL: #{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
@@ -304,7 +304,7 @@ class TelegramBot:
         return (
             f"\n{emoji} <b>SHORT SIGNAL | {strength}</b>\n"
             f"<b>Score: {score:.0f}%</b>\n\n"
-            f"<b>💎 SYMBOL:</b> <code>#{symbol}</code>\n"
+            f"<b>💎 SYMBOL: #{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
@@ -330,7 +330,7 @@ class TelegramBot:
         pnl_sign = "+" if pnl_pct >= 0 else ""
         return (
             f"🎯 <b>TP{tp_num}/{total_tps} взят!</b>\n\n"
-            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"{d_emoji} <b>#{symbol}</b>  {dir_str}\n"
             f"📍 Вход:      <b>{fmt_price(entry)}</b>\n"
             f"🎯 TP{tp_num}:     <b>{fmt_price(tp_price)}</b>\n"
             f"📊 P&L:       <b>{pnl_sign}{pnl_pct:.2f}%</b>\n"
@@ -353,7 +353,7 @@ class TelegramBot:
         pnl_sign = "+" if pnl_pct >= 0 else ""
         return (
             f"🛑 <b>Стоп выбит</b>  ({reason_str})\n\n"
-            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"{d_emoji} <b>#{symbol}</b>  {dir_str}\n"
             f"📍 Вход:     <b>{fmt_price(entry)}</b>\n"
             f"🛑 Стоп:     <b>{fmt_price(sl_price)}</b>\n"
             f"💰 Закрыто:  <b>{fmt_price(close_price)}</b>\n"
@@ -373,7 +373,7 @@ class TelegramBot:
         sign_new = "+" if new_sl >= entry else "-"
         return (
             f"🔄 <b>Стоп передвинут — ТРЕЙЛИНГ</b>\n\n"
-            f"{d_emoji} <code>#{symbol}</code>  {dir_str}\n"
+            f"{d_emoji} <b>#{symbol}</b>  {dir_str}\n"
             f"📍 Вход:     <b>{fmt_price(entry)}</b>\n"
             f"🛑 Было SL:  <b>{fmt_price(old_sl)}</b>  ({sign_old}{old_pct:.2f}%)\n"
             f"✅ Теперь SL: <b>{fmt_price(new_sl)}</b>  ({sign_new}{new_pct:.2f}%)\n"
@@ -701,7 +701,7 @@ class TelegramCommandHandler:
                 except Exception:
                     time_s = "N/A"
                 msg += (
-                    f"{d} <code>#{sym}</code> — Score: {score:.0f}%\n"
+                    f"{d} <b>#{sym}</b> — Score: {score:.0f}%\n"
                     f"   Вход: {fmt_price(entry)}  |  TP: {taken}/{total}  |  ⏱ {time_s}\n\n"
                 )
             await self._reply(reply_chat_id, msg)
