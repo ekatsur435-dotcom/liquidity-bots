@@ -278,11 +278,27 @@ class BingXClient:
                     size = float(d.get("positionAmt", 0))
                     if size == 0:
                         continue
+                    # ✅ FIX: правильное определение side для BOTH hedge mode
+                    position_side_raw = d.get("positionSide", "")
+                    position_amt = float(d.get("positionAmt", 0))
+                    
+                    # В BOTH mode: LONG если amt > 0, SHORT если amt < 0
+                    # В одностороннем mode: смотрим на positionSide
+                    if position_side_raw == "LONG":
+                        side = "LONG"
+                    elif position_side_raw == "SHORT":
+                        side = "SHORT"
+                    elif position_side_raw in ("BOTH", ""):
+                        # В hedge mode смотрим на знак positionAmt
+                        side = "LONG" if position_amt > 0 else "SHORT" if position_amt < 0 else "LONG"
+                    else:
+                        side = "LONG" if position_amt >= 0 else "SHORT"
+                    
                     positions.append(BingXPosition(
                         symbol=d.get("symbol",""),
-                        side="LONG" if d.get("positionSide") in ("LONG", "BOTH") and float(d.get("positionAmt",0))>=0 else "SHORT",
-                        position_side=d.get("positionSide",""),
-                        size=size,
+                        side=side,
+                        position_side=position_side_raw,
+                        size=abs(size),  # ✅ размер всегда положительный
                         entry_price=float(d.get("avgPrice",0)),
                         leverage=int(d.get("leverage",1)),
                         unrealized_pnl=float(d.get("unrealizedProfit",0)),
