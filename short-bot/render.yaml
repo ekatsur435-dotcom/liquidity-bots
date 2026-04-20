@@ -25,8 +25,10 @@ services:
         sync: false
       - key: COINGLASS_API_KEY
         sync: false
+      - key: PROXY_LIST
+        sync: false
       - key: MIN_SHORT_SCORE
-        value: "65"
+        value: "60"
       - key: SHORT_SL_BUFFER
         value: "2.0"
       - key: MAX_SHORT_POSITIONS
@@ -53,5 +55,3 @@ services:
         value: "0.010"
       - key: ENABLE_BTC_CORRELATION
         value: "true"
-      - key: PROXY_LIST
-        sync: false
