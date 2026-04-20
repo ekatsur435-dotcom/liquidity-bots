@@ -659,10 +659,7 @@ class TelegramCommandHandler:
                 all_positions = await self.state.auto_trader.bingx.get_positions()
                 expected_side = self.bot_type.upper()
                 real_positions_count = len([p for p in all_positions if (
-                    getattr(p, "position_side", "").upper() == expected_side or
-                    getattr(p, "side", "").upper() == expected_side or
-                    (expected_side == "SHORT" and getattr(p, "size", 0) < 0) or
-                    (expected_side == "LONG" and getattr(p, "size", 0) > 0)
+                    getattr(p, "side", "").upper() == expected_side
                 )])
             except Exception:
                 pass  # Fallback к сигналам если ошибка
@@ -840,10 +837,7 @@ class TelegramCommandHandler:
             # SHORT бот видит только SHORT, LONG — только LONG
             expected_side = self.bot_type.upper()
             positions = [p for p in all_positions if (
-                getattr(p, "position_side", "").upper() == expected_side or
-                getattr(p, "side", "").upper() == expected_side or
-                (expected_side == "SHORT" and getattr(p, "size", 0) < 0) or
-                (expected_side == "LONG" and getattr(p, "size", 0) > 0)
+                getattr(p, "side", "").upper() == expected_side
             )]
             
             if not positions:
@@ -1245,11 +1239,19 @@ class TelegramCommandHandler:
             wr     = round(len(wins) / total * 100, 1) if total else 0
             pnl    = round(sum(t.get("pnl", 0) for t in trades), 2)
 
-            # TP распределение
+            # TP распределение (сортировка: TP1-6 → BE → SL → SL-TRAIL → ?)
             tp_dist = {}
             for t in trades:
                 lv = t.get("tp_level", "?")
                 tp_dist[lv] = tp_dist.get(lv, 0) + 1
+
+            # Порядок отображения: TP1-6 по порядку, потом BE, SL, SL-TRAIL, потом остальное
+            def _sort_key(item):
+                lv = item[0]
+                order = {"TP1": 1, "TP2": 2, "TP3": 3, "TP4": 4, "TP5": 5, "TP6": 6,
+                         "BE": 7, "SL": 8, "SL-TRAIL": 9}
+                return order.get(lv, 99)
+            tp_dist_sorted = dict(sorted(tp_dist.items(), key=_sort_key))
 
             # Лучшие / худшие паттерны
             pattern_stats = {}
@@ -1298,11 +1300,10 @@ class TelegramCommandHandler:
                 f"   🔴 Макс. серия SL: {max_loss_streak}\n\n"
                 f"🎯 <b>РАСПРЕДЕЛЕНИЕ TP/SL:</b>\n"
             )
-            for lv in sorted(tp_dist.keys()):
-                cnt = tp_dist[lv]
+            for lv, cnt in tp_dist_sorted.items():
                 pct = round(cnt / total * 100, 1)
                 bar = "█" * max(1, int(pct / 5))
-                msg += f"   {lv:>4}: {cnt:>4} ({pct:>5.1f}%)  {bar}\n"
+                msg += f"   {lv:>8}: {cnt:>4} ({pct:>5.1f}%)  {bar}\n"
 
             msg += f"\n📋 <b>ПО ПАТТЕРНАМ:</b>\n"
             for pname, ps in sorted(pattern_stats.items(),
