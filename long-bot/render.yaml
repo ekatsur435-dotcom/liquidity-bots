@@ -56,6 +56,6 @@ services:
       - key: ENABLE_BTC_CORRELATION
         value: "true"
       - key: PROXY_LIST
-        sync: false          # http://user:pass@ip1:port,http://user:pass@ip2:port
+        sync: false
       - key: USE_BINANCE
-        value: "false"       # true только если PROXY_LIST задан
+        value: "false"
