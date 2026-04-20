@@ -145,7 +145,7 @@ class UpstashRedisClient:
             return []
     
     def close_position(self, bot_type: str, symbol: str,
-                       pnl: float, close_price: float) -> bool:
+                       pnl: float, close_price: float, tp_level: str = "SL") -> bool:
         try:
             key = f"{bot_type}:positions:{symbol}"
             data = self.client.get(key)
@@ -154,10 +154,15 @@ class UpstashRedisClient:
                 position["status"] = "closed"
                 position["close_price"] = close_price
                 position["pnl"] = pnl
+                position["tp_level"] = tp_level  # ✅ FIX: Сохраняем tp_level
                 position["closed_at"] = datetime.utcnow().isoformat()
                 history_key = f"{bot_type}:history:{symbol}"
                 self.client.lpush(history_key, json.dumps(position))
                 self.client.ltrim(history_key, 0, 99)
+                # 🆕 Также пишем в all_trades для статистики
+                all_key = f"{bot_type}:all_trades"
+                self.client.lpush(all_key, json.dumps(position))
+                self.client.ltrim(all_key, 0, 9999)
                 self.client.delete(key)
                 return True
             return False
