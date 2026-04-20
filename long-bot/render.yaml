@@ -55,7 +55,3 @@ services:
         value: "0.010"
       - key: ENABLE_BTC_CORRELATION
         value: "true"
-      - key: PROXY_LIST
-        sync: false
-      - key: USE_BINANCE
-        value: "false"
