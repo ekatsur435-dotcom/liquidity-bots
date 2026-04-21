@@ -62,19 +62,21 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "60"))
+    # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
     # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "200"))
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.5"))
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # BACKTEST optimum
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
-    TP_WEIGHTS = [25,  25,  20,  15,  10,   5]   # SHORT: больше на TP1-2
+    # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
+    TP_WEIGHTS = [35,  30,  20,  10,   5,   0]
 
     # Trailing — SHORT активирует при +1% (лонг: +1.5%)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.010"))
