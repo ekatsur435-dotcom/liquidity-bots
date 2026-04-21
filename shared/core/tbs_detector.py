@@ -267,10 +267,13 @@ class TBSDetector:
         return {"direction": "none", "confidence": 0}
 
 
-def detect_tbs_entry(ohlcv: List[List[float]], direction: str = "short") -> Optional[Dict]:
+def detect_tbs_entry(ohlcv: List[Any], direction: str = "short") -> Optional[Dict]:
     """
     Упрощённая функция для быстрой проверки TBS.
+    Принимает как List[List[float]] так и List[CandleData].
     """
+    if not ohlcv or len(ohlcv) < 10:
+        return None
     detector = TBSDetector(ohlcv)
     result = detector.detect_tbs_pattern(direction)
     
