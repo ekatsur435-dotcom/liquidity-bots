@@ -50,11 +50,25 @@ class TBSDetector:
         self.n = len(ohlcv)
         self.lookback = lookback
         
-    def _o(self, i: int) -> float: return self.ohlcv[i][0]
-    def _h(self, i: int) -> float: return self.ohlcv[i][1]
-    def _l(self, i: int) -> float: return self.ohlcv[i][2]
-    def _c(self, i: int) -> float: return self.ohlcv[i][3]
-    def _v(self, i: int) -> float: return self.ohlcv[i][4] if len(self.ohlcv[i]) > 4 else 0
+    def _get_price(self, i: int, attr: str) -> float:
+        """Универсальный доступ к данным свечи"""
+        candle = self.ohlcv[i]
+        if hasattr(candle, attr):
+            return getattr(candle, attr)
+        elif isinstance(candle, (list, tuple)):
+            mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
+            return candle[mapping.get(attr, 3)]
+        return 0.0
+    
+    def _o(self, i: int) -> float: return self._get_price(i, 'open')
+    def _h(self, i: int) -> float: return self._get_price(i, 'high')
+    def _l(self, i: int) -> float: return self._get_price(i, 'low')
+    def _c(self, i: int) -> float: return self._get_price(i, 'close')
+    def _v(self, i: int) -> float: 
+        try:
+            return self._get_price(i, 'volume')
+        except:
+            return 0
     
     def find_order_blocks(self) -> List[Dict]:
         """
