@@ -3,6 +3,7 @@
 
 ИСПРАВЛЕНИЯ v2.6:
   ✅ Liquidity Sweep Detection (ловля сборов стопов)
+  ✅ TBS — Test Before Strike (ретест Order Block)
   ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
   ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 2.7:1)
   ✅ Уменьшен SL: 1.5% (было 2.0%)
@@ -61,6 +62,7 @@ from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.6
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.6
+from core.tbs_detector import detect_tbs_entry  # ✅ v2.6 TBS
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -724,6 +726,15 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         except Exception as e:
             print(f"⚠️ [v2.6] {symbol}: Ошибка EntryConfirmation: {e}")
             base_score_bonus = 0  # При ошибке продолжаем без бонуса
+        
+        # ✅ v2.6: TBS (Test Before Strike) — ретест Order Block
+        try:
+            tbs = detect_tbs_entry(ohlcv_primary, direction="short")
+            if tbs and tbs["found"]:
+                print(f"🎯 [v2.6] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
+                base_score_bonus += 10  # +10 за TBS
+        except Exception as e:
+            print(f"⚠️ [v2.6] {symbol}: TBS error: {e}")
 
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
