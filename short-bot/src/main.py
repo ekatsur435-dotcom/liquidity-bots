@@ -653,6 +653,78 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         tf_map = {"15m": ohlcv_15m, "30m": ohlcv_30m, "1h": ohlcv_1h, "2h": ohlcv_2h, "4h": ohlcv_4h}
         ohlcv_primary = tf_map.get(primary_tf, ohlcv_15m)
 
+        # =========================================================================
+        # ✅ v2.6: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # =========================================================================
+        try:
+            # 1. Проверяем Liquidity Sweep (сбор стопов = сильнейший сигнал!)
+            sweep = detect_smart_money_entry(ohlcv_primary, direction="short")
+            if sweep and sweep["found"]:
+                # 2. Подтверждение фильтрами
+                tf_data_v26 = {}
+                if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
+                if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
+                if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
+                
+                confirmation = EntryConfirmation.comprehensive_check(
+                    ohlcv_primary,
+                    tf_data=tf_data_v26 if len(tf_data_v26) >= 2 else None,
+                    direction="short"
+                )
+                
+                if confirmation["passed"] and confirmation["score"] >= 75:
+                    # 🎯 ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
+                    base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
+                    reasons = sweep["reasons"] + confirmation["reasons"]
+                    
+                    # Генерируем сигнал с оптимальными уровнями
+                    entry = md.price
+                    sl = entry * (1 + Config.SL_BUFFER / 100)
+                    tp1 = entry * (1 - 0.04)  # 4%
+                    tp2 = entry * (1 - 0.08)  # 8%
+                    tp3 = entry * (1 - 0.12)  # 12%
+                    
+                    print(f"🎯 [v2.6] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    
+                    return {
+                        "symbol": symbol,
+                        "direction": "short",
+                        "score": base_score,
+                        "entry_price": entry,
+                        "stop_loss": sl,
+                        "take_profits": [tp1, tp2, tp3],
+                        "reasons": reasons[:5],  # Топ-5 причин
+                        "timeframe": primary_tf,
+                        "pattern": "LIQUIDITY_SWEEP",
+                        "zones": sweep.get("zones", {})
+                    }
+                else:
+                    # Sweep есть но не подтверждён — логируем но пропускаем
+                    print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
+            
+            # 3. Нет sweep — проверяем обычные фильтры для всех сигналов
+            tf_data_v26 = {}
+            if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
+            if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
+            if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
+            
+            confirmation = EntryConfirmation.comprehensive_check(
+                ohlcv_primary,
+                tf_data=tf_data_v26 if len(tf_data_v26) >= 2 else None,
+                direction="short"
+            )
+            
+            if not confirmation["passed"]:
+                print(f"❌ [v2.6] {symbol}: Не прошли фильтры ({confirmation['reasons'][-1]})")
+                return None  # ❌ Фильтры не пройдены — нет сигнала
+            
+            # ✅ Прошли — добавляем бонус к скору
+            base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+10 к скору
+            
+        except Exception as e:
+            print(f"⚠️ [v2.6] {symbol}: Ошибка EntryConfirmation: {e}")
+            base_score_bonus = 0  # При ошибке продолжаем без бонуса
+
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
         rsi_30m = 50.0  # дефолт
