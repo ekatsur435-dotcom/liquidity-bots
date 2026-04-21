@@ -52,11 +52,13 @@ class LiquidityDetector:
     def _get_price(self, i: int, attr: str) -> float:
         """Универсальный доступ к данным свечи"""
         candle = self.ohlcv[i]
-        if hasattr(candle, attr):
-            return getattr(candle, attr)
-        elif isinstance(candle, (list, tuple)):
+        if isinstance(candle, dict):
+            return candle.get(attr, candle.get('close', 0))
+        elif isinstance(candle, list):
             mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
             return candle[mapping.get(attr, 3)]
+        elif hasattr(candle, attr):
+            return getattr(candle, attr)
         return 0.0
     
     def _h(self, i: int) -> float: return self._get_price(i, 'high')
