@@ -5,8 +5,20 @@ Entry Confirmation v2.6
 - ATR volatility filter
 - Support/Resistance levels
 """
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
+
+
+def _get_price(candle: Any, attr: str) -> float:
+    """Универсальный доступ к цене: поддерживает и dict и object"""
+    if hasattr(candle, attr):
+        return getattr(candle, attr)
+    elif isinstance(candle, (list, tuple)):
+        mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
+        return candle[mapping.get(attr, 3)]
+    elif isinstance(candle, dict):
+        return candle.get(attr, candle.get('close', 0))
+    return 0.0
 
 
 class EntryConfirmation:
@@ -39,7 +51,7 @@ class EntryConfirmation:
             # Проверяем тренд на этом ТФ
             ema_20 = EntryConfirmation._calc_ema(ohlcv, 20)
             ema_50 = EntryConfirmation._calc_ema(ohlcv, 50)
-            current_price = ohlcv[-1][3]  # close
+            current_price = _get_price(ohlcv[-1], 'close')
             
             if direction == "short":
                 # Для шорта: цена < EMA20 < EMA50 = нисходящий
@@ -70,10 +82,10 @@ class EntryConfirmation:
             return False, "❌ Мало данных"
         
         # Средний объём (без последних 5)
-        avg_vol = sum(ohlcv[i][4] for i in range(-lookback-5, -5)) / lookback
+        avg_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-lookback-5, -5)) / lookback
         
         # Текущий объём (3 последние свечи)
-        current_vol = sum(ohlcv[i][4] for i in range(-3, 0)) / 3
+        current_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-3, 0)) / 3
         
         volume_spike = current_vol / avg_vol if avg_vol > 0 else 0
         
@@ -98,7 +110,7 @@ class EntryConfirmation:
             return False, "❌ Мало данных", 0.0
         
         atr = EntryConfirmation._calc_atr(ohlcv, period)
-        current_price = ohlcv[-1][3]
+        current_price = _get_price(ohlcv[-1], 'close')
         atr_pct = (atr / current_price) * 100
         
         if atr_pct < min_atr:
@@ -122,8 +134,8 @@ class EntryConfirmation:
             return False, "❌ Мало истории", {}
         
         # Находим уровни за последние 50 свечей
-        highs = [ohlcv[i][1] for i in range(-50, 0)]
-        lows = [ohlcv[i][2] for i in range(-50, 0)]
+        highs = [_get_price(ohlcv[i], 'high') for i in range(-50, 0)]
+        lows = [_get_price(ohlcv[i], 'low') for i in range(-50, 0)]
         
         resistance = max(highs[-20:])  # Недавний максимум
         support = min(lows[-20:])       # Недавний минимум
@@ -171,7 +183,7 @@ class EntryConfirmation:
             "score": 0,
             "checks": {},
             "reasons": [],
-            "entry_price": ohlcv[-1][3] if ohlcv else 0
+            "entry_price": _get_price(ohlcv[-1], 'close') if ohlcv else 0
         }
         
         # 1. Мульти-ТФ (если есть данные)
@@ -216,9 +228,9 @@ class EntryConfirmation:
     # =========================================================================
     
     @staticmethod
-    def _calc_ema(ohlcv: List[List[float]], period: int) -> List[float]:
+    def _calc_ema(ohlcv: List[Any], period: int) -> List[float]:
         """Расчёт EMA"""
-        closes = [c[3] for c in ohlcv]
+        closes = [_get_price(c, 'close') for c in ohlcv]
         if len(closes) < period:
             return closes
         
@@ -233,16 +245,16 @@ class EntryConfirmation:
         return ema
     
     @staticmethod
-    def _calc_atr(ohlcv: List[List[float]], period: int = 14) -> float:
+    def _calc_atr(ohlcv: List[Any], period: int = 14) -> float:
         """Расчёт Average True Range"""
         if len(ohlcv) < period + 1:
             return 0.0
         
         tr_values = []
         for i in range(1, len(ohlcv)):
-            high = ohlcv[i][1]
-            low = ohlcv[i][2]
-            prev_close = ohlcv[i-1][3]
+            high = _get_price(ohlcv[i], 'high')
+            low = _get_price(ohlcv[i], 'low')
+            prev_close = _get_price(ohlcv[i-1], 'close')
             
             tr1 = high - low
             tr2 = abs(high - prev_close)
