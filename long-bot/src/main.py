@@ -321,32 +321,46 @@ async def lifespan(app: FastAPI):
             from api.bingx_client import BingXClient
             from execution.auto_trader import AutoTrader, TradeConfig
 
-            bingx = BingXClient(
-                api_key=os.getenv("BINGX_API_KEY"),
-                api_secret=os.getenv("BINGX_API_SECRET"),
-                demo=Config.BINGX_DEMO,
-            )
-            ok = await bingx.test_connection()
-            if ok:
-                trade_cfg = TradeConfig(
-                    enabled=True,
-                    demo_mode=Config.BINGX_DEMO,
-                    max_positions=Config.MAX_POSITIONS,
-                    risk_per_trade=Config.RISK_PER_TRADE,
-                    min_score_for_trade=Config.MIN_SCORE,
-                    bot_type=Config.BOT_TYPE,  # ✅ FIX: для фильтрации позиций
-                )
-                state.auto_trader = AutoTrader(
-                    bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
-                    bot_type=Config.BOT_TYPE  # ✅ FIX: передаём bot_type
-                )
-                mode = "DEMO" if Config.BINGX_DEMO else "REAL"
-                print(f"✅ BingX AutoTrader ready ({mode})")
+            # 🆕 DEBUG: Check API keys
+            api_key = os.getenv("BINGX_API_KEY")
+            api_secret = os.getenv("BINGX_API_SECRET")
+            print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
+            print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
+
+            if not api_key or not api_secret:
+                print("❌ BINGX_API_KEY or BINGX_API_SECRET not set!")
             else:
-                print("❌ BingX connection failed — AutoTrader disabled")
+                bingx = BingXClient(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    demo=Config.BINGX_DEMO,
+                )
+                print("🔄 Testing BingX connection...")
+                ok = await bingx.test_connection()
+                print(f"🔄 BingX test_connection result: {ok}")
+                if ok:
+                    trade_cfg = TradeConfig(
+                        enabled=True,
+                        demo_mode=Config.BINGX_DEMO,
+                        max_positions=Config.MAX_POSITIONS,
+                        risk_per_trade=Config.RISK_PER_TRADE,
+                        min_score_for_trade=Config.MIN_SCORE,
+                        bot_type=Config.BOT_TYPE,
+                    )
+                    state.auto_trader = AutoTrader(
+                        bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
+                        bot_type=Config.BOT_TYPE
+                    )
+                    mode = "DEMO" if Config.BINGX_DEMO else "REAL"
+                    print(f"✅ BingX AutoTrader ready ({mode})")
+                else:
+                    print(f"❌ BingX connection failed — AutoTrader disabled (last_error: {bingx.last_error})")
         except Exception as e:
-            print(f"❌ AutoTrader init: {e}")
-            import traceback; traceback.print_exc()
+            print(f"❌ AutoTrader init exception: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("⚠️ AUTO_TRADING is disabled — AutoTrader not initialized")
 
     # CoinGlass
     if Config.USE_COINGLASS:
