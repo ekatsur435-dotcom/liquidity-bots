@@ -91,8 +91,8 @@ class RealtimeScorer:
     """
 
     # Пороги для EARLY сигналов
-    EARLY_MIN_SCORE   = 45     # ниже — игнорируем
-    TRADE_MIN_SCORE   = 65     # выше — открываем сделку
+    EARLY_MIN_SCORE   = 63     # ✅ BACKTEST: убираем спам (был 45 → слишком много уведомлений)
+    TRADE_MIN_SCORE   = 67     # ✅ BACKTEST: соответствует MIN_SHORT_SCORE=67
 
     # Пороги ликвидаций
     LIQ_MEDIUM   = 300_000     # $300k
