@@ -62,6 +62,11 @@ class PositionTracker:
     def stop(self):
         self._running = False
 
+    def _log(self, symbol: str, direction: str, message: str):
+        """Логирование для Render."""
+        d_str = "LONG" if direction == "long" else "SHORT"
+        print(f"[PT][{d_str}][{symbol}] {message}")
+
     async def _scan_all(self):
         try:
             signals = self.redis.get_active_signals(self.bot_type)
