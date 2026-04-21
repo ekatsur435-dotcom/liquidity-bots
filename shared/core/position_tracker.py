@@ -452,7 +452,8 @@ class PositionTracker:
             lines.append("\n<i>Закрыто в безубытке. Риск = 0.</i>")
 
         await self._notify(signal, "\n".join(lines))
-        await self._record_pnl(signal, total_pnl, "sl", tp_level_label)
+        # ✅ FIX: используем sl_type_label вместо tp_level_label (учитывает max_tp_hit)
+        await self._record_pnl(signal, total_pnl, "sl", sl_type_label)
 
     async def _expire(self, signal: Dict):
         symbol   = signal.get("symbol", "?")
