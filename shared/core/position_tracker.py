@@ -210,7 +210,7 @@ class PositionTracker:
                         self._log(symbol, direction,
                                   f"📈 TRAIL SL MOVE | "
                                   f"{current_sl:.6f} → {new_sl:.6f} | "
-                                  f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
+                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
                         await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
         else:  # SHORT
@@ -247,7 +247,7 @@ class PositionTracker:
                         self._log(symbol, direction,
                                   f"📈 TRAIL SL MOVE | "
                                   f"{current_sl:.6f} → {new_sl:.6f} | "
-                                  f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
+                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
                         await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
     async def _move_sl(self, signal: Dict, old_sl: float, new_sl: float, move_type: str):
