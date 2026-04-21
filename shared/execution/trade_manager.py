@@ -108,13 +108,14 @@ class TradeManager:
     """
     
     # Настройки TP (по умолчанию для SHORT, для LONG инвертируем)
+    # ✅ v2.5: Увеличены TP для лучшего R:R (минимум 1:2)
     DEFAULT_TP_LEVELS = [
-        {"level": 1, "size_pct": 0.40, "price_pct": 0.025},  # 2.5%
-        {"level": 2, "size_pct": 0.30, "price_pct": 0.050},  # 5%
-        {"level": 3, "size_pct": 0.20, "price_pct": 0.080},  # 8%
-        {"level": 4, "size_pct": 0.10, "price_pct": 0.120},  # 12%
-        {"level": 5, "size_pct": 0.10, "price_pct": 0.120},  # 12%
-        {"level": 6, "size_pct": 0.10, "price_pct": 0.120},  # 12%
+        {"level": 1, "size_pct": 0.25, "price_pct": 0.040},  # 4%  (was 2.5%) - R:R 2.0:1 при SL=2%
+        {"level": 2, "size_pct": 0.25, "price_pct": 0.080},  # 8%  (was 5%)
+        {"level": 3, "size_pct": 0.25, "price_pct": 0.120},  # 12% (was 8%)
+        {"level": 4, "size_pct": 0.15, "price_pct": 0.200},  # 20% (was 12%)
+        {"level": 5, "size_pct": 0.05, "price_pct": 0.300},  # 30% (was 12%)
+        {"level": 6, "size_pct": 0.05, "price_pct": 0.400},  # 40% (was 12%)
     ]
     
     # 🆕 Trail активируется после TP2 (не TP1), на +1% от ТВХ
