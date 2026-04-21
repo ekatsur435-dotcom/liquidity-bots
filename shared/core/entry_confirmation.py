@@ -10,14 +10,17 @@ import numpy as np
 
 
 def _get_price(candle: Any, attr: str) -> float:
-    """Универсальный доступ к цене: поддерживает и dict и object"""
-    if hasattr(candle, attr):
-        return getattr(candle, attr)
-    elif isinstance(candle, (list, tuple)):
+    """Универсальный доступ к цене: поддерживает и dict и object и namedtuple"""
+    # Сначала проверяем dict (быстрее всего)
+    if isinstance(candle, dict):
+        return candle.get(attr, candle.get('close', 0))
+    # Затем list (индексация)
+    elif isinstance(candle, list):
         mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
         return candle[mapping.get(attr, 3)]
-    elif isinstance(candle, dict):
-        return candle.get(attr, candle.get('close', 0))
+    # Объекты с атрибутами (CandleData, namedtuple) — hasattr сработает
+    elif hasattr(candle, attr):
+        return getattr(candle, attr)
     return 0.0
 
 
