@@ -204,11 +204,14 @@ class PositionTracker:
             # Трейлинг только после BE
             # Трейлинг только после BE — для LONG порог 1.5%
             if trailing_active and profit_pct > 0.015:
-                    self._log(symbol, direction,
-                              f"📈 TRAIL SL MOVE | "
-                              f"{current_sl:.6f} → {new_sl:.6f} | "
-                              f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
-                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                    # ✅ FIX: Определяем new_sl для LONG (трейлинг вверх)
+                    new_sl = price * (1 - self.TRAIL_DISTANCE)
+                    if new_sl > current_sl * 1.003:  # двигаем только если значительно выше
+                        self._log(symbol, direction,
+                                  f"📈 TRAIL SL MOVE | "
+                                  f"{current_sl:.6f} → {new_sl:.6f} | "
+                                  f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
+                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
         else:  # SHORT
             profit_pct = (entry - price) / entry
@@ -238,11 +241,14 @@ class PositionTracker:
             # Трейлинг только после BE — для SHORT порог 1.0%, для LONG 1.5%
             trail_threshold = 0.010 if direction == "short" else 0.015
             if trailing_active and profit_pct > trail_threshold:
-                    self._log(symbol, direction,
-                              f"📈 TRAIL SL MOVE | "
-                              f"{current_sl:.6f} → {new_sl:.6f} | "
-                              f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
-                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                    # ✅ FIX: Определяем new_sl для SHORT (трейлинг вниз)
+                    new_sl = price * (1 + self.TRAIL_DISTANCE)
+                    if new_sl < current_sl * 0.997:  # двигаем только если значительно ниже
+                        self._log(symbol, direction,
+                                  f"📈 TRAIL SL MOVE | "
+                                  f"{current_sl:.6f} → {new_sl:.6f} | "
+                                  f"цена={current_price:.6f} profit={profit_pct*100:+.2f}%")
+                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
     async def _move_sl(self, signal: Dict, old_sl: float, new_sl: float, move_type: str):
         """
