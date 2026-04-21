@@ -402,56 +402,6 @@ class BingXClient:
                                        stop_loss=stop_loss, take_profit=take_profit)
 
     # =========================================================================
-    # UPDATE SL/TP for existing position
-    # =========================================================================
-
-    async def update_stop_loss(self, symbol: str, position_side: str, new_sl: float) -> bool:
-        """
-        ✅ Обновить Stop Loss для существующей позиции
-        Используется для BE (безубыток) и трейлинга
-        """
-        print(f"[BX][UPDATE_SL][{symbol}] START: position_side={position_side} new_sl={new_sl:.6f}")
-        try:
-            rounded_sl = await self._round_price(symbol, new_sl)
-            if not rounded_sl:
-                print(f"❌ [BX][UPDATE_SL][{symbol}] Invalid SL price {new_sl}")
-                return False
-
-            print(f"[BX][UPDATE_SL][{symbol}] rounded_sl={rounded_sl:.6f}")
-
-            body = {
-                "symbol": symbol,
-                "positionSide": position_side,
-                "stopLoss": json.dumps(
-                    {"type": "STOP_MARKET", "stopPrice": rounded_sl, "workingType": "MARK_PRICE"},
-                    separators=(',', ':')
-                ),
-            }
-
-            print(f"[BX][UPDATE_SL][{symbol}] API CALL: POST /openApi/swap/v2/trade/stopLossTakeProfit")
-            result = await self._make_request(
-                "POST",
-                "/openApi/swap/v2/trade/stopLossTakeProfit",
-                body=body
-            )
-
-            print(f"[BX][UPDATE_SL][{symbol}] API RESULT: {result}")
-
-            ok = result and result.get("code") == 0
-            if ok:
-                print(f"✅ [BX][UPDATE_SL][{symbol}] SUCCESS: {position_side} → SL={rounded_sl}")
-            else:
-                err = result.get("msg", "unknown") if result else self.last_error
-                print(f"❌ [BX][UPDATE_SL][{symbol}] FAILED: code={result.get('code') if result else 'N/A'} | {err}")
-            return ok
-
-        except Exception as e:
-            print(f"❌ [BX][UPDATE_SL][{symbol}] EXCEPTION: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    # =========================================================================
     # LEVERAGE
     # =========================================================================
 
@@ -473,7 +423,99 @@ class BingXClient:
     # CONNECTION TEST
     # =========================================================================
 
-    async def test_connection(self) -> bool:
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """
+        Отменяет все открытые ордера по символу (SL + TP).
+        Используется перед заменой SL при BE/Trail.
+        BingX API: DELETE /openApi/swap/v2/trade/allOpenOrders
+        """
+        try:
+            result = await self._make_request(
+                "DELETE", "/openApi/swap/v2/trade/allOpenOrders",
+                params={"symbol": symbol},
+            )
+            ok = result and result.get("code") == 0
+            if ok:
+                print(f"✅ Canceled all orders: {symbol}")
+            else:
+                print(f"⚠️  Cancel orders {symbol}: {result}")
+            return ok
+        except Exception as e:
+            print(f"⚠️  cancel_all_orders {symbol}: {e}")
+            return False
+
+    async def update_stop_loss(self, symbol: str, position_side: str,
+                                new_sl: float, direction: str) -> bool:
+        """
+        ✅ ГЛАВНЫЙ FIX: Обновляет SL на бирже через cancel + replace.
+        1. Отменяем старый SL ордер
+        2. Ставим новый STOP_MARKET ордер с новой ценой
+
+        direction = "long"  → side = "SELL" (закрывает LONG)
+        direction = "short" → side = "BUY"  (закрывает SHORT)
+        """
+        try:
+            rounded_sl = await self._round_price(symbol, new_sl)
+            if not rounded_sl:
+                return False
+
+            # Сторона ордера — противоположная позиции
+            sl_side = "SELL" if direction == "long" else "BUY"
+
+            # Получаем текущий размер позиции (нужен для SL ордера)
+            positions = await self.get_positions(symbol)
+            pos = next((p for p in positions
+                        if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
+            if not pos:
+                print(f"⚠️  update_stop_loss: позиция {symbol} не найдена")
+                return False
+
+            remaining_qty = abs(pos.size)
+            if remaining_qty <= 0:
+                return False
+
+            rounded_qty = await self._round_qty(symbol, remaining_qty)
+
+            # Отменяем все текущие SL ордера (не трогаем TP — они отдельные)
+            # В BingX нельзя отменить только SL, поэтому отменяем по типу через allOpenOrders
+            # Затем ставим новый SL
+            await self.cancel_all_orders(symbol)
+
+            # Ставим новый SL ордер
+            body = {
+                "symbol":       symbol,
+                "side":         sl_side,
+                "positionSide": position_side,
+                "type":         "STOP_MARKET",
+                "quantity":     str(rounded_qty),
+                "stopPrice":    str(rounded_sl),
+                "workingType":  "MARK_PRICE",
+                "closePosition": "true",  # закрывает всю позицию
+            }
+            result = await self._make_request("POST", "/openApi/swap/v2/trade/order", body=body)
+            ok = result and result.get("code") == 0
+            if ok:
+                order_id = result.get("data", {}).get("order", {}).get("orderId", "?")
+                print(f"✅ New SL placed: {symbol} @ {rounded_sl} | id={order_id}")
+            else:
+                print(f"❌ update_stop_loss failed: {symbol} | {result}")
+            return ok
+
+        except Exception as e:
+            print(f"❌ update_stop_loss {symbol}: {e}")
+            return False
+
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """Отменяет конкретный ордер по ID."""
+        try:
+            result = await self._make_request(
+                "DELETE", "/openApi/swap/v2/trade/order",
+                params={"symbol": symbol, "orderId": order_id},
+            )
+            return result and result.get("code") == 0
+        except Exception as e:
+            print(f"⚠️  cancel_order {symbol}/{order_id}: {e}")
+            return False
         try:
             balance = await self.get_account_balance()
             if balance:
