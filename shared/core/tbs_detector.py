@@ -3,7 +3,7 @@ TBS Detector v2.6
 Test Before Strike / Tap Before Sweep
 SMC концепция: цена делает ретест зоны перед основным движением
 """
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 
