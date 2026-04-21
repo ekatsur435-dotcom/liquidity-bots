@@ -1,6 +1,13 @@
 """
-🟢 LONG BOT v2.3 — FastAPI Application
+🟢 LONG BOT v2.6 — FastAPI Application
 
+ИСПРАВЛЕНИЯ v2.6:
+  ✅ Liquidity Sweep Detection (ловля сборов стопов)
+  ✅ TBS — Test Before Strike (ретест Order Block)
+  ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
+  ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 3.3:1)
+  ✅ Уменьшен SL: 1.2% (было 1.5%)
+  
 ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_LONG_SCORE default = 60 (было 65)
@@ -52,6 +59,9 @@ from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.6
+from core.entry_confirmation import EntryConfirmation  # ✅ v2.6
+from core.tbs_detector import detect_tbs_entry  # ✅ v2.6 TBS
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -92,7 +102,7 @@ class Config:
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "400000"))  # ✅ 1M$ фильтр мусора
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
@@ -585,8 +595,84 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         # Используем 30m как основной ТФ для анализа (вместо 15m)
         ohlcv_15m = ohlcv_30m  # совместимость с existing code
+        primary_tf = "30m"
+        ohlcv_primary = ohlcv_30m
         if not ohlcv_30m or len(ohlcv_30m) < 20:
             return None
+
+        # =========================================================================
+        # ✅ v2.6: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # =========================================================================
+        try:
+            # 1. Проверяем Liquidity Sweep (сбор стопов лонгистов = шорт ликвидность)
+            sweep = detect_smart_money_entry(ohlcv_primary, direction="long")
+            if sweep and sweep["found"]:
+                # 2. Подтверждение фильтрами
+                tf_data_v26 = {}
+                if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
+                
+                confirmation = EntryConfirmation.comprehensive_check(
+                    ohlcv_primary,
+                    tf_data=tf_data_v26 if len(tf_data_v26) >= 1 else None,
+                    direction="long"
+                )
+                
+                if confirmation["passed"] and confirmation["score"] >= 75:
+                    # 🎯 ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
+                    base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
+                    reasons = sweep["reasons"] + confirmation["reasons"]
+                    
+                    entry = md.price
+                    sl = entry * (1 - Config.SL_BUFFER / 100)
+                    tp1 = entry * (1 + 0.04)  # 4%
+                    tp2 = entry * (1 + 0.08)  # 8%
+                    tp3 = entry * (1 + 0.12)  # 12%
+                    
+                    print(f"🎯 [v2.6] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    
+                    return {
+                        "symbol": symbol,
+                        "direction": "long",
+                        "score": base_score,
+                        "entry_price": entry,
+                        "stop_loss": sl,
+                        "take_profits": [tp1, tp2, tp3],
+                        "reasons": reasons[:5],
+                        "timeframe": primary_tf,
+                        "pattern": "LIQUIDITY_SWEEP",
+                        "zones": sweep.get("zones", {})
+                    }
+                else:
+                    print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён")
+            
+            # 3. Нет sweep — проверяем обычные фильтры
+            tf_data_v26 = {}
+            if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
+            
+            confirmation = EntryConfirmation.comprehensive_check(
+                ohlcv_primary,
+                tf_data=tf_data_v26 if len(tf_data_v26) >= 1 else None,
+                direction="long"
+            )
+            
+            if not confirmation["passed"]:
+                print(f"❌ [v2.6] {symbol}: Не прошли фильтры")
+                return None
+            
+            base_score_bonus = (confirmation["score"] - 50) // 5
+            
+        except Exception as e:
+            print(f"⚠️ [v2.6] {symbol}: Ошибка: {e}")
+            base_score_bonus = 0
+        
+        # ✅ v2.6: TBS (Test Before Strike) — ретест поддержки
+        try:
+            tbs = detect_tbs_entry(ohlcv_primary, direction="long")
+            if tbs and tbs["found"]:
+                print(f"🎯 [v2.6] {symbol}: TBS DETECTED! Ретест ${tbs['zone']:.4f}")
+                base_score_bonus += 10  # +10 за TBS
+        except Exception as e:
+            print(f"⚠️ [v2.6] {symbol}: TBS error: {e}")
 
         # ✅ RSI 30m — промежуточный фильтр между 15m и 1h
         rsi_30m_ok = True
