@@ -71,10 +71,12 @@ class Config:
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # BACKTEST optimum
+    # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # was 2.0
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    TP_LEVELS  = [2.5, 4.5, 7.0, 9.5, 13.0, 18.0]  # ✅ FIX: SL=2.5% TP1=2.5% → R:R 1:1 мин
+    # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
+    TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # SHORT: SL=1.5% TP1=4% → R:R=2.7:1
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [35,  30,  20,  10,   5,   0]
 
