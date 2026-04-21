@@ -44,7 +44,7 @@ class LiquidityDetector:
     4. Historical zones — зоны из прошлого
     """
     
-    def __init__(self, ohlcv: List[List[float]], lookback: int = 100):
+    def __init__(self, ohlcv: List[Any], lookback: int = 100):
         self.ohlcv = ohlcv
         self.n = len(ohlcv)
         self.lookback = lookback
