@@ -423,6 +423,19 @@ class BingXClient:
     # CONNECTION TEST
     # =========================================================================
 
+    async def test_connection(self) -> bool:
+        """Проверяет соединение с BingX API."""
+        try:
+            balance = await self.get_account_balance()
+            if balance:
+                print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
+                return True
+            print(f"❌ BingX failed | {self.last_error}")
+            return False
+        except Exception as e:
+            print(f"❌ BingX error: {e}")
+            return False
+
     async def cancel_all_orders(self, symbol: str) -> bool:
         """
         Отменяет все открытые ордера по символу (SL + TP).
