@@ -82,7 +82,7 @@ class Config:
 
     SIGNAL_TTL_HOURS = 24
 
-    AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "false").lower() == "true"
+    AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
     RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.0005"))
 
