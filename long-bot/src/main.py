@@ -71,10 +71,11 @@ class Config:
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))
+    # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.2"))  # was 1.5
 
-    # TP levels из Config
-    TP_LEVELS  = [2.5, 4.5, 7.5, 11.5, 16.0, 22.0]  # LONG: SL=1.5% TP1=2.5% → R:R≥1.6
+    # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
+    TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # LONG: SL=1.2% TP1=4% → R:R=3.3:1
     TP_WEIGHTS = [25,  20,  20,  15,  12,   8]   # LONG: равномерно с акцентом TP1-2
 
     # Trailing — LONG активирует при +1.5%
