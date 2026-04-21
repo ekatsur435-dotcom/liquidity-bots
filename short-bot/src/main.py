@@ -1,6 +1,13 @@
 """
-🔴 SHORT BOT v2.3 — FastAPI Application
+🔴 SHORT BOT v2.6 — FastAPI Application
 
+ИСПРАВЛЕНИЯ v2.6:
+  ✅ Liquidity Sweep Detection (ловля сборов стопов)
+  ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
+  ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 2.7:1)
+  ✅ Уменьшен SL: 1.5% (было 2.0%)
+  ✅ MIN_VOLUME_USDT = 500000
+  
 ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_SHORT_SCORE default = 60 (было 65)
@@ -52,6 +59,8 @@ from core.pattern_detector import ShortPatternDetector   # ← единый фа
 from core.position_tracker import PositionTracker
 from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.6
+from core.entry_confirmation import EntryConfirmation  # ✅ v2.6
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
