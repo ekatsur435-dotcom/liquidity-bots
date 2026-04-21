@@ -527,6 +527,9 @@ class PositionTracker:
                     "opened_at":    opened_at,
                     "closed_at":    closed_at,
                     "hold_minutes": hold_secs // 60,
+                    # Debug
+                    "_debug_be_done": signal.get("be_done", False),
+                    "_debug_trailing": signal.get("trailing_active", False),
                     # Скоринг и паттерны
                     "score":        signal.get("score", 0),
                     "pattern":      signal.get("pattern", ""),
@@ -561,6 +564,7 @@ class PositionTracker:
                 self.redis.client.lpush(all_key, json.dumps(record))
                 self.redis.client.ltrim(all_key, 0, 9999)   # 10k сделок
                 self.redis.client.expire(all_key, 7776000)  # 90 дней
+                print(f"[PT][RECORD][{symbol}] tp_level={tp_level} pnl={pnl_pct:.2f}% close_type={close_type}")
             except Exception as e:
                 print(f"[PT] history: {e}")
 
