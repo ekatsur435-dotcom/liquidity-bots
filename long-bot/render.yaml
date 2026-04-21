@@ -28,7 +28,7 @@ services:
       - key: PROXY_LIST
         sync: false
       - key: MIN_LONG_SCORE
-        value: "65"
+        value: "75"
       - key: LONG_SL_BUFFER
         value: "1.5"
       - key: MAX_LONG_POSITIONS
