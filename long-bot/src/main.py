@@ -645,7 +645,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 else:
                     print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён")
             
-            # 3. Нет sweep — проверяем обычные фильтры
+            # 3. Нет sweep — проверяем обычные фильтры (v2.6.1: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
             
@@ -655,11 +655,16 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 direction="long"
             )
             
-            if not confirmation["passed"]:
-                print(f"❌ [v2.6] {symbol}: Не прошли фильтры")
-                return None
-            
-            base_score_bonus = (confirmation["score"] - 50) // 5
+            # v2.6.1: Не блокируем, используем как бонус к скору
+            if confirmation["score"] >= 70:
+                base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
+                print(f"✅ [v2.6] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+            elif confirmation["score"] >= 50:
+                base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
+                print(f"⚠️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+            else:
+                base_score_bonus = 0
+                print(f"ℹ️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
             print(f"⚠️ [v2.6] {symbol}: Ошибка: {e}")
@@ -674,8 +679,8 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         except Exception as e:
             print(f"⚠️ [v2.6] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — промежуточный фильтр между 15m и 1h
-        rsi_30m_ok = True
+        # ✅ RSI 30m — бонус/штраф к скору (v2.6.1: не блокер)
+        rsi_30m_adj = 0
         try:
             if ohlcv_30m and len(ohlcv_30m) >= 14:
                 closes_30m = [c.close for c in ohlcv_30m[-14:]]
@@ -683,17 +688,18 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
                 ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # Блокируем лонг если RSI 30m перекуплен (>75) — слишком поздно
-                if rsi_30m > 75:
-                    rsi_30m_ok = False
+                # v2.6.1: Не блокируем, корректируем скор
+                if rsi_30m < 30:
+                    rsi_30m_adj = +5  # Перепродан — хорошо для LONG
+                elif rsi_30m > 75:
+                    rsi_30m_adj = -5  # Перекуплен — плохо для LONG
+                elif rsi_30m > 65:
+                    rsi_30m_adj = -2  # Начало перекупленности
         except Exception:
             pass
-        if not rsi_30m_ok:
-            return None  # RSI 30m перекуплен — ложный LONG сигнал
-
-        # ✅ FIX L3: Multi-TF RSI context — 4h RSI не должен быть слишком высоким
-        # Если RSI 1h перепродан (35) но RSI 4h нейтрален/перекуплен (>60) — ложный сигнал
-        rsi_4h_ok = True
+        
+        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.6.1: не блокер)
+        rsi_4h_adj = 0
         try:
             ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
             if ohlcv_4h and len(ohlcv_4h) >= 14:
@@ -702,13 +708,18 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
                 ag = sum(gains)/13; al = sum(losses)/13
                 rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # Блокируем лонг если 4h RSI перекуплен (>70)
-                if rsi_4h > 70:
-                    rsi_4h_ok = False
+                # v2.6.1: Не блокируем, корректируем скор
+                if rsi_4h < 35:
+                    rsi_4h_adj = +8   # Перепродан на 4h — отлично для LONG
+                elif rsi_4h > 70:
+                    rsi_4h_adj = -8   # Перекуплен на 4h — плохо для LONG
+                elif rsi_4h > 60:
+                    rsi_4h_adj = -3   # Начало перекупленности
         except Exception:
             pass
-        if not rsi_4h_ok:
-            return None  # 4h RSI перекуплен — ложный LONG сигнал
+        
+        # Применяем RSI корректировки к базовому бонусу
+        base_score_bonus = base_score_bonus + rsi_30m_adj + rsi_4h_adj
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
