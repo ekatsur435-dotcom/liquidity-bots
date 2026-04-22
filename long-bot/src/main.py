@@ -73,9 +73,9 @@ class Config:
     BOT_TYPE      = "long"
     # ✅ FIX: MIN_LONG_SCORE default = 60 (не 65!)
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "75"))
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "70"))
     # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
     MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "20"))
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
