@@ -297,6 +297,7 @@ def detect_smart_money_entry(ohlcv: List[Any],
     return {
         "found": True,
         "entry": sweep.entry_price,
+        "price": sweep.entry_price,  # Alias для совместимости
         "sl": sweep.stop_loss,
         "tp": sweep.take_profit,
         "confidence": sweep.confidence,
