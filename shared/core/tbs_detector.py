@@ -53,11 +53,13 @@ class TBSDetector:
     def _get_price(self, i: int, attr: str) -> float:
         """Универсальный доступ к данным свечи"""
         candle = self.ohlcv[i]
-        if hasattr(candle, attr):
-            return getattr(candle, attr)
-        elif isinstance(candle, (list, tuple)):
+        if isinstance(candle, dict):
+            return candle.get(attr, candle.get('close', 0))
+        elif isinstance(candle, list):
             mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
             return candle[mapping.get(attr, 3)]
+        elif hasattr(candle, attr):
+            return getattr(candle, attr)
         return 0.0
     
     def _o(self, i: int) -> float: return self._get_price(i, 'open')
@@ -125,12 +127,10 @@ class TBSDetector:
         if self.n < 15:
             return TBSResult(False, TBSPhase.NONE, "", 0, 0, None, 0, 0, [])
         
-        # Берём последние 10 свечей для анализа
-        recent = self.ohlcv[-10:]
-        
-        # Находим ключевые уровни
-        recent_highs = [c[1] for c in recent[:-3]]  # Без последних 3
-        recent_lows = [c[2] for c in recent[:-3]]
+        # Берём последние 10 свечей для анализа (индексы относительно конца)
+        # Находим ключевые уровни - используем _get_price для совместимости с CandleData
+        recent_highs = [self._h(i) for i in range(-10, -3)]  # Без последних 3
+        recent_lows = [self._l(i) for i in range(-10, -3)]
         
         if direction == "short":
             resistance = max(recent_highs)
