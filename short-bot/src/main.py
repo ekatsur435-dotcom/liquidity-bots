@@ -1099,13 +1099,12 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # ✅ TF фильтр (бэктест): только 2h/4h на биржу, остальное → Telegram only
-            primary_tf = signal.get("primary_tf", "15m")
-            tf_for_execution = primary_tf in ("2h", "4h")
+            # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.6.3)
+            primary_tf = signal.get("timeframe", "15m")
+            tf_for_execution = True  # Разрешаем всем ТФ
 
-            # Биржевое исполнение: только если есть SHORT слоты, не на паузе, и ТФ = 2h/4h
-            if (not exchange_full and Config.AUTO_TRADING and not state.is_paused 
-                and tf_for_execution):
+            # Биржевое исполнение: только если есть SHORT слоты, не на паузе
+            if (not exchange_full and Config.AUTO_TRADING and not state.is_paused):
                 if state.auto_trader:
                     try:
                         await state.auto_trader.execute_signal(signal)
@@ -1117,12 +1116,10 @@ async def scan_market():
                 print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
             else:
                 tg_only_count += 1
-                if not tf_for_execution:
-                    reason = f"{primary_tf} (needs 2h/4h for exec)"
-                elif exchange_full:
+                if exchange_full:
                     reason = "max SHORT positions"
                 else:
-                    reason = "paused"
+                    reason = "paused or AT disabled"
                 print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] Score={signal['score']:.0f}% [{reason}]")
 
             await asyncio.sleep(0.4)
