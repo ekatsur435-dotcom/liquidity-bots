@@ -704,7 +704,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                     # Sweep есть но не подтверждён — логируем но пропускаем
                     print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
             
-            # 3. Нет sweep — проверяем обычные фильтры для всех сигналов
+            # 3. Нет sweep — проверяем обычные фильтры (v2.6.1: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
             if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
@@ -716,12 +716,16 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 direction="short"
             )
             
-            if not confirmation["passed"]:
-                print(f"❌ [v2.6] {symbol}: Не прошли фильтры ({confirmation['reasons'][-1]})")
-                return None  # ❌ Фильтры не пройдены — нет сигнала
-            
-            # ✅ Прошли — добавляем бонус к скору
-            base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+10 к скору
+            # v2.6.1: Не блокируем, используем как бонус к скору
+            if confirmation["score"] >= 70:
+                base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
+                print(f"✅ [v2.6] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+            elif confirmation["score"] >= 50:
+                base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
+                print(f"⚠️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+            else:
+                base_score_bonus = 0
+                print(f"ℹ️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
             print(f"⚠️ [v2.6] {symbol}: Ошибка EntryConfirmation: {e}")
