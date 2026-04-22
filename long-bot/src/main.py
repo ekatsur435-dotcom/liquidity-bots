@@ -786,6 +786,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
+        )
         reasons     = list(score_result.reasons)
 
         # ── Realtime scorer ───────────────────────────────────────────────────
