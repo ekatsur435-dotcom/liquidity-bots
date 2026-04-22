@@ -89,7 +89,7 @@ class Config:
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
     TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # SHORT: SL=1.5% TP1=4% → R:R=2.7:1
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
-    TP_WEIGHTS = [35,  30,  20,  10,   5,   0]
+    TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
     # Trailing — SHORT активирует при +3% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
