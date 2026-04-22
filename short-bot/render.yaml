@@ -47,6 +47,10 @@ services:
         value: "0.0005"
       - key: USE_SMC
         value: "true"
+      - key: USE_TBS
+        value: "true"
+      - key: USE_ENTRY_CONFIRMATION
+        value: "true"
       - key: USE_BINANCE
         value: "false"
       - key: ENABLE_BE_AFTER_TP1
