@@ -1025,14 +1025,6 @@ async def scan_market():
             if not signal:
                 continue
 
-            # BTC корреляционный модификатор к score
-            original_score = signal["score"]
-            signal["score"]       = round(original_score + btc_corr["score_adj"], 1)
-            signal["btc_corr_adj"] = btc_corr["score_adj"]
-            signal["btc_label"]    = btc_corr["label"]
-            if signal["score"] < Config.MIN_SCORE:
-                continue
-
             # ✅ ВСЕГДА: Telegram сигнал
             tg_msg_id = await state.telegram.send_signal(
                 direction="short", symbol=signal["symbol"],
