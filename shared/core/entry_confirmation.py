@@ -26,8 +26,9 @@ def _get_price(candle: Any, attr: str) -> float:
 
 class EntryConfirmation:
     """
-    Комплексная проверка перед входом в сделку.
-    ВСЕ фильтры должны пройти для входа.
+    Комплексная проверка перед входом в сделку v2.6.1
+    Фильтры дают БОНУСЫ к скору, а не блокируют вход.
+    Основная логика v2.5 сохранена + v2.6 как усиление сигнала.
     """
     
     @staticmethod
@@ -72,157 +73,208 @@ class EntryConfirmation:
     
     @staticmethod
     def volume_confirmation(ohlcv: List[List[float]], 
-                           min_spike: float = 2.0,
-                           lookback: int = 20) -> Tuple[bool, str]:
+                           min_spike: float = 1.3,
+                           lookback: int = 20) -> Tuple[bool, str, float]:
         """
-        3️⃣ Объёмный подтверждение
+        3️⃣ Объёмный подтверждение v2.6.1 (смягчено)
         
-        Требования:
-        - Объём выше среднего на min_spike (2x)
-        - На свече разворота высокий объём
+        Было: 2x объём = обязательно (блок)
+        Стало: 1.3x объём = бонус, 2x+ = сильный бонус
         """
         if len(ohlcv) < lookback + 5:
-            return False, "❌ Мало данных"
+            return True, "⚠️ Мало данных для объёма", 0.0
         
-        # Средний объём (без последних 5)
-        avg_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-lookback-5, -5)) / lookback
+        try:
+            # Средний объём (без последних 5)
+            avg_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-lookback-5, -5)) / lookback
+            # Текущий объём (3 последние свечи)
+            current_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-3, 0)) / 3
+            volume_spike = current_vol / avg_vol if avg_vol > 0 else 0
+        except:
+            return True, "⚠️ Ошибка расчёта объёма", 0.0
         
-        # Текущий объём (3 последние свечи)
-        current_vol = sum(_get_price(ohlcv[i], 'volume') for i in range(-3, 0)) / 3
-        
-        volume_spike = current_vol / avg_vol if avg_vol > 0 else 0
-        
-        if volume_spike < min_spike:
-            return False, f"❌ Объём {volume_spike:.1f}x (нужно {min_spike}x)"
-        
-        return True, f"✅ Объём {volume_spike:.1f}x выше среднего"
+        # v2.6.1: Не блокируем, даём бонус за высокий объём
+        if volume_spike >= 2.0:
+            return True, f"✅ Объём {volume_spike:.1f}x (сильный импульс)", volume_spike
+        elif volume_spike >= min_spike:
+            return True, f"✅ Объём {volume_spike:.1f}x (есть активность)", volume_spike
+        else:
+            return True, f"⚠️ Объём {volume_spike:.1f}x (ниже среднего)", volume_spike
     
     @staticmethod
     def atr_filter(ohlcv: List[List[float]],
-                   min_atr: float = 1.5,
-                   max_atr: float = 8.0,
+                   min_atr: float = 0.8,
+                   max_atr: float = 15.0,
                    period: int = 14) -> Tuple[bool, str, float]:
         """
-        4️⃣ ATR Фильтр волатильности
+        4️⃣ ATR Фильтр волатильности v2.6.1 (смягчено)
         
-        Исключаем:
-        - Слишком спокойный рынок (< 1.5% ATR)
-        - Слишком волатильный (> 8% ATR) — новости, памп/дамп
+        Было: 1.5-8% = блок, остальное нельзя
+        Стало: 0.8-15% = норма, всё остальное = предупреждение но не блок
         """
         if len(ohlcv) < period + 1:
-            return False, "❌ Мало данных", 0.0
+            return True, "⚠️ Мало данных для ATR", 0.0
         
-        atr = EntryConfirmation._calc_atr(ohlcv, period)
-        current_price = _get_price(ohlcv[-1], 'close')
-        atr_pct = (atr / current_price) * 100
+        try:
+            atr = EntryConfirmation._calc_atr(ohlcv, period)
+            current_price = _get_price(ohlcv[-1], 'close')
+            atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
+        except:
+            return True, "⚠️ Ошибка расчёта ATR", 0.0
         
+        # v2.6.1: Не блокируем, даём информацию
         if atr_pct < min_atr:
-            return False, f"❌ ATR {atr_pct:.1f}% слишком низкий (мин {min_atr}%)", atr_pct
-        
-        if atr_pct > max_atr:
-            return False, f"❌ ATR {atr_pct:.1f}% слишком высокий (макс {max_atr}%)", atr_pct
-        
-        return True, f"✅ ATR {atr_pct:.1f}% оптимален", atr_pct
+            return True, f"⚠️ ATR {atr_pct:.1f}% низкий (спокойный рынок)", atr_pct
+        elif atr_pct > max_atr:
+            return True, f"⚠️ ATR {atr_pct:.1f}% высокий (волатильность)", atr_pct
+        else:
+            return True, f"✅ ATR {atr_pct:.1f}% в рабочем диапазоне", atr_pct
     
     @staticmethod
     def sr_levels_filter(ohlcv: List[List[float]],
                         current_price: float,
-                        tolerance: float = 0.02) -> Tuple[bool, str, Dict]:
+                        direction: str = "long",
+                        tolerance: float = 0.03) -> Tuple[bool, str, Dict]:
         """
-        5️⃣ Уровни поддержки/сопротивления
+        5️⃣ Уровни поддержки/сопротивления v2.6.1 (умная логика direction)
         
-        Вход только у ключевых уровней, не посреди диапазона.
+        LONG:  Хорошо у Support (покупаем на дне), плохо у Resistance
+        SHORT: Хорошо у Resistance (продаём на пике), плохо у Support
+        
+        v2.6.1: Не блокируем, даём бонус за правильное расположение
         """
-        if len(ohlcv) < 50:
-            return False, "❌ Мало истории", {}
+        # v2.6.1: Смягчено — 30 свечей достаточно для 30m, масштабируем по ТФ
+        min_candles = 30  # Базовое требование
         
-        # Находим уровни за последние 50 свечей
-        highs = [_get_price(ohlcv[i], 'high') for i in range(-50, 0)]
-        lows = [_get_price(ohlcv[i], 'low') for i in range(-50, 0)]
+        if len(ohlcv) < min_candles:
+            return True, "⚠️ Мало истории для S/R", {"resistance": 0, "support": 0}
         
-        resistance = max(highs[-20:])  # Недавний максимум
-        support = min(lows[-20:])       # Недавний минимум
-        
-        # Проверяем близость к уровням
-        near_resistance = abs(current_price - resistance) / current_price < tolerance
-        near_support = abs(current_price - support) / current_price < tolerance
-        
-        # Средняя цена диапазона
-        range_mid = (max(highs) + min(lows)) / 2
-        near_mid = abs(current_price - range_mid) / current_price < tolerance
-        
-        if near_mid and not (near_support or near_resistance):
-            return False, "❌ Цена посреди диапазона (не у разворотного уровня)", {
-                "resistance": resistance,
-                "support": support,
-                "mid": range_mid
-            }
-        
-        level_type = ""
-        if near_resistance:
-            level_type = "Resistance"
-        elif near_support:
-            level_type = "Support"
-        
-        return True, f"✅ Цена у {level_type}: ${resistance if near_resistance else support:.4f}", {
-            "resistance": resistance,
-            "support": support,
-            "type": level_type,
-            "distance_pct": min(
-                abs(current_price - resistance) / current_price,
-                abs(current_price - support) / current_price
-            ) * 100
-        }
+        try:
+            # Находим уровни за последние N свечей
+            lookback = min(30, len(ohlcv))  # Адаптивно
+            highs = [_get_price(ohlcv[i], 'high') for i in range(-lookback, 0)]
+            lows = [_get_price(ohlcv[i], 'low') for i in range(-lookback, 0)]
+            
+            resistance = max(highs[-15:]) if len(highs) >= 15 else max(highs)
+            support = min(lows[-15:]) if len(lows) >= 15 else min(lows)
+            
+            # Проверяем близость к уровням (расширенный tolerance 3%)
+            near_resistance = abs(current_price - resistance) / current_price < tolerance
+            near_support = abs(current_price - support) / current_price < tolerance
+            
+            # v2.6.1: Умная логика в зависимости от направления
+            if direction == "long":
+                if near_support:
+                    return True, f"✅ У Support (хорошо для LONG): ${support:.4f}", {
+                        "resistance": resistance, "support": support, 
+                        "type": "support", "optimal": True
+                    }
+                elif near_resistance:
+                    return True, f"⚠️ У Resistance (неидеально для LONG): ${resistance:.4f}", {
+                        "resistance": resistance, "support": support, 
+                        "type": "resistance", "optimal": False
+                    }
+                else:
+                    # v2.6.1: Не блокируем посреди диапазона!
+                    return True, f"📊 В диапазоне (нейтрально)", {
+                        "resistance": resistance, "support": support, 
+                        "type": "mid", "optimal": None
+                    }
+            else:  # short
+                if near_resistance:
+                    return True, f"✅ У Resistance (хорошо для SHORT): ${resistance:.4f}", {
+                        "resistance": resistance, "support": support, 
+                        "type": "resistance", "optimal": True
+                    }
+                elif near_support:
+                    return True, f"⚠️ У Support (неидеально для SHORT): ${support:.4f}", {
+                        "resistance": resistance, "support": support, 
+                        "type": "support", "optimal": False
+                    }
+                else:
+                    # v2.6.1: Не блокируем посреди диапазона!
+                    return True, f"📊 В диапазоне (нейтрально)", {
+                        "resistance": resistance, "support": support, 
+                        "type": "mid", "optimal": None
+                    }
+        except Exception as e:
+            return True, f"⚠️ Ошибка S/R: {str(e)[:20]}", {"resistance": 0, "support": 0}
     
     @staticmethod
     def comprehensive_check(ohlcv: List[List[float]],
                           tf_data: Optional[Dict] = None,
-                          direction: str = "short") -> Dict:
+                          direction: str = "short",
+                          min_history: int = 30) -> Dict:
         """
-        ✅ v2.6: Полная проверка всех фильтров
+        ✅ v2.6.1: Полная проверка — фильтры дают БОНУСЫ, не блокируют
+        
+        Система начисления:
+        - Базовый скор: 50 (просто за проверку)
+        - +10 за каждый "хороший" сигнал
+        - +5 за каждый "нейтральный"
+        - 0 за "плохой" но не блокируем
+        
+        Минимум истории: 30 свечей (вместо 50), масштабируется по ТФ
         """
         results = {
-            "passed": True,
-            "score": 0,
+            "passed": True,  # v2.6.1: Всегда True, не блокируем
+            "score": 50,     # v2.6.1: Базовый скор 50 просто за проверку
             "checks": {},
             "reasons": [],
-            "entry_price": _get_price(ohlcv[-1], 'close') if ohlcv else 0
+            "entry_price": _get_price(ohlcv[-1], 'close') if ohlcv else 0,
+            "direction": direction
         }
         
-        # 1. Мульти-ТФ (если есть данные)
-        if tf_data:
+        # 1. Мульти-ТФ (если есть данные) — бонус за согласие ТФ
+        if tf_data and len(tf_data) >= 2:
             passed, reasons = EntryConfirmation.multi_tf_confirmation(tf_data, direction)
             results["checks"]["multi_tf"] = {"passed": passed, "reasons": reasons}
-            if not passed:
-                results["passed"] = False
-            results["reasons"].extend(reasons)
+            if passed:
+                results["score"] += 15  # +15 за согласие 2+ ТФ
+                results["reasons"].append(f"✅ Мульти-ТФ: {len(reasons)} подтверждений")
+            else:
+                results["score"] += 5   # +5 за попытку
+                results["reasons"].append(f"⚠️ Мульти-ТФ: недостаточно подтверждений")
+        else:
+            results["reasons"].append("ℹ️ Мульти-ТФ: нет данных")
         
-        # 2. Объём
-        vol_passed, vol_reason = EntryConfirmation.volume_confirmation(ohlcv)
-        results["checks"]["volume"] = {"passed": vol_passed, "reason": vol_reason}
-        if not vol_passed:
-            results["passed"] = False
+        # 2. Объём — бонус за высокий объём
+        vol_passed, vol_reason, vol_spike = EntryConfirmation.volume_confirmation(ohlcv)
+        results["checks"]["volume"] = {"passed": vol_passed, "reason": vol_reason, "spike": vol_spike}
+        if vol_spike >= 2.0:
+            results["score"] += 15  # Сильный импульс
+        elif vol_spike >= 1.3:
+            results["score"] += 10  # Есть активность
+        elif vol_spike > 0:
+            results["score"] += 3   # Низкий но есть
         results["reasons"].append(vol_reason)
         
-        # 3. ATR
+        # 3. ATR — бонус за оптимальную волатильность
         atr_passed, atr_reason, atr_value = EntryConfirmation.atr_filter(ohlcv)
         results["checks"]["atr"] = {"passed": atr_passed, "reason": atr_reason, "value": atr_value}
-        if not atr_passed:
-            results["passed"] = False
+        if 1.0 <= atr_value <= 10.0:
+            results["score"] += 10  # Оптимальный ATR
+        elif 0.5 <= atr_value <= 15.0:
+            results["score"] += 5   # Приемлемый
         results["reasons"].append(atr_reason)
         
-        # 4. S/R уровни
+        # 4. S/R уровни — бонус за правильное расположение
         sr_passed, sr_reason, sr_data = EntryConfirmation.sr_levels_filter(
-            ohlcv, results["entry_price"]
+            ohlcv, results["entry_price"], direction=direction
         )
         results["checks"]["sr_levels"] = {"passed": sr_passed, "reason": sr_reason, "data": sr_data}
-        if not sr_passed:
-            results["passed"] = False
+        
+        # v2.6.1: Умная логика бонусов S/R
+        if sr_data.get("optimal") is True:
+            results["score"] += 15  # Идеальное расположение (Support для LONG, Resistance для SHORT)
+        elif sr_data.get("optimal") is False:
+            results["score"] += 5   # Неидеально но допустимо
+        else:
+            results["score"] += 8   # В диапазоне (нейтрально)
         results["reasons"].append(sr_reason)
         
-        # Итоговый score (каждый пройденный фильтр +25)
-        score = sum(25 for check in results["checks"].values() if check.get("passed", False))
-        results["score"] = min(100, score)
+        # v2.6.1: Ограничиваем максимум 100
+        results["score"] = min(100, results["score"])
         
         return results
     
