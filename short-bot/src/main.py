@@ -74,9 +74,9 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
@@ -106,8 +106,8 @@ class Config:
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
-    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "400000"))  # Было: 300000
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "500"))
 
 
 # ============================================================================
