@@ -693,12 +693,15 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                         "symbol": symbol,
                         "direction": "short",
                         "score": base_score,
+                        "price": entry,  # Alias для совместимости с telegram
                         "entry_price": entry,
                         "stop_loss": sl,
                         "take_profits": [tp1, tp2, tp3],
                         "reasons": reasons[:5],  # Топ-5 причин
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
+                        "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
+                        "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
                         "zones": sweep.get("zones", {})
                     }
                 else:
