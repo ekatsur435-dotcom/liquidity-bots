@@ -86,7 +86,7 @@ class Config:
 
     # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
     TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # LONG: SL=1.2% TP1=4% → R:R=3.3:1
-    TP_WEIGHTS = [25,  20,  20,  15,  12,   8]   # LONG: равномерно с акцентом TP1-2
+    TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
     # Trailing — LONG активирует при +2.5% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
