@@ -901,6 +901,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 reasons.append(f"RSI watchlist: вырос с 35 до {peak:.0f} → +5")
         
         if final_score < Config.MIN_SCORE:
+            print(f"🔴 [FILTER1] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
         # OI proxy — тихо (убраны verbose debug logs)
@@ -938,6 +939,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 print(f"SMC error {symbol}: {e}")
 
         if final_score < Config.MIN_SCORE:
+            print(f"🔴 [FILTER2-SMC] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
         # ✅ SL для SHORT: минимум = SL_BUFFER%, не захардкоженный 1%
@@ -952,6 +954,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         ]
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
+        print(f"🟢 [SIGNAL] {symbol}: score={final_score} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
