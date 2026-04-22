@@ -47,6 +47,17 @@ class PositionTracker:
         self.binance     = binance_client
         self.config      = config
         self.auto_trader = auto_trader
+        
+        # Trail activation thresholds из config (env vars)
+        # LONG: 2.5% по умолчанию, SHORT: 3% по умолчанию
+        self.long_trail_threshold  = getattr(config, 'LONG_TRAIL_ACTIVATION', 0.025)
+        self.short_trail_threshold = getattr(config, 'SHORT_TRAIL_ACTIVATION', 0.030)
+        
+        # Конвертируем строку в float если нужно
+        if isinstance(self.long_trail_threshold, str):
+            self.long_trail_threshold = float(self.long_trail_threshold)
+        if isinstance(self.short_trail_threshold, str):
+            self.short_trail_threshold = float(self.short_trail_threshold)
         self._running    = False
 
     async def run(self):
@@ -202,8 +213,8 @@ class PositionTracker:
                     return
 
             # Трейлинг только после BE
-            # Трейлинг только после BE — для LONG порог 1.5%
-            if trailing_active and profit_pct > 0.015:
+            # Trail activation threshold из config (по умолчанию 2.5%)
+            if trailing_active and profit_pct > self.long_trail_threshold:
                     # ✅ FIX: Определяем new_sl для LONG (трейлинг вверх)
                     new_sl = price * (1 - self.TRAIL_DISTANCE)
                     if new_sl > current_sl * 1.003:  # двигаем только если значительно выше
@@ -238,8 +249,8 @@ class PositionTracker:
                     signal["trailing_active"] = True
                     return
 
-            # Трейлинг только после BE — для SHORT порог 1.0%, для LONG 1.5%
-            trail_threshold = 0.010 if direction == "short" else 0.015
+            # Трейлинг только после BE — пороги из config
+            trail_threshold = self.short_trail_threshold if direction == "short" else self.long_trail_threshold
             if trailing_active and profit_pct > trail_threshold:
                     # ✅ FIX: Определяем new_sl для SHORT (трейлинг вниз)
                     new_sl = price * (1 + self.TRAIL_DISTANCE)
