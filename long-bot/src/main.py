@@ -825,6 +825,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
         
         if final_score < Config.MIN_SCORE:
+            print(f"🔴 [FILTER1-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
         # OI proxy — тихо (убраны verbose debug logs)
@@ -858,6 +859,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
                 print(f"SMC error {symbol}: {e}")
 
         if final_score < Config.MIN_SCORE:
+            print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
         # ✅ FIX: Проверка SL для LONG — должен быть НИЖЕ цены
@@ -871,6 +873,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         ]
 
         sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
+        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
