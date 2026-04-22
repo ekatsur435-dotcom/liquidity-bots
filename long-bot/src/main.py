@@ -572,7 +572,7 @@ def _ohlcv(candles) -> List[List[float]]:
 # _count_real_positions: see full implementation below (filters LONG only)
 
 
-async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
+async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
     LONG scan_symbol v2.3:
       - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
@@ -786,18 +786,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
-        )
-        if not score_result.is_valid:
-            return None
-
-        price       = md.price
-        final_score = score_result.total_score + oi_score_adj
         reasons     = list(score_result.reasons)
-
-        # ── LONG: BTC trend awareness (используем кешированное значение) ────
-        # cached_btc_1h передаётся из scan_market (1 запрос на весь скан)
-        if cached_btc_1h is not None and cached_btc_1h < -3.0:
-            return None   # BTC рухает >3%/1ч — не лонгуем
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
@@ -817,6 +806,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         final_score = rt_result.final_score
         reasons.extend(rt_result.factors)
+        print(f"📊 [RT-LONG] {symbol}: base={rt_result.base_score} bonus={rt_result.bonus:+d} final={rt_result.final_score}")
 
         # 🆕 Бонус если RSI восстанавливается от низов (LONG сигнал)
         rsi_now = md.rsi_1h or 0
@@ -940,37 +930,11 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def _get_btc_correlation() -> dict:
-    """
-    BTC корреляция — ТОЛЬКО как информация и модификатор score.
-    НЕ является блокером. Многие альты растут при падающем BTC и наоборот.
-    Возвращает: {"score_adj": float, "label": str, "change_1h": float}
-    """
-    try:
-        btc = await state.binance.get_complete_market_data("BTCUSDT")
-        if not btc:
-            return {"score_adj": 0, "label": "unknown", "change_1h": 0}
-        c1h  = getattr(btc, "price_change_1h", 0) or 0
-        c24h = getattr(btc, "price_change_24h", 0) or 0
-        # BTC растёт сильно → небольшой бонус к LONG сигналам
-        if c1h > 2.0:   adj, label = +3.0, f"BTC +{c1h:.1f}%/1h 🚀"
-        elif c1h > 0.5: adj, label = +1.5, f"BTC +{c1h:.1f}%/1h ↗"
-        # BTC падает сильно → небольшой штраф к LONG сигналам
-        elif c1h < -2.0: adj, label = -3.0, f"BTC {c1h:.1f}%/1h 🔴"
-        elif c1h < -0.5: adj, label = -1.5, f"BTC {c1h:.1f}%/1h ↘"
-        else:            adj, label =  0.0, f"BTC {c1h:.1f}%/1h ↔"
-        return {"score_adj": adj, "label": label, "change_1h": c1h, "change_24h": c24h}
-    except Exception:
-        return {"score_adj": 0, "label": "BTC N/A", "change_1h": 0}
-
-
 async def scan_market():
     """
-    ✅ v2.4 АРХИТЕКТУРА:
+    ✅ v2.7 АРХИТЕКТУРА (NO BTC CORR):
     - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20)
     - Биржевое исполнение: только если active_count < MAX и не /pause
-    - BTC корреляция: только модификатор score (-3..+3), НЕ блокер
-    - BTC RSI 4h > 40 фильтр (не лонгуем в глубоком даунтренде)
     - Единственный блокер: команда /pause
     """
     if state.is_paused:
@@ -978,27 +942,6 @@ async def scan_market():
 
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
-
-    # BTC корреляция — только информация и мягкий модификатор score
-    btc_corr  = await _get_btc_correlation()
-    _btc_rsi_4h: float = 50.0
-    try:
-        btc_data = await state.binance.get_complete_market_data("BTCUSDT")
-        if btc_data:
-            _btc_rsi_4h = getattr(btc_data, 'rsi_4h', 50.0) or 50.0
-    except Exception:
-        pass
-
-    # ✅ BTC RSI 4h фильтр для LONG (бэктест): только если BTC RSI 4h > 40
-    # Если BTC в глубоком даунтренде (RSI 4h < 40) — блокируем LONG
-    if _btc_rsi_4h < 40:
-        print(f"⛔ LONG blocked: BTC RSI 4h = {_btc_rsi_4h:.1f} < 40 (deep downtrend)")
-        return  # полная блокировка сканирования
-    elif _btc_rsi_4h < 45:
-        print(f"⚠️ BTC RSI 4h = {_btc_rsi_4h:.1f} (weak market) — reduced scoring")
-    score_adj = int(btc_corr.get("score_adj", 0) or 0)
-    btc_label = btc_corr.get("label") or "BTC N/A"
-    print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
 
     # Считаем активные LONG позиции на бирже
     active_count  = await _count_real_positions()
@@ -1016,18 +959,8 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol, btc_corr.get("change_1h"))
+            signal = await scan_symbol(symbol)
             if not signal:
-                continue
-
-            # Применяем BTC корреляционный модификатор к score
-            original_score = signal["score"]
-            btc_score_adj = btc_corr.get("score_adj", 0) or 0
-            signal["score"] = round(original_score + btc_score_adj, 1)
-            signal["btc_corr_adj"] = btc_score_adj
-            signal["btc_label"]    = btc_corr.get("label", "BTC N/A")
-            # Если после поправки score упал ниже мин — пропускаем
-            if signal["score"] < Config.MIN_SCORE:
                 continue
 
             # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
