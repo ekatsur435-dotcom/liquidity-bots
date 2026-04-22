@@ -56,6 +56,6 @@ services:
       - key: ENABLE_BE_AFTER_TP1
         value: "true"
       - key: LONG_TRAIL_ACTIVATION
-        value: "0.010"
+        value: "0.025"
       - key: ENABLE_BTC_CORRELATION
         value: "true"
