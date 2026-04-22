@@ -297,9 +297,12 @@ class TelegramBot:
             tp_price  = float(tp_item[0]) if isinstance(tp_item, (list, tuple)) else float(tp_item.get("price", 0))
             tp_weight = tp_item[1] if isinstance(tp_item, (list, tuple)) else tp_item.get("weight", 0)
             pct = abs(self._calc_pct(entry, tp_price))
-            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (-{pct:.1f}%)  [{tp_weight}%]\n"
+            tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (+{pct:.1f}%)  [{tp_weight}%]\n"
 
         ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
+
+        # ✅ FIX: Для SHORT SL выше entry = убыток (знак -), TP ниже = прибыль (знак +)
+        sl_sign = "-" if sl_pct > 0 else "+"
 
         return (
             f"\n{emoji} <b>SHORT SIGNAL | {strength}</b>\n"
@@ -309,7 +312,7 @@ class TelegramBot:
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
             f"<b>🎯 LEVELS:</b>\n"
             f"   Entry: <b>{fmt_price(entry)}</b>\n"
-            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  (+{abs(sl_pct):.2f}%)\n"
+            f"   Stop:  <b>{fmt_price(stop_loss)}</b>  ({sl_sign}{abs(sl_pct):.2f}%)\n"
             f"{tp_lines}\n"
             f"<b>⚡ Leverage:</b> {leverage}x\n"
             f"<b>💰 Risk:</b> {risk}\n"
