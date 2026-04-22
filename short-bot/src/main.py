@@ -91,8 +91,9 @@ class Config:
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [35,  30,  20,  10,   5,   0]
 
-    # Trailing — SHORT активирует при +1% (лонг: +1.5%)
-    TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.010"))
+    # Trailing — SHORT активирует при +3% (после TP1)
+    TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
+    SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
     SIGNAL_TTL_HOURS = 24
 
