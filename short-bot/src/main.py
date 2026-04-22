@@ -605,15 +605,14 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Optional[Dict]:
+async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
-    SHORT scan_symbol v2.4:
+    SHORT scan_symbol v2.7 (NO BTC CORR):
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
-      - TP НИЖЕ входа (short: фиксируем прибыль при падении)
-      - ShortFilter: фильтрация по BTC trend, RSI, фандинг, свеча
+      - TP НИЖЕ входа (short: take profit = цена * (1 - TP%))
       - OI Proxy: bear_confirm / accumulation / weakness
       - volume_spike_ratio + atr_14_pct → scorer
-      - ✅ Multi-TF priority: 2h/4h для исполнения, 15m/30m/1h → watch only
+      - Multi-TF priority: 2h/4h для исполнения, 15m/30m/1h → watch only
     """
     try:
         md = await state.binance.get_complete_market_data(symbol)
@@ -858,14 +857,10 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
         reasons     = list(score_result.reasons)
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
-        # ✅ FIX #1+4: BTC кешируется ОДИН РАЗ в scan_market(), здесь просто используем
-        btc_change_1h: Optional[float] = cached_btc_1h
-
         sf   = get_short_filter()
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
-            btc_price_1h_change=btc_change_1h,
         )
         if filt.blocked:
             return None  # blocked — debug log suppressed for clean logs
@@ -891,6 +886,7 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         final_score = rt_result.final_score
         reasons.extend(rt_result.factors)
+        print(f"📊 [RT] {symbol}: base={rt_result.base_score} bonus={rt_result.bonus:+d} final={rt_result.final_score}")
 
         # 🆕 Бонус если монета в RSI watchlist (RSI растёт от 35)
         if _rsi_tracker.is_rsi_rising(symbol):
@@ -908,12 +904,10 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
         # ── Динамические TP для SHORT ─────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
-        btc_trend    = ("down" if (btc_change_1h or 0) < -0.5 else
-                        "up"   if (btc_change_1h or 0) > 0.5 else "sideways")
         tp_levels, tp_weights = get_short_tp_config(
             funding_rate=md.funding_rate,
             pattern_name=best_pattern,
-            btc_trend=btc_trend,
+            btc_trend="neutral",
         )
 
         # ── SL ВЫШЕ входа, TP НИЖЕ входа (SHORT) ─────────────────────────────
@@ -999,34 +993,11 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
 
 
 
-async def _get_btc_short_correlation(cached_c1h: Optional[float] = None) -> dict:
-    """
-    BTC корреляция для SHORT — ТОЛЬКО модификатор score, НЕ блокер.
-    ✅ FIX: принимает кешированный c1h из scan_market() чтобы не делать лишний запрос.
-    """
-    try:
-        c1h = cached_c1h
-        if c1h is None:
-            btc = await state.binance.get_complete_market_data("BTCUSDT")
-            if not btc:
-                return {"score_adj": 0, "label": "BTC N/A"}
-            c1h = getattr(btc, "price_change_1h", 0) or 0
-        if c1h < -2.0:  adj, label = +3.0, f"BTC {c1h:.1f}%/1h 🔴"   # BTC падает → SHORT бонус
-        elif c1h < -0.5: adj, label = +1.5, f"BTC {c1h:.1f}%/1h ↘"
-        elif c1h > 2.0:  adj, label = -3.0, f"BTC +{c1h:.1f}%/1h 🚀"  # BTC растёт → SHORT штраф
-        elif c1h > 0.5:  adj, label = -1.5, f"BTC +{c1h:.1f}%/1h ↗"
-        else:            adj, label =  0.0, f"BTC {c1h:.1f}%/1h ↔"
-        return {"score_adj": adj, "label": label, "change_1h": c1h}
-    except Exception:
-        return {"score_adj": 0, "label": "BTC N/A"}
-
-
 async def scan_market():
     """
-    ✅ v2.4 АРХИТЕКТУРА (SHORT):
+    ✅ v2.7 АРХИТЕКТУРА (SHORT, NO BTC CORR):
     - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20 SHORT на бирже)
     - Биржевое исполнение: только если active_short < MAX и не /pause
-    - BTC корреляция: только модификатор score (-3..+3), НЕ блокер
     - Единственный блокер: команда /pause
     """
     if state.is_paused:
@@ -1034,31 +1005,6 @@ async def scan_market():
 
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
-
-    # ✅ FIX #4: BTC данные кешируем ОДИН РАЗ (не 300x внутри scan_symbol)
-    _btc_cache_1h: Optional[float] = None
-    _btc_rsi_4h: float = 50.0  # нейтральное значение по умолчанию
-    try:
-        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-        if _btc_md:
-            _btc_cache_1h = _btc_md.price_change_1h  # ✅ FIX #1 применён тут тоже
-            _btc_rsi_4h = getattr(_btc_md, 'rsi_4h', 50.0) or 50.0
-    except Exception as e:
-        print(f"⚠️ BTC cache failed: {e}")
-
-    # ✅ BTC RSI 4h фильтр для SHORT (бэктест): только если BTC RSI 4h < 55
-    # Если BTC в сильном росте (RSI 4h > 55) — блокируем SHORT
-    if _btc_rsi_4h > 55:
-        print(f"⛔ SHORT blocked: BTC RSI 4h = {_btc_rsi_4h:.1f} > 55 (strong uptrend)")
-        return  # полная блокировка сканирования
-    elif _btc_rsi_4h > 45:
-        print(f"⚠️ BTC RSI 4h = {_btc_rsi_4h:.1f} (moderate uptrend) — reduced scoring")
-
-    # BTC корреляция — мягкий модификатор, не блокер
-    btc_corr  = await _get_btc_short_correlation(_btc_cache_1h)
-    score_adj = int(btc_corr.get("score_adj", 0) or 0)
-    btc_label = btc_corr.get("label") or "BTC N/A"
-    print(f"📡 {btc_label} (score adj {score_adj:+.0f})")
 
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
@@ -1075,7 +1021,7 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol, _btc_cache_1h)
+            signal = await scan_symbol(symbol)
             if not signal:
                 continue
 
