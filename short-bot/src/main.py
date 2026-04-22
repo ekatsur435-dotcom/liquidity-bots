@@ -74,9 +74,9 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
     # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # BACKTEST: 120с
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
@@ -106,8 +106,8 @@ class Config:
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "400000"))  # Было: 300000
-    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "500"))
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
 # ============================================================================
@@ -880,13 +880,12 @@ async def scan_symbol(symbol: str, cached_btc_1h: Optional[float] = None) -> Opt
             base_score=final_score, hourly_deltas=hourly_deltas,
         )
         if rt_result.early_only:
-            # ✅ FIX: Проверяем MIN_SCORE даже для ранних watch сигналов
-            if rt_result.final_score >= Config.MIN_SCORE:
-                await state.telegram.send_message(
-                    f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
-                    f"🔴 <b>#{symbol}</b>  ${price:,.6f}\n"
-                    + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
-                    + "\n\n⏳ <i>Ждём подтверждения.</i>"
+            # ✅ Ранние сигналы 63-66% — только в Telegram, без сделки
+            await state.telegram.send_message(
+                f"🛰️ <b>РАННИЙ SHORT WATCH</b>  Score: {rt_result.final_score:.0f}%\n\n"
+                f"🔴 <b>#{symbol}</b>  ${price:,.6f}\n"
+                + "\n".join(f"  • {r}" for r in rt_result.factors[:4])
+                + "\n\n⏳ <i>Ждём подтверждения.</i>"
                 )
             return None
 
