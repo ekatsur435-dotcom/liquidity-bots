@@ -9,7 +9,7 @@ Smart Money Concepts: Order Blocks, Fair Value Gaps, уточнённые SL/TP
     # result содержит: ob_entry, fvg_zone, refined_sl, score_bonus
 """
 
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from dataclasses import dataclass
 
 
@@ -57,15 +57,31 @@ class SMCDetector:
                ohlcv[-1] — последняя (текущая) свеча
     """
 
-    def __init__(self, ohlcv: List[List[float]]):
+    def __init__(self, ohlcv: List[Any]):
         self.ohlcv = ohlcv
         self.n = len(ohlcv)
 
-    def _o(self, i: int) -> float: return self.ohlcv[i][0]
-    def _h(self, i: int) -> float: return self.ohlcv[i][1]
-    def _l(self, i: int) -> float: return self.ohlcv[i][2]
-    def _c(self, i: int) -> float: return self.ohlcv[i][3]
-    def _v(self, i: int) -> float: return self.ohlcv[i][4] if len(self.ohlcv[i]) > 4 else 0
+    def _get_price(self, i: int, attr: str) -> float:
+        """Универсальный доступ к данным свечи — поддерживает list, dict, object"""
+        candle = self.ohlcv[i]
+        if isinstance(candle, dict):
+            return candle.get(attr, candle.get('close', 0))
+        elif isinstance(candle, list):
+            mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
+            return candle[mapping.get(attr, 3)]
+        elif hasattr(candle, attr):
+            return getattr(candle, attr)
+        return 0.0
+
+    def _o(self, i: int) -> float: return self._get_price(i, 'open')
+    def _h(self, i: int) -> float: return self._get_price(i, 'high')
+    def _l(self, i: int) -> float: return self._get_price(i, 'low')
+    def _c(self, i: int) -> float: return self._get_price(i, 'close')
+    def _v(self, i: int) -> float: 
+        try:
+            return self._get_price(i, 'volume')
+        except:
+            return 0
 
     # =========================================================================
     # ORDER BLOCKS
@@ -354,7 +370,7 @@ class SMCDetector:
 # SINGLETON DETECTOR
 # ============================================================================
 
-def get_smc_result(ohlcv: List[List[float]], direction: str,
+def get_smc_result(ohlcv: List[Any], direction: str,
                    base_sl_pct: float = 0.5,
                    base_entry: Optional[float] = None) -> SMCResult:
     """
