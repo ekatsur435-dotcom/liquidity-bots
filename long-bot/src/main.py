@@ -788,6 +788,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
         reasons     = list(score_result.reasons)
+        final_score = score_result.score  # ← БАЗОВЫЙ SCORE от calculate_score
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
