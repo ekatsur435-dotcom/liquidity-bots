@@ -88,8 +88,9 @@ class Config:
     TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # LONG: SL=1.2% TP1=4% → R:R=3.3:1
     TP_WEIGHTS = [25,  20,  20,  15,  12,   8]   # LONG: равномерно с акцентом TP1-2
 
-    # Trailing — LONG активирует при +1.5%
-    TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.015"))
+    # Trailing — LONG активирует при +2.5% (после TP1)
+    TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
+    LONG_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
     SIGNAL_TTL_HOURS = 24
 
