@@ -1,7 +1,7 @@
 """
-🔴 SHORT BOT v2.6 — FastAPI Application
+🔴 SHORT BOT v2.7 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v2.6:
+ИСПРАВЛЕНИЯ v2.7:
   ✅ Liquidity Sweep Detection (ловля сборов стопов)
   ✅ TBS — Test Before Strike (ретест Order Block)
   ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
@@ -60,9 +60,9 @@ from core.pattern_detector import ShortPatternDetector   # ← единый фа
 from core.position_tracker import PositionTracker
 from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
-from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.6
-from core.entry_confirmation import EntryConfirmation  # ✅ v2.6
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.6 TBS
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
+from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
+from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -299,7 +299,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v2.3...")
+    print("🚀 Starting SHORT Bot v2.7...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -656,7 +656,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ohlcv_primary = tf_map.get(primary_tf, ohlcv_15m)
 
         # =========================================================================
-        # ✅ v2.6: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # ✅ v2.7: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
             # 1. Проверяем Liquidity Sweep (сбор стопов = сильнейший сигнал!)
@@ -686,7 +686,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     tp2 = entry * (1 - 0.08)  # 8%
                     tp3 = entry * (1 - 0.12)  # 12%
                     
-                    print(f"🎯 [v2.6] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    print(f"🎯 [v2.7] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
                     return {
                         "symbol": symbol,
@@ -705,9 +705,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     }
                 else:
                     # Sweep есть но не подтверждён — логируем но пропускаем
-                    print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
+                    print(f"⚠️ [v2.7] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
             
-            # 3. Нет sweep — проверяем обычные фильтры (v2.6.1: бонусы, не блок)
+            # 3. Нет sweep — проверяем обычные фильтры (v2.7: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
             if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
@@ -719,29 +719,29 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 direction="short"
             )
             
-            # v2.6.1: Не блокируем, используем как бонус к скору
+            # v2.7: Не блокируем, используем как бонус к скору
             if confirmation["score"] >= 70:
                 base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
-                print(f"✅ [v2.6] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+                print(f"✅ [v2.7] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
             elif confirmation["score"] >= 50:
                 base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
-                print(f"⚠️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+                print(f"⚠️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
             else:
                 base_score_bonus = 0
-                print(f"ℹ️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
+                print(f"ℹ️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
-            print(f"⚠️ [v2.6] {symbol}: Ошибка EntryConfirmation: {e}")
+            print(f"⚠️ [v2.7] {symbol}: Ошибка EntryConfirmation: {e}")
             base_score_bonus = 0  # При ошибке продолжаем без бонуса
         
-        # ✅ v2.6: TBS (Test Before Strike) — ретест Order Block
+        # ✅ v2.7: TBS (Test Before Strike) — ретест Order Block
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="short")
             if tbs and tbs["found"]:
-                print(f"🎯 [v2.6] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
+                print(f"🎯 [v2.7] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
-            print(f"⚠️ [v2.6] {symbol}: TBS error: {e}")
+            print(f"⚠️ [v2.7] {symbol}: TBS error: {e}")
 
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
@@ -1060,7 +1060,7 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.6.3)
+            # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.7)
             primary_tf = signal.get("timeframe", "15m")
             tf_for_execution = True  # Разрешаем всем ТФ
 
