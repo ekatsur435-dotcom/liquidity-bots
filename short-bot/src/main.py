@@ -9,7 +9,7 @@
   ✅ Уменьшен SL: 1.5% (было 2.0%)
   ✅ MIN_VOLUME_USDT = 500000
   
-ИСПРАВЛЕНИЯ v2.3:
+ИСПРАВЛЕНИЯ v2.7:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_SHORT_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
@@ -212,7 +212,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
         print(f"⚠️ _init_source error: {e}")
 
     # ── Bybit (основной источник) ─────────────────────────────────────────
-    # ✅ v2.4: При 403 (Render IP заблокирован Bybit) — автоматически
+    # ✅ v2.7: При 403 (Render IP заблокирован Bybit) — автоматически
     #          переключаемся на Binance фьючерсы как источник watchlist.
     total_bybit_checked = 0
     total_bybit_usdt    = 0
@@ -421,7 +421,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🔴 <b>SHORT Bot v2.3 запущен</b>\n\n"
+        f"🔴 <b>SHORT Bot v2.7 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -450,7 +450,7 @@ async def lifespan(app: FastAPI):
     print("👋 SHORT Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.3")
+app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.7")
 
 
 # ============================================================================
@@ -467,7 +467,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v2.3", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "SHORT Bot v2.7", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
