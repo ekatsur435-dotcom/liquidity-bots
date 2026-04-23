@@ -1,7 +1,7 @@
 """
-Dual Scoring System: ShortScorer + LongScorer  v2.1
+Dual Scoring System: ShortScorer + LongScorer  v2.7
 
-ИЗМЕНЕНИЯ v2.1:
+ИЗМЕНЕНИЯ v2.7:
   ✅ Новые паттерны добавлены в calculate_pattern_component:
      BREAKOUT_LONG/SHORT, MOMENTUM_LONG/SHORT,
      LIQUIDITY_SWEEP_LONG/SHORT, CONSOLIDATION_BREAK_LONG,
