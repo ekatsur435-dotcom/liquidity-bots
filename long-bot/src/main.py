@@ -644,7 +644,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "pattern": "LIQUIDITY_SWEEP",
                         "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
                         "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
-                        "zones": sweep.get("zones", {})
+                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
                     print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён")
@@ -788,7 +788,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
         reasons     = list(score_result.reasons)
-        final_score = score_result.score  # ← БАЗОВЫЙ SCORE от calculate_score
+        final_score = score_result.total_score  # ← БАЗОВЫЙ SCORE от calculate_score
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
