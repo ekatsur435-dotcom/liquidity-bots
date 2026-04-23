@@ -1,5 +1,5 @@
 """
-Entry Confirmation v2.6
+Entry Confirmation v2.7
 - Multi-timeframe confirmation (2+ TF must agree)
 - Volume confirmation (spike detection)
 - ATR volatility filter
