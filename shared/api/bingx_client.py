@@ -468,6 +468,9 @@ class BingXClient:
         direction = "short" → side = "BUY"  (закрывает SHORT)
         """
         try:
+            # ✅ FIX: Нормализуем символ к формату BingX API
+            if not symbol.endswith("-USDT") and not symbol.endswith("-USDC"):
+                symbol = f"{symbol}-USDT"
             print(f"🔍 [BingX] update_stop_loss START: {symbol} | new_sl={new_sl} | dir={direction} | pos_side={position_side}")
 
             rounded_sl = await self._round_price(symbol, new_sl)
