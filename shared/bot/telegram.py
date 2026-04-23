@@ -1,7 +1,7 @@
 """
-Telegram Bot Integration  v2.2
+Telegram Bot Integration  v2.7
 
-НОВОЕ v2.2:
+НОВОЕ v2.7:
   ✅ send_message() возвращает Optional[int] (message_id) — для thread replies
   ✅ send_reply(text, reply_to_msg_id) — ответ на исходное сообщение сигнала
   ✅ send_signal() возвращает Optional[int] — main.py сохраняет msg_id в Redis
@@ -47,7 +47,7 @@ class TelegramBot:
                  chat_id: Optional[str] = None,
                  topic_id: Optional[str] = None,
                  bot_type: str = ""):
-        # ✅ v2.4 FIX: поддержка LONG_/SHORT_ префиксов + обычных имён
+        # ✅ v2.7 FIX: поддержка LONG_/SHORT_ префиксов + обычных имён
         # Порядок: явный аргумент → {PREFIX}_TELEGRAM_ → TELEGRAM_ (общий)
         prefix = (bot_type.upper() + "_") if bot_type else ""
         self.bot_token = (bot_token
@@ -609,7 +609,7 @@ class TelegramCommandHandler:
         bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
-            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.3</b>\n\n"
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.7</b>\n\n"
             "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"
@@ -660,8 +660,9 @@ class TelegramCommandHandler:
         if self.state and self.state.auto_trader:
             try:
                 all_positions = await self.state.auto_trader.bingx.get_positions()
-                # SHORT бот → SELL позиции, LONG бот → BUY позиции
-                expected_side = "SELL" if self.bot_type == "short" else "BUY"
+                # SHORT бот → SHORT позиции, LONG бот → LONG позиции
+                # BingX возвращает side как "LONG" или "SHORT"
+                expected_side = "SHORT" if self.bot_type == "short" else "LONG"
                 real_positions_count = len([p for p in all_positions if (
                     getattr(p, "side", "").upper() == expected_side
                 )])
@@ -838,20 +839,21 @@ class TelegramCommandHandler:
             mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
             
             # ✅ FIX: Фильтруем позиции по стороне бота
-            # SHORT бот видит только SELL, LONG — только BUY
-            expected_side = "SELL" if self.bot_type == "short" else "BUY"
+            # SHORT бот видит только SHORT, LONG — только LONG
+            # BingX возвращает side как "LONG" или "SHORT"
+            expected_side = "SHORT" if self.bot_type == "short" else "LONG"
             expected_side_display = "SHORT" if self.bot_type == "short" else "LONG"
             positions = [p for p in all_positions if (
                 getattr(p, "side", "").upper() == expected_side
             )]
             
             if not positions:
-                await self._reply(reply_chat_id, f"� Нет открытых {expected_side_display} позиций [{mode}]")
+                await self._reply(reply_chat_id, f"📉 Нет открытых {expected_side_display} позиций [{mode}]")
                 return
-            msg = f"� <b>{expected_side_display} Позиции [{mode}] ({len(positions)}):</b>\n\n"
+            msg = f"📉 <b>{expected_side_display} Позиции [{mode}] ({len(positions)}):</b>\n\n"
             total_upnl = 0.0
             for p in positions:
-                d_emoji = "�" if self.bot_type == "short" else "�"
+                d_emoji = "🔴" if self.bot_type == "short" else "🟢"
                 upnl    = p.unrealized_pnl
                 total_upnl += upnl
                 pnl_sign = "+" if upnl >= 0 else ""
