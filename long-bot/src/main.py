@@ -8,7 +8,7 @@
   ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 3.3:1)
   ✅ Уменьшен SL: 1.2% (было 1.5%)
   
-ИСПРАВЛЕНИЯ v2.7:
+ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_LONG_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
@@ -295,7 +295,7 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
-    # ✅ FIX v2.7: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
+    # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
@@ -463,7 +463,7 @@ async def root():
 @app.get("/status")
 async def status():
     return {
-        "bot_type": Config.BOT_TYPE, "version": "2.3",
+        "bot_type": Config.BOT_TYPE, "version": "2.7",
         "is_running": state.is_running, "is_paused": state.is_paused,
         "watchlist_count": len(state.watchlist), "active_signals": state.active_signals,
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
@@ -574,7 +574,7 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
-    LONG scan_symbol v2.7:
+    LONG scan_symbol v2.3:
       - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
       - TP ВЫШЕ входа (long: фиксируем прибыль при росте)
       - OI Proxy: bull_confirm / accumulation / weakness_long
@@ -932,7 +932,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.7: Считаем ТОЛЬКО LONG позиции этого бота.
+    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
     Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
     """
     if state.auto_trader:
