@@ -587,7 +587,7 @@ async def _count_real_positions() -> int:
         try:
             pos = await state.auto_trader.bingx.get_positions()
             # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SHORT"]
+            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SELL"]
             if short_pos:
                 msg = f"""📉 <b>SHORT Позиции {'[DEMO] ' if Config.DEMO_MODE else ''}({len(short_pos)}):</b>\n\n"""
                 msg += "\n".join(f"  • {getattr(p,'symbol','?')} {getattr(p,'size',0):.2f} @ {getattr(p,'entry_price',0):.4f} (UPNL: {getattr(p,'unrealized_pnl',0):.2f})" for p in short_pos)
