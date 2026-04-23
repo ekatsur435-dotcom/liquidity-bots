@@ -71,9 +71,9 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 
 class Config:
     BOT_TYPE      = "long"
-    # ✅ FIX: MIN_LONG_SCORE default = 60 (не 65!)
+    # ✅ FIX: MIN_LONG_SCORE default = 70
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "75"))
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "70"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -788,7 +788,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
         reasons     = list(score_result.reasons)
-        final_score = score_result.total_score  # ← БАЗОВЫЙ SCORE от calculate_score
+        final_score = min(100, score_result.total_score + base_score_bonus)  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
