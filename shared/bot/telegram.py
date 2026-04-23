@@ -1,7 +1,7 @@
 """
-Telegram Bot Integration  v2.2
+Telegram Bot Integration  v2.7
 
-НОВОЕ v2.2:
+НОВОЕ v2.7:
   ✅ send_message() возвращает Optional[int] (message_id) — для thread replies
   ✅ send_reply(text, reply_to_msg_id) — ответ на исходное сообщение сигнала
   ✅ send_signal() возвращает Optional[int] — main.py сохраняет msg_id в Redis
