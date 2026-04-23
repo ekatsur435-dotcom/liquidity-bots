@@ -1,7 +1,7 @@
 """
-🟢 LONG BOT v2.6 — FastAPI Application
+🟢 LONG BOT v2.7 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v2.6:
+ИСПРАВЛЕНИЯ v2.7:
   ✅ Liquidity Sweep Detection (ловля сборов стопов)
   ✅ TBS — Test Before Strike (ретест Order Block)
   ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
@@ -59,9 +59,9 @@ from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
-from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.6
-from core.entry_confirmation import EntryConfirmation  # ✅ v2.6
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.6 TBS
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
+from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
+from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -288,7 +288,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.3...")
+    print("🚀 Starting LONG Bot v2.7...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -602,7 +602,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             return None
 
         # =========================================================================
-        # ✅ v2.6: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # ✅ v2.7: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
             # 1. Проверяем Liquidity Sweep (сбор стопов лонгистов = шорт ликвидность)
@@ -629,7 +629,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     tp2 = entry * (1 + 0.08)  # 8%
                     tp3 = entry * (1 + 0.12)  # 12%
                     
-                    print(f"🎯 [v2.6] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    print(f"🎯 [v2.7] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
                     return {
                         "symbol": symbol,
@@ -647,9 +647,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
-                    print(f"⚠️ [v2.6] {symbol}: Sweep найден но не подтверждён")
+                    print(f"⚠️ [v2.7] {symbol}: Sweep найден но не подтверждён")
             
-            # 3. Нет sweep — проверяем обычные фильтры (v2.6.1: бонусы, не блок)
+            # 3. Нет sweep — проверяем обычные фильтры (v2.7: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
             
@@ -659,31 +659,31 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 direction="long"
             )
             
-            # v2.6.1: Не блокируем, используем как бонус к скору
+            # v2.7: Не блокируем, используем как бонус к скору
             if confirmation["score"] >= 70:
                 base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
-                print(f"✅ [v2.6] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+                print(f"✅ [v2.7] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
             elif confirmation["score"] >= 50:
                 base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
-                print(f"⚠️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+                print(f"⚠️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
             else:
                 base_score_bonus = 0
-                print(f"ℹ️ [v2.6] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
+                print(f"ℹ️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
-            print(f"⚠️ [v2.6] {symbol}: Ошибка: {e}")
+            print(f"⚠️ [v2.7] {symbol}: Ошибка: {e}")
             base_score_bonus = 0
         
-        # ✅ v2.6: TBS (Test Before Strike) — ретест поддержки
+        # ✅ v2.7: TBS (Test Before Strike) — ретест поддержки
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="long")
             if tbs and tbs["found"]:
-                print(f"🎯 [v2.6] {symbol}: TBS DETECTED! Ретест ${tbs['zone']:.4f}")
+                print(f"🎯 [v2.7] {symbol}: TBS DETECTED! Ретест ${tbs['zone']:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
-            print(f"⚠️ [v2.6] {symbol}: TBS error: {e}")
+            print(f"⚠️ [v2.7] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — бонус/штраф к скору (v2.6.1: не блокер)
+        # ✅ RSI 30m — бонус/штраф к скору (v2.7: не блокер)
         rsi_30m_adj = 0
         try:
             if ohlcv_30m and len(ohlcv_30m) >= 14:
@@ -692,7 +692,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
                 ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # v2.6.1: Не блокируем, корректируем скор
+                # v2.7: Не блокируем, корректируем скор
                 if rsi_30m < 30:
                     rsi_30m_adj = +5  # Перепродан — хорошо для LONG
                 elif rsi_30m > 75:
@@ -702,7 +702,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception:
             pass
         
-        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.6.1: не блокер)
+        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
         rsi_4h_adj = 0
         try:
             ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
@@ -712,7 +712,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
                 ag = sum(gains)/13; al = sum(losses)/13
                 rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # v2.6.1: Не блокируем, корректируем скор
+                # v2.7: Не блокируем, корректируем скор
                 if rsi_4h < 35:
                     rsi_4h_adj = +8   # Перепродан на 4h — отлично для LONG
                 elif rsi_4h > 70:
