@@ -1,5 +1,5 @@
 """
-BingX Futures API Client  v2.4-final
+BingX Futures API Client  v2.7
 
 ВСЕ ИСПРАВЛЕНИЯ:
   v2.1 — RAW URL query string (signature mismatch fix)
