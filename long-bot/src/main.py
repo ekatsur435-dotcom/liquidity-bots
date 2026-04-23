@@ -830,7 +830,28 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
         price       = md.price
-        stop_loss   = price * (1 - Config.SL_BUFFER / 100)   # SL ниже цены
+        
+        # ✅ v2.7: Пробуем использовать Liquidity Sweep Tail для точного стопа
+        sweep_sl = None
+        try:
+            from core.liquidity_detector import LiquidityDetector
+            ld = LiquidityDetector(_ohlcv(ohlcv_15m))
+            sweep_result = ld.detect_sweep(direction="long")
+            if sweep_result and sweep_result.found_sweep and sweep_result.sweep_low > 0:
+                # Стоп за хвост свечи sweep + 0.3% buffer
+                sweep_sl = sweep_result.sweep_low * 0.997
+                print(f"🎯 [v2.7] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
+        except Exception as e:
+            pass  # Fallback на стандартный расчёт
+        
+        # Используем sweep-based стоп если он лучше (ниже цены но не слишком далеко)
+        default_sl = price * (1 - Config.SL_BUFFER / 100)
+        if sweep_sl and sweep_sl < price and sweep_sl > price * 0.97:  # Не более 3% от цены
+            stop_loss = sweep_sl
+            reasons.append(f"🎯 v2.7 Sweep Tail SL: ${stop_loss:.6f}")
+        else:
+            stop_loss = default_sl
+            
         entry_price = price
         smc_data    = {}
 
