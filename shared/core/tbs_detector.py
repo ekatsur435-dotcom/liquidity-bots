@@ -1,5 +1,5 @@
 """
-TBS Detector v2.6
+TBS Detector v2.7
 Test Before Strike / Tap Before Sweep
 SMC концепция: цена делает ретест зоны перед основным движением
 """
