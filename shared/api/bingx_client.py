@@ -460,7 +460,7 @@ class BingXClient:
     async def update_stop_loss(self, symbol: str, position_side: str,
                                 new_sl: float, direction: str) -> bool:
         """
-        ✅ ГЛАВНЫЙ FIX: Обновляет SL на бирже через cancel + replace.
+        ✅ v2.7 DEBUG: Обновляет SL на бирже через cancel + replace.
         1. Отменяем старый SL ордер
         2. Ставим новый STOP_MARKET ордер с новой ценой
 
@@ -468,31 +468,45 @@ class BingXClient:
         direction = "short" → side = "BUY"  (закрывает SHORT)
         """
         try:
+            print(f"🔍 [BingX] update_stop_loss START: {symbol} | new_sl={new_sl} | dir={direction} | pos_side={position_side}")
+
             rounded_sl = await self._round_price(symbol, new_sl)
+            print(f"🔍 [BingX] rounded_sl={rounded_sl}")
             if not rounded_sl:
+                print(f"❌ [BingX] rounded_sl is None for {symbol}")
                 return False
 
             # Сторона ордера — противоположная позиции
             sl_side = "SELL" if direction == "long" else "BUY"
+            print(f"🔍 [BingX] sl_side={sl_side}")
 
             # Получаем текущий размер позиции (нужен для SL ордера)
+            print(f"🔍 [BingX] Getting positions for {symbol}...")
             positions = await self.get_positions(symbol)
+            print(f"🔍 [BingX] Found {len(positions)} positions")
+            for p in positions:
+                print(f"   - {p.symbol}: size={p.size}, side={p.side}, pos_side={p.position_side}")
+
             pos = next((p for p in positions
                         if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
             if not pos:
-                print(f"⚠️  update_stop_loss: позиция {symbol} не найдена")
+                print(f"⚠️  [BingX] update_stop_loss: позиция {symbol} не найдена")
                 return False
+            print(f"🔍 [BingX] Found position: {pos.symbol} size={pos.size}")
 
             remaining_qty = abs(pos.size)
+            print(f"🔍 [BingX] remaining_qty={remaining_qty}")
             if remaining_qty <= 0:
+                print(f"❌ [BingX] remaining_qty <= 0")
                 return False
 
             rounded_qty = await self._round_qty(symbol, remaining_qty)
+            print(f"🔍 [BingX] rounded_qty={rounded_qty}")
 
             # Отменяем все текущие SL ордера (не трогаем TP — они отдельные)
-            # В BingX нельзя отменить только SL, поэтому отменяем по типу через allOpenOrders
-            # Затем ставим новый SL
+            print(f"🔍 [BingX] Cancelling all orders for {symbol}...")
             await self.cancel_all_orders(symbol)
+            print(f"🔍 [BingX] Orders cancelled")
 
             # Ставим новый SL ордер
             body = {
@@ -505,17 +519,21 @@ class BingXClient:
                 "workingType":  "MARK_PRICE",
                 "closePosition": "true",  # закрывает всю позицию
             }
+            print(f"🔍 [BingX] Placing SL order: {body}")
             result = await self._make_request("POST", "/openApi/swap/v2/trade/order", body=body)
+            print(f"🔍 [BingX] API result: {result}")
             ok = result and result.get("code") == 0
             if ok:
                 order_id = result.get("data", {}).get("order", {}).get("orderId", "?")
-                print(f"✅ New SL placed: {symbol} @ {rounded_sl} | id={order_id}")
+                print(f"✅ [BingX] New SL placed: {symbol} @ {rounded_sl} | id={order_id}")
             else:
-                print(f"❌ update_stop_loss failed: {symbol} | {result}")
+                print(f"❌ [BingX] update_stop_loss failed: {symbol} | code={result.get('code') if result else 'None'} | msg={result.get('msg') if result else 'None'}")
             return ok
 
         except Exception as e:
-            print(f"❌ update_stop_loss {symbol}: {e}")
+            print(f"❌ [BingX] update_stop_loss {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
