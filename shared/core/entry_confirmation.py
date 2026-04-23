@@ -26,9 +26,9 @@ def _get_price(candle: Any, attr: str) -> float:
 
 class EntryConfirmation:
     """
-    Комплексная проверка перед входом в сделку v2.6.1
+    Комплексная проверка перед входом в сделку v2.7
     Фильтры дают БОНУСЫ к скору, а не блокируют вход.
-    Основная логика v2.5 сохранена + v2.6 как усиление сигнала.
+    Основная логика v2.5 сохранена + v2.7 как усиление сигнала.
     """
     
     @staticmethod
@@ -36,7 +36,7 @@ class EntryConfirmation:
                              direction: str = "short",
                              min_confirmations: int = 2) -> Tuple[bool, List[str]]:
         """
-        ✅ v2.6: Мульти-ТФ подтверждение (2+ ТФ должны подтвердить)
+        ✅ v2.7: Мульти-ТФ подтверждение (2+ ТФ должны подтвердить)
         
         Args:
             tf_data: {"4h": ohlcv_4h, "2h": ohlcv_2h, "1h": ohlcv_1h, ...}
@@ -76,7 +76,7 @@ class EntryConfirmation:
                            min_spike: float = 1.3,
                            lookback: int = 20) -> Tuple[bool, str, float]:
         """
-        3️⃣ Объёмный подтверждение v2.6.1 (смягчено)
+        3️⃣ Объёмный подтверждение v2.7 (смягчено)
         
         Было: 2x объём = обязательно (блок)
         Стало: 1.3x объём = бонус, 2x+ = сильный бонус
@@ -93,7 +93,7 @@ class EntryConfirmation:
         except:
             return True, "⚠️ Ошибка расчёта объёма", 0.0
         
-        # v2.6.1: Не блокируем, даём бонус за высокий объём
+        # v2.7: Не блокируем, даём бонус за высокий объём
         if volume_spike >= 2.0:
             return True, f"✅ Объём {volume_spike:.1f}x (сильный импульс)", volume_spike
         elif volume_spike >= min_spike:
@@ -107,7 +107,7 @@ class EntryConfirmation:
                    max_atr: float = 15.0,
                    period: int = 14) -> Tuple[bool, str, float]:
         """
-        4️⃣ ATR Фильтр волатильности v2.6.1 (смягчено)
+        4️⃣ ATR Фильтр волатильности v2.7 (смягчено)
         
         Было: 1.5-8% = блок, остальное нельзя
         Стало: 0.8-15% = норма, всё остальное = предупреждение но не блок
@@ -122,7 +122,7 @@ class EntryConfirmation:
         except:
             return True, "⚠️ Ошибка расчёта ATR", 0.0
         
-        # v2.6.1: Не блокируем, даём информацию
+        # v2.7: Не блокируем, даём информацию
         if atr_pct < min_atr:
             return True, f"⚠️ ATR {atr_pct:.1f}% низкий (спокойный рынок)", atr_pct
         elif atr_pct > max_atr:
@@ -136,14 +136,14 @@ class EntryConfirmation:
                         direction: str = "long",
                         tolerance: float = 0.03) -> Tuple[bool, str, Dict]:
         """
-        5️⃣ Уровни поддержки/сопротивления v2.6.1 (умная логика direction)
+        5️⃣ Уровни поддержки/сопротивления v2.7 (умная логика direction)
         
         LONG:  Хорошо у Support (покупаем на дне), плохо у Resistance
         SHORT: Хорошо у Resistance (продаём на пике), плохо у Support
         
-        v2.6.1: Не блокируем, даём бонус за правильное расположение
+        v2.7: Не блокируем, даём бонус за правильное расположение
         """
-        # v2.6.1: Смягчено — 30 свечей достаточно для 30m, масштабируем по ТФ
+        # v2.7: Смягчено — 30 свечей достаточно для 30m, масштабируем по ТФ
         min_candles = 30  # Базовое требование
         
         if len(ohlcv) < min_candles:
@@ -162,7 +162,7 @@ class EntryConfirmation:
             near_resistance = abs(current_price - resistance) / current_price < tolerance
             near_support = abs(current_price - support) / current_price < tolerance
             
-            # v2.6.1: Умная логика в зависимости от направления
+            # v2.7: Умная логика в зависимости от направления
             if direction == "long":
                 if near_support:
                     return True, f"✅ У Support (хорошо для LONG): ${support:.4f}", {
@@ -175,7 +175,7 @@ class EntryConfirmation:
                         "type": "resistance", "optimal": False
                     }
                 else:
-                    # v2.6.1: Не блокируем посреди диапазона!
+                    # v2.7: Не блокируем посреди диапазона!
                     return True, f"📊 В диапазоне (нейтрально)", {
                         "resistance": resistance, "support": support, 
                         "type": "mid", "optimal": None
@@ -192,7 +192,7 @@ class EntryConfirmation:
                         "type": "support", "optimal": False
                     }
                 else:
-                    # v2.6.1: Не блокируем посреди диапазона!
+                    # v2.7: Не блокируем посреди диапазона!
                     return True, f"📊 В диапазоне (нейтрально)", {
                         "resistance": resistance, "support": support, 
                         "type": "mid", "optimal": None
@@ -206,7 +206,7 @@ class EntryConfirmation:
                           direction: str = "short",
                           min_history: int = 30) -> Dict:
         """
-        ✅ v2.6.1: Полная проверка — фильтры дают БОНУСЫ, не блокируют
+        ✅ v2.7: Полная проверка — фильтры дают БОНУСЫ, не блокируют
         
         Система начисления:
         - Базовый скор: 50 (просто за проверку)
@@ -217,8 +217,8 @@ class EntryConfirmation:
         Минимум истории: 30 свечей (вместо 50), масштабируется по ТФ
         """
         results = {
-            "passed": True,  # v2.6.1: Всегда True, не блокируем
-            "score": 50,     # v2.6.1: Базовый скор 50 просто за проверку
+            "passed": True,  # v2.7: Всегда True, не блокируем
+            "score": 50,     # v2.7: Базовый скор 50 просто за проверку
             "checks": {},
             "reasons": [],
             "entry_price": _get_price(ohlcv[-1], 'close') if ohlcv else 0,
@@ -264,7 +264,7 @@ class EntryConfirmation:
         )
         results["checks"]["sr_levels"] = {"passed": sr_passed, "reason": sr_reason, "data": sr_data}
         
-        # v2.6.1: Умная логика бонусов S/R
+        # v2.7: Умная логика бонусов S/R
         if sr_data.get("optimal") is True:
             results["score"] += 15  # Идеальное расположение (Support для LONG, Resistance для SHORT)
         elif sr_data.get("optimal") is False:
@@ -273,7 +273,7 @@ class EntryConfirmation:
             results["score"] += 8   # В диапазоне (нейтрально)
         results["reasons"].append(sr_reason)
         
-        # v2.6.1: Ограничиваем максимум 100
+        # v2.7: Ограничиваем максимум 100
         results["score"] = min(100, results["score"])
         
         return results
