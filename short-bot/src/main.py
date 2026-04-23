@@ -9,7 +9,7 @@
   ✅ Уменьшен SL: 1.5% (было 2.0%)
   ✅ MIN_VOLUME_USDT = 500000
   
-ИСПРАВЛЕНИЯ v2.7:
+ИСПРАВЛЕНИЯ v2.3:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_SHORT_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
@@ -212,7 +212,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
         print(f"⚠️ _init_source error: {e}")
 
     # ── Bybit (основной источник) ─────────────────────────────────────────
-    # ✅ v2.7: При 403 (Render IP заблокирован Bybit) — автоматически
+    # ✅ v2.4: При 403 (Render IP заблокирован Bybit) — автоматически
     #          переключаемся на Binance фьючерсы как источник watchlist.
     total_bybit_checked = 0
     total_bybit_usdt    = 0
@@ -421,7 +421,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🔴 <b>SHORT Bot v2.7 запущен</b>\n\n"
+        f"� <b>SHORT Bot v2.7 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -472,7 +472,7 @@ async def root():
 @app.get("/status")
 async def status():
     return {
-        "bot_type": Config.BOT_TYPE, "version": "2.3",
+        "bot_type": Config.BOT_TYPE, "version": "2.7",
         "is_running": state.is_running, "is_paused": state.is_paused,
         "watchlist_count": len(state.watchlist), "active_signals": state.active_signals,
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
