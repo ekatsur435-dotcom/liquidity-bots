@@ -1,7 +1,7 @@
 """
-Position Tracker v2.3
+Position Tracker v2.7
 
-ИЗМЕНЕНИЯ v2.3:
+ИЗМЕНЕНИЯ v2.7:
   ✅ Стоп в безубыток ПОСЛЕ TP2 (было: при +1.5% прибыли)
      Логика: после закрытия 2-го тейка (40% позиции зафиксировано)
      SL переносится на entry+0.1%. Это лучше чем немедленный BE,
@@ -279,7 +279,7 @@ class PositionTracker:
         if self.auto_trader and self.auto_trader.bingx:
             try:
                 bingx_symbol = symbol + "-USDT" if "-USDT" not in symbol else symbol
-                # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.6.3)
+                # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.7)
                 for attempt in range(3):
                     for sym_fmt in [bingx_symbol, symbol.replace("USDT", "-USDT"), symbol]:
                         ok = await self.auto_trader.bingx.update_stop_loss(
