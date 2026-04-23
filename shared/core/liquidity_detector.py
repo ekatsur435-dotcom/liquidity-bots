@@ -31,6 +31,11 @@ class LiquiditySweepResult:
     take_profit: float
     confidence: int       # 0-100
     reasons: List[str]
+    # ✅ v2.7: Данные для точного стопа (хвост свечи sweep)
+    sweep_low: float = 0.0    # Минимум свечи sweep (для LONG стопа)
+    sweep_high: float = 0.0   # Максимум свечи sweep (для SHORT стопа)
+    fvg_low: float = 0.0      # Нижняя граница FVG
+    fvg_high: float = 0.0     # Верхняя граница FVG
 
 
 class LiquidityDetector:
@@ -172,11 +177,16 @@ class LiquidityDetector:
                     zone.swept = True
                     zone.sweep_price = prev_price
                     
+                    # ✅ v2.7: Хвост свечи sweep для точного стопа
+                    sweep_low = self._l(self.n - 2)   # Минимум свечи sweep
+                    sweep_high = self._h(self.n - 2)  # Максимум свечи sweep (для SHORT)
+                    
                     reasons.extend([
                         f"🎯 Liquidity Sweep Above ${zone.price_level:.4f}",
                         f"🧹 Собраны стопы шортистов (лонг ликвидность)",
                         f"↩️ Возврат под уровень = фейк!",
-                        f"📊 Сила зоны: {zone.strength}%"
+                        f"📊 Сила зоны: {zone.strength}%",
+                        f"🕯️ Свип high: ${sweep_high:.6f} (хвост свечи)"
                     ])
                     
                     return LiquiditySweepResult(
@@ -184,10 +194,12 @@ class LiquidityDetector:
                         sweep_type="long_liquidity",
                         zone=zone,
                         entry_price=current_price,
-                        stop_loss=prev_price * 1.005,  # За свип
+                        stop_loss=sweep_high * 1.005,  # ✅ За хвост свечи sweep
                         take_profit=zone.price_level * 0.97,  # К ближайшей зоне
                         confidence=min(90, zone.strength + 20),
-                        reasons=reasons
+                        reasons=reasons,
+                        sweep_low=sweep_low,
+                        sweep_high=sweep_high  # ✅ Для стопа SHORT
                     )
             
             # Проверяем Sweep для LONG (шорт ликвидность собрана, можно лонгить)
@@ -199,11 +211,16 @@ class LiquidityDetector:
                     zone.swept = True
                     zone.sweep_price = prev_price
                     
+                    # ✅ v2.7: Хвост свечи sweep для точного стопа
+                    sweep_low = self._l(self.n - 2)  # Минимум свечи sweep
+                    sweep_high = self._h(self.n - 2)  # Максимум свечи sweep
+                    
                     reasons.extend([
                         f"🎯 Liquidity Sweep Below ${zone.price_level:.4f}",
                         f"🧹 Собраны стопы лонгистов (шорт ликвидность)",
                         f"↩️ Возврат над уровнем = фейк!",
-                        f"📊 Сила зоны: {zone.strength}%"
+                        f"📊 Сила зоны: {zone.strength}%",
+                        f"🕯️ Свип low: ${sweep_low:.6f} (хвост свечи)"
                     ])
                     
                     return LiquiditySweepResult(
@@ -211,10 +228,12 @@ class LiquidityDetector:
                         sweep_type="short_liquidity",
                         zone=zone,
                         entry_price=current_price,
-                        stop_loss=prev_price * 0.995,  # За свип
+                        stop_loss=sweep_low * 0.995,  # ✅ За хвост свечи sweep
                         take_profit=zone.price_level * 1.03,  # К ближайшей зоне
                         confidence=min(90, zone.strength + 20),
-                        reasons=reasons
+                        reasons=reasons,
+                        sweep_low=sweep_low,      # ✅ Для стопа
+                        sweep_high=sweep_high   # Для анализа
                     )
         
         return LiquiditySweepResult(False, "none", None, 0, 0, 0, 0, [])
