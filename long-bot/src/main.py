@@ -829,6 +829,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         tp_weights = Config.TP_WEIGHTS
 
         # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
+        price       = md.price
         stop_loss   = price * (1 - Config.SL_BUFFER / 100)   # SL ниже цены
         entry_price = price
         smc_data    = {}
