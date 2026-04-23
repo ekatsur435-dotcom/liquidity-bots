@@ -1,7 +1,7 @@
 """
-Market Data Client v2.1 — Bybit (основной) + Binance через прокси
+Market Data Client v2.7 — Bybit (основной) + Binance через прокси
 
-ИЗМЕНЕНИЯ v2.1:
+ИЗМЕНЕНИЯ v2.7:
   ✅ get_all_symbols: default min_volume снижен 5M → 300K (было 50 монет, стало 150-200)
   ✅ MarketData: добавлены поля для breakout/momentum анализа:
        volume_spike_ratio  — объём последней 15м свечи / средний объём (20 свечей)
