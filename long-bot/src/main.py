@@ -8,7 +8,7 @@
   ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 3.3:1)
   ✅ Уменьшен SL: 1.2% (было 1.5%)
   
-ИСПРАВЛЕНИЯ v2.3:
+ИСПРАВЛЕНИЯ v2.7:
   ✅ MAX_WATCHLIST default = 300 (было 200)
   ✅ MIN_LONG_SCORE default = 60 (было 65)
   ✅ SCAN_INTERVAL default = 200 сек
@@ -295,7 +295,7 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
-    # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
+    # ✅ FIX v2.7: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
@@ -412,7 +412,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🟢 <b>LONG Bot v2.3 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v2.7 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -441,7 +441,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.3")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v2.7")
 
 
 # ============================================================================
@@ -458,7 +458,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.3", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v2.7", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -574,7 +574,7 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
-    LONG scan_symbol v2.3:
+    LONG scan_symbol v2.7:
       - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
       - TP ВЫШЕ входа (long: фиксируем прибыль при росте)
       - OI Proxy: bull_confirm / accumulation / weakness_long
@@ -932,7 +932,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
+    ✅ v2.7: Считаем ТОЛЬКО LONG позиции этого бота.
     Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
     """
     if state.auto_trader:
