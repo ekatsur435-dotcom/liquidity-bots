@@ -701,7 +701,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "pattern": "LIQUIDITY_SWEEP",
                         "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
                         "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
-                        "zones": sweep.get("zones", {})
+                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
                     # Sweep есть но не подтверждён — логируем но пропускаем
