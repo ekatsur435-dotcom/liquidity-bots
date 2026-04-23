@@ -580,7 +580,6 @@ async def _count_real_positions() -> int:
     """
     ✅ v2.4 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
     БЫЛО: len(get_positions()) — считало ВСЕ позиции BingX включая
-          LONG бота (M-USDT SHORT, ASTER-USDT SHORT, UNI-USDT SHORT).
           Результат: SHORT бот всегда видел 19-20 и был заблокирован навсегда!
     СТАЛО: фильтр side == "SHORT" → считаем только наши шорты.
     """
