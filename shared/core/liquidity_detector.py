@@ -1,5 +1,6 @@
 """
-Liquidity Detector v2.6
+Liquidity Detector v2.7
+- Liquidity Sweep Tail + FVG Buffer (tighter stops)
 - Stop Loss sweeps (hunting)
 - Liquidity grabs above/below key levels
 - Historical zones analysis
