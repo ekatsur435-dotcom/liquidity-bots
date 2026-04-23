@@ -72,9 +72,9 @@ from bot.telegram import TelegramBot, TelegramCommandHandler
 
 class Config:
     BOT_TYPE      = "short"
-    # ✅ FIX: MIN_SHORT_SCORE default = 60 (не 65!)
+    # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -847,7 +847,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             return None
 
         price       = md.price
-        final_score = score_result.total_score + oi_score_adj
+        final_score = score_result.total_score + oi_score_adj + base_score_bonus
         # ✅ FIX: добавляем RSI multi-TF бонусы
         final_score += rsi_30m_score_adj + rsi_4h_score_adj
         if rsi_30m_score_adj != 0:
