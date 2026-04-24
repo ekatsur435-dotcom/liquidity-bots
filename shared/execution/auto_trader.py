@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from api.bingx_client import BingXClient
 from upstash.redis_client import get_redis_client
+from execution.limit_executor import LimitExecutor, LimitOrderConfig, get_limit_executor
 
 
 def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
@@ -79,6 +80,9 @@ class AutoTrader:
         self.last_reset   = datetime.utcnow().date()
         self._last_open_ts = 0.0
 
+        # 🎯 Phase 3: Limit Executor для адаптивных лимитных входов
+        self.limit_executor = get_limit_executor()
+        
         mode = "DEMO" if self.config.demo_mode else "REAL"
         print(f"🤖 AutoTrader initialized ({mode})")
         print(f"   Risk/trade: {self.config.risk_per_trade*100:.3f}% | "
@@ -112,6 +116,13 @@ class AutoTrader:
         symbol = signal.get("symbol", "?")
         score  = signal.get("score", 0)
         print(f"\n🚀 [AutoTrader] {symbol} | score={score:.1f}")
+        
+        # 🎯 Phase 3: Limit Executor — проверяем возможность лимитного входа
+        if self.limit_executor.should_use_limit(signal):
+            print(f"🎯 [AutoTrader][{symbol}] Using LIMIT order (OB quality detected)")
+            return await self._execute_limit_entry(signal)
+        
+        # Обычный market вход
         try:
             return await self.open_position(
                 symbol       = symbol,
@@ -130,6 +141,101 @@ class AutoTrader:
             import traceback
             print(f"❌ [AutoTrader] {symbol}: {e}\n{traceback.format_exc()}")
             return None
+    
+    async def _execute_limit_entry(self, signal: Dict) -> Optional[Dict]:
+        """
+        🎯 Phase 3: Выполнение лимитного входа с fallback на market
+        """
+        symbol = signal.get("symbol", "?")
+        direction = signal.get("direction", "long")
+        limit_price = signal.get("limit_price")
+        entry_price = signal.get("entry_price")
+        
+        if not limit_price:
+            print(f"⚠️ [AutoTrader][{symbol}] No limit_price, fallback to market")
+            return await self.open_position(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                stop_loss=signal["stop_loss"],
+                take_profits=signal["take_profits"],
+                signal_score=signal["score"],
+                smc_data=signal.get("smc"),
+                tg_msg_id=signal.get("tg_msg_id"),
+            )
+        
+        # Рассчитываем количество на основе риска
+        risk_usd = self.config.risk_per_trade * self.config.max_position_usdt
+        sl_distance = abs(entry_price - signal["stop_loss"])
+        position_size = risk_usd / sl_distance if sl_distance > 0 else 0
+        
+        # Создаем конфиг для лимитного ордера
+        from execution.limit_executor import LimitOrderConfig
+        
+        ob_data = signal.get("ob_data", {})
+        profile = signal.get("profile")
+        
+        config = LimitOrderConfig(
+            symbol=symbol,
+            side=direction,
+            entry_price=entry_price,
+            limit_price=limit_price,
+            quantity=position_size,
+            sl_price=signal["stop_loss"],
+            tp_prices=signal["take_profits"],
+            ttl_seconds=self.limit_executor.calculate_adaptive_ttl(
+                symbol_profile=profile,
+                ob_freshness=ob_data.get("ob_freshness", "medium"),
+                timeframe=signal.get("timeframe", "30m")
+            ),
+            fallback_to_market=True,
+            use_micro_steps=True,
+            source=ob_data.get("entry_type", "ob"),
+            source_quality=ob_data.get("ob_quality", 0)
+        )
+        
+        # Выполняем лимитный ордер с fallback
+        print(f"🎯 [AutoTrader][{symbol}] Limit @{limit_price:.6f} TTL={config.ttl_seconds}s")
+        
+        result = await self.limit_executor.execute(
+            config=config,
+            execute_market_callback=self._fallback_to_market
+        )
+        
+        if result.status.value == "filled":
+            print(f"✅ [AutoTrader][{symbol}] Limit filled @{result.filled_price:.6f}")
+            # Обновляем entry_price в сигнале на фактическую цену
+            signal["entry_price"] = result.filled_price
+            return await self.open_position(
+                symbol=symbol,
+                direction=direction,
+                entry_price=result.filled_price,
+                stop_loss=signal["stop_loss"],
+                take_profits=signal["take_profits"],
+                signal_score=signal["score"],
+                smc_data=signal.get("smc"),
+                tg_msg_id=signal.get("tg_msg_id"),
+            )
+        elif result.status.value == "fallback_to_market":
+            print(f"⚡ [AutoTrader][{symbol}] Fallback to market @{result.filled_price:.6f}")
+            signal["entry_price"] = result.filled_price
+            return await self.open_position(
+                symbol=symbol,
+                direction=direction,
+                entry_price=result.filled_price,
+                stop_loss=signal["stop_loss"],
+                take_profits=signal["take_profits"],
+                signal_score=signal["score"],
+                smc_data=signal.get("smc"),
+                tg_msg_id=signal.get("tg_msg_id"),
+            )
+        else:
+            print(f"❌ [AutoTrader][{symbol}] Limit order expired/cancelled")
+            return None
+    
+    async def _fallback_to_market(self, symbol: str, side: str, quantity: float) -> Dict:
+        """Callback для fallback с лимитки на маркет"""
+        return {"symbol": symbol, "side": side, "quantity": quantity, "filled_price": None}
 
     async def open_position(self, symbol, direction, entry_price, stop_loss,
                             take_profits, signal_score, smc_data=None,
