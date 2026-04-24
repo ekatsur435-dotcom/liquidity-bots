@@ -16,18 +16,80 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from flask import Flask, render_template, jsonify, request
 from flask_sock import Sock
 from upstash.redis_client import get_redis_client
+import httpx
 
 app = Flask(__name__)
 sock = Sock(app)
 
 
+def get_redis_short():
+    """Redis для SHORT бота"""
+    url = os.environ.get("UPSTASH_REDIS_REST_URL")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    from upstash_redis import Redis
+    return Redis(url=url, token=token)
+
+
+def get_redis_long():
+    """Redis для LONG бота"""
+    url = os.environ.get("UPSTASH_REDIS_LONG_URL", os.environ.get("UPSTASH_REDIS_REST_URL"))
+    token = os.environ.get("UPSTASH_REDIS_LONG_TOKEN", os.environ.get("UPSTASH_REDIS_REST_TOKEN", ""))
+    from upstash_redis import Redis
+    return Redis(url=url, token=token)
+
+
 def get_trading_stats(days=7):
-    """Получение статистики торговли за N дней"""
-    try:
-        redis = get_redis_client()
-    except Exception as e:
-        print(f"Redis error: {e}")
-        return {}
+    """Получение статистики торговли за N дней (оба бота)"""
+    stats = {
+        "total_trades": 0,
+        "win_count": 0,
+        "loss_count": 0,
+        "total_pnl": 0.0,
+        "micro_step_saves": 0,
+        "active_positions": 0,
+        "trades": []
+    }
+    
+    # Считываем из обоих ботов
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            
+            # Считываем статистику за последние N дней
+            for i in range(days):
+                date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+                key = f"stats:daily:{date}"
+                data = redis.get(key)
+                if data:
+                    day_stats = json.loads(data)
+                    stats["total_trades"] += day_stats.get("trades", 0)
+                    stats["win_count"] += day_stats.get("wins", 0)
+                    stats["loss_count"] += day_stats.get("losses", 0)
+                    stats["total_pnl"] += day_stats.get("pnl", 0)
+                    
+            # Micro-step saves
+            saves_key = "micro_step:saved_trades"
+            saves_data = redis.get(saves_key)
+            if saves_data:
+                saves = json.loads(saves_data)
+                stats["micro_step_saves"] += len(saves)
+                
+            # Active positions
+            active_key = "positions:active"
+            active_data = redis.get(active_key)
+            if active_data:
+                active = json.loads(active_data)
+                stats["active_positions"] += len(active)
+                
+        except Exception as e:
+            print(f"Redis {bot_name} error: {e}")
+    
+    # Win rate
+    total = stats["win_count"] + stats["loss_count"]
+    stats["win_rate"] = round(stats["win_count"] / total * 100, 1) if total > 0 else 0
+    stats["total_pnl"] = round(stats["total_pnl"], 2)
+    
+    return stats
     
     stats = {
         "total_trades": 0,
