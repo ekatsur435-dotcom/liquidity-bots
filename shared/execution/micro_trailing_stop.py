@@ -1,5 +1,5 @@
 """
-🎢 Micro-Step Trailing Stop v1.0 — Плавный трейлинг микро-шагами
+🎢 Micro-Step Trailing Stop v1.1 — Плавный трейлинг с Redis persistence
 
 Проблема: Обычный трейлинг двигает стоп слишком далеко, выбивает сделки
 Решение: Микро-шаги — двигать стоп чуть-чуть за каждым TP
@@ -9,9 +9,7 @@
 - Между TP не трогаем стоп
 - При достижении TP2+ активируем "защитный" режим
 
-Environment:
-- TRAIL_MICRO_STEP_PCT: 0.4 (0.4% за шаг)
-- TRAIL_TP1_LOCK: 0.3 (0.3% в плюс после TP1)
+Phase 3: Добавлена Redis persistence для сохранения состояния при перезапуске
 - TRAIL_TP2_LOCK: 0.8 (0.8% в плюс после TP2)
 - TRAIL_TP3_LOCK: 1.5 (1.5% в плюс после TP3)
 """
@@ -64,6 +62,13 @@ class MicroTrailingStop:
     
     def __init__(self):
         self.states: Dict[str, TrailingState] = {}
+        # Phase 3: Redis persistence
+        try:
+            self.redis = get_redis_client()
+            self._restore_all_states()
+        except Exception as e:
+            print(f"⚠️ [MicroTrailingStop] Redis not available: {e}")
+            self.redis = None
         print(f"🎢 MicroTrailingStop: "
               f"TP1={self.TP1_LOCK_PCT}%, TP2={self.TP2_LOCK_PCT}%, "
               f"TP3={self.TP3_LOCK_PCT}%")
@@ -87,6 +92,8 @@ class MicroTrailingStop:
             max_tps=6
         )
         self.states[symbol] = state
+        # Phase 3: Сохраняем в Redis
+        self._save_state(symbol, state)
         print(f"🎢 [{symbol}] Trailing initialized: SL={initial_sl:.6f}")
         return state
     
@@ -120,6 +127,9 @@ class MicroTrailingStop:
             else:
                 move_pct = (state.initial_sl - new_sl) / state.entry_price * 100
             state.total_sl_moved = move_pct
+            
+            # Phase 3: Сохраняем обновленное состояние в Redis
+            self._save_state(symbol, state)
             
             print(f"🎢 [{symbol}] TRAIL after TP{tp_level}: "
                   f"{old_sl:.6f} → {new_sl:.6f} "
@@ -196,6 +206,66 @@ class MicroTrailingStop:
         """Удаление состояния (при закрытии позиции)"""
         if symbol in self.states:
             del self.states[symbol]
+        # Phase 3: Очистка из Redis
+        if self.redis:
+            try:
+                self.redis.delete(f"trailing:{symbol}")
+            except Exception as e:
+                print(f"⚠️ [MicroTrailingStop] Redis delete error: {e}")
+    
+    def _save_state(self, symbol: str, state: TrailingState):
+        """Phase 3: Сохранение состояния в Redis"""
+        if not self.redis:
+            return
+        try:
+            data = {
+                "symbol": state.symbol,
+                "direction": state.direction,
+                "entry_price": state.entry_price,
+                "initial_sl": state.initial_sl,
+                "current_sl": state.current_sl,
+                "taken_tps": state.taken_tps,
+                "steps_taken": state.steps_taken,
+                "total_sl_moved": state.total_sl_moved,
+                "last_trail_at": state.last_trail_at.isoformat() if state.last_trail_at else None
+            }
+            self.redis.set(f"trailing:{symbol}", json.dumps(data), ex=86400)  # TTL 24h
+        except Exception as e:
+            print(f"⚠️ [MicroTrailingStop] Redis save error: {e}")
+    
+    def _restore_all_states(self):
+        """Phase 3: Восстановление всех состояний из Redis"""
+        if not self.redis:
+            return
+        try:
+            # Получаем все ключи trailing:*
+            keys = self.redis.keys("trailing:*")
+            if not keys:
+                return
+            print(f"🎢 [MicroTrailingStop] Restoring {len(keys)} states from Redis...")
+            for key in keys:
+                try:
+                    data = self.redis.get(key)
+                    if data:
+                        state_dict = json.loads(data)
+                        symbol = state_dict["symbol"]
+                        state = TrailingState(
+                            symbol=symbol,
+                            direction=state_dict["direction"],
+                            entry_price=state_dict["entry_price"],
+                            initial_sl=state_dict["initial_sl"],
+                            current_sl=state_dict["current_sl"],
+                            taken_tps=state_dict.get("taken_tps", 0),
+                            steps_taken=state_dict.get("steps_taken", 0),
+                            total_sl_moved=state_dict.get("total_sl_moved", 0.0),
+                            last_trail_at=datetime.fromisoformat(state_dict["last_trail_at"]) if state_dict.get("last_trail_at") else None
+                        )
+                        self.states[symbol] = state
+                except Exception as e:
+                    print(f"⚠️ [MicroTrailingStop] Failed to restore state for {key}: {e}")
+            print(f"🎢 [MicroTrailingStop] Restored {len(self.states)} states")
+        except Exception as e:
+            print(f"⚠️ [MicroTrailingStop] Redis restore error: {e}")
     
     def get_summary(self, symbol: str) -> Dict:
         """Сводка по трейлингу позиции"""
