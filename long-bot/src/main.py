@@ -72,8 +72,9 @@ from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
 from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
-from core.symbol_profiler import get_profile, SymbolProfile  # ✅ v2.8
-from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
+from core.symbol_profiler import SymbolProfile, get_symbol_profiler
+from core.order_block_detector import detect_order_blocks, format_ob_for_signal
+from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -596,7 +597,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         md = await state.binance.get_complete_market_data(symbol)
         if not md:
             return None
-
+        
+        # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
+        price = md.price
+        
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
@@ -920,6 +924,22 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                             "score_bonus": smc.score_bonus}
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
+
+        # 🌊 Phase 3: EQH/EQL Scanner — детекция пулов ликвидности
+        pool_data = {}
+        try:
+            pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
+            if pool_scan.active_sweeps:
+                # Бонус за активный sweep зоны ликвидности
+                final_score += 10
+                reasons.append(f"🌊 Liquidity sweep detected (+10)")
+                pool_data = {
+                    "eqh_levels": len(pool_scan.eqh_levels),
+                    "eql_levels": len(pool_scan.eql_levels),
+                    "active_sweeps": len(pool_scan.active_sweeps)
+                }
+        except Exception as e:
+            print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
 
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
