@@ -20,6 +20,34 @@ class LimitOrderStatus(Enum):
     FALLBACK_TO_MARKET = "fallback_to_market"
 
 
+class SlippageTracker:
+    """🎯 Отслеживание проскальзывания (stub)"""
+    def __init__(self):
+        self.trades = []
+    
+    def record_slippage(self, symbol: str, expected: float, actual: float, side: str):
+        slippage = ((actual - expected) / expected) * 100 if expected > 0 else 0
+        if side == "short":
+            slippage = -slippage  # Инвертируем для шорта
+        self.trades.append({
+            "symbol": symbol,
+            "slippage_pct": round(slippage, 3),
+            "expected": expected,
+            "actual": actual,
+            "side": side,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    
+    def get_stats(self) -> dict:
+        if not self.trades:
+            return {"count": 0, "avg_slippage": 0}
+        avg = sum(t["slippage_pct"] for t in self.trades) / len(self.trades)
+        return {
+            "count": len(self.trades),
+            "avg_slippage": round(avg, 3)
+        }
+
+
 @dataclass
 class LimitOrderConfig:
     symbol: str
