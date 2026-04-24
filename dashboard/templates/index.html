@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🚀 Trading Dashboard — Phase 3</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
+        .card { background: #16213e; padding: 20px; border-radius: 10px; margin: 20px 0; }
+        .metric { display: inline-block; margin: 10px 20px; text-align: center; }
+        .metric-value { font-size: 32px; font-weight: bold; color: #00d9ff; }
+        .metric-label { font-size: 14px; color: #888; }
+        .positive { color: #00ff88; }
+        .negative { color: #ff4444; }
+        h1 { color: #00d9ff; }
+        .status-active { color: #00ff88; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Trading Dashboard — Phase 3</h1>
+    
+    <div class="card">
+        <h2>📊 Trading Stats (7 days)</h2>
+        <div class="metric">
+            <div class="metric-value" id="total-trades">-</div>
+            <div class="metric-label">Total Trades</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="win-rate">-</div>
+            <div class="metric-label">Win Rate %</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="total-pnl">-</div>
+            <div class="metric-label">Total P&L %</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="avg-pnl">-</div>
+            <div class="metric-label">Avg P&L %</div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>🎢 Micro-Step Trailing</h2>
+        <div class="metric">
+            <div class="metric-value status-active" id="trailing-status">✅</div>
+            <div class="metric-label">Status</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="active-positions">-</div>
+            <div class="metric-label">Active Positions</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="micro-saves">-</div>
+            <div class="metric-label">Saved by Micro-Step</div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>🌊 EQH/EQL Scanner</h2>
+        <div class="metric">
+            <div class="metric-value status-active" id="eqh-status">✅</div>
+            <div class="metric-label">Status</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="sweep-bonus">+10</div>
+            <div class="metric-label">Score Bonus</div>
+        </div>
+    </div>
+
+    <script>
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('total-trades').textContent = data.total_trades || 0;
+                document.getElementById('win-rate').textContent = (data.win_rate || 0).toFixed(1) + '%';
+                document.getElementById('total-pnl').textContent = (data.total_pnl || 0).toFixed(2) + '%';
+                document.getElementById('total-pnl').className = 'metric-value ' + (data.total_pnl >= 0 ? 'positive' : 'negative');
+                document.getElementById('avg-pnl').textContent = (data.avg_pnl || 0).toFixed(2) + '%';
+                document.getElementById('active-positions').textContent = data.active_positions || 0;
+                document.getElementById('micro-saves').textContent = data.micro_step_saves || 0;
+            } catch (e) {
+                console.error('Error loading stats:', e);
+            }
+        }
+        
+        loadStats();
+        setInterval(loadStats, 30000); // Обновление каждые 30 сек
+    </script>
+</body>
+</html>
