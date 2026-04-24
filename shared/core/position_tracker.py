@@ -1,5 +1,10 @@
 """
-Position Tracker v2.7
+Position Tracker v2.9 — Phase 2: Micro-Step Trailing Stop
+
+ИЗМЕНЕНИЯ v2.9:
+  🎢 Micro-Step Trailing Stop — плавное движение SL микро-шагами
+     TP1 → +0.3%, TP2 → +0.8%, TP3 → +1.5% (вместо агрессивного трейлинга)
+     Решает проблему выбивания при ретестах (как PUMPBTCUSDT)
 
 ИЗМЕНЕНИЯ v2.7:
   ✅ Стоп в безубыток ПОСЛЕ TP2 (было: при +1.5% прибыли)
@@ -14,8 +19,14 @@ Position Tracker v2.7
 
 import asyncio
 import json
+import sys
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+
+# 🎢 Phase 2: Micro-Step Trailing Stop
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from execution.micro_trailing_stop import get_micro_trailing
 
 
 class PositionTracker:
@@ -58,6 +69,10 @@ class PositionTracker:
             self.long_trail_threshold = float(self.long_trail_threshold)
         if isinstance(self.short_trail_threshold, str):
             self.short_trail_threshold = float(self.short_trail_threshold)
+        
+        # 🎢 Phase 2: Micro-Step Trailing Stop
+        self.micro_trailing = get_micro_trailing()
+        
         self._running    = False
 
     async def run(self):
@@ -106,6 +121,18 @@ class PositionTracker:
 
         if not symbol or not entry:
             return
+
+        # 🎢 Phase 2: Инициализация Micro-Step Trailing при первом обнаружении позиции
+        trailing_state = self.micro_trailing.get_state(symbol)
+        if trailing_state is None and len(taken) == 0:
+            # Новая позиция — инициализируем трейлинг
+            self.micro_trailing.initialize(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry,
+                initial_sl=sl
+            )
+            print(f"🎢 [MicroTrail][{symbol}] Initialized: entry={entry:.6f}, SL={sl:.6f}")
 
         # Экспирация 24ч
         if opened_at:
@@ -353,10 +380,31 @@ class PositionTracker:
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
             signal["tp_level"]    = tp_label
+            
+            # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
+            self.micro_trailing.remove(symbol)
 
         # ✅ v2.5: Трекаем максимальный взятый TP уровень
         signal["max_tp_reached"] = tp_label
         signal["tp_taken_count"] = len(taken)
+        
+        # 🎢 Phase 2: Micro-Step Trailing — обновляем SL после TP
+        if not is_last:  # Не обновляем если последний TP (позиция закрывается)
+            new_sl_micro = self.micro_trailing.on_tp_taken(
+                symbol=symbol,
+                tp_level=tp_num,
+                current_price=current_price
+            )
+            if new_sl_micro:
+                # Обновляем SL в сигнале и на бирже
+                old_sl = signal.get("stop_loss", 0)
+                signal["stop_loss"] = new_sl_micro
+                signal["trailing_active"] = True
+                self._save(symbol, signal)
+                
+                # Перемещаем SL на бирже
+                await self._move_sl(signal, old_sl, new_sl_micro, "трейлинг")
+        
         self._save(symbol, signal)
 
         d_emoji = "🔴" if direction == "short" else "🟢"
@@ -427,6 +475,9 @@ class PositionTracker:
         else:
             tp_level_label = "SL"
 
+        # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии позиции
+        self.micro_trailing.remove(symbol)
+        
         signal["status"]      = "closed_sl"
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
