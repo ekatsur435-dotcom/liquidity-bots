@@ -46,15 +46,46 @@ def get_trading_stats(days=7):
         "total_pnl": 0.0,
         "micro_step_saves": 0,
         "active_positions": 0,
-        "trades": []
+        "trades": [],
+        "short_trades": 0,
+        "short_winrate": 0,
+        "short_pnl": 0.0,
+        "long_trades": 0,
+        "long_winrate": 0,
+        "long_pnl": 0.0
     }
     
     # Считываем из обоих ботов
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
+            prefix = bot_name.lower()
             
-            # Считываем статистику за последние N дней
+            # Читаем all_trades для реальной статистики
+            all_trades_key = f"{prefix}:all_trades"
+            trades_data = redis.get(all_trades_key)
+            if trades_data:
+                trades = json.loads(trades_data)
+                total = len(trades)
+                wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
+                losses = sum(1 for t in trades if t.get('pnl', 0) <= 0)
+                pnl = sum(t.get('pnl', 0) for t in trades)
+                
+                stats["total_trades"] += total
+                stats["win_count"] += wins
+                stats["loss_count"] += losses
+                stats["total_pnl"] += pnl
+                
+                if bot_name == "SHORT":
+                    stats["short_trades"] = total
+                    stats["short_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
+                    stats["short_pnl"] = round(pnl, 2)
+                else:
+                    stats["long_trades"] = total
+                    stats["long_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
+                    stats["long_pnl"] = round(pnl, 2)
+                    
+            # Старый формат stats:daily как fallback
             for i in range(days):
                 date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
                 key = f"stats:daily:{date}"
