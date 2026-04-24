@@ -1,0 +1,116 @@
+# Render.com Deployment Configuration
+# v2.9 — Phase 2: Limit Executor, EQH/EQL Scanner, Micro-Step Trailing
+
+services:
+  # LONG Bot Service
+  - type: web
+    name: liquidity-long-bot
+    runtime: python
+    plan: starter
+    buildCommand: |
+      cd long-bot && pip install -r requirements.txt
+    startCommand: |
+      cd long-bot && python -m src.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINGX_API_KEY
+        sync: false
+      - key: BINGX_SECRET_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: USE_SMC
+        value: "true"
+      - key: USE_TBS
+        value: "true"
+      - key: USE_ENTRY_CONFIRMATION
+        value: "true"
+      # 🎯 Phase 2: Limit Executor
+      - key: LIMIT_ORDER_ENABLED
+        value: "true"
+      - key: LIMIT_FALLBACK_TIMEOUT
+        value: "300"
+      - key: LIMIT_MICRO_STEP_PCT
+        value: "0.02"
+      # 🌊 Phase 2: EQH/EQL Scanner
+      - key: USE_EQH_EQL_SCANNER
+        value: "true"
+      - key: EQH_EQL_TOLERANCE_PCT
+        value: "0.5"
+      # 🎢 Phase 2: Micro-Step Trailing
+      - key: TRAIL_TP1_LOCK
+        value: "0.3"
+      - key: TRAIL_TP2_LOCK
+        value: "0.8"
+      - key: TRAIL_TP3_LOCK
+        value: "1.5"
+      - key: TRAIL_MICRO_STEP_PCT
+        value: "0.3"
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # SHORT Bot Service  
+  - type: web
+    name: liquidity-short-bot
+    runtime: python
+    plan: starter
+    buildCommand: |
+      cd short-bot && pip install -r requirements.txt
+    startCommand: |
+      cd short-bot && python -m src.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINGX_API_KEY
+        sync: false
+      - key: BINGX_SECRET_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: USE_SMC
+        value: "true"
+      - key: USE_TBS
+        value: "true"
+      - key: USE_ENTRY_CONFIRMATION
+        value: "true"
+      # 🎯 Phase 2: Limit Executor
+      - key: LIMIT_ORDER_ENABLED
+        value: "true"
+      - key: LIMIT_FALLBACK_TIMEOUT
+        value: "300"
+      - key: LIMIT_MICRO_STEP_PCT
+        value: "0.02"
+      # 🌊 Phase 2: EQH/EQL Scanner
+      - key: USE_EQH_EQL_SCANNER
+        value: "true"
+      - key: EQH_EQL_TOLERANCE_PCT
+        value: "0.5"
+      # 🎢 Phase 2: Micro-Step Trailing
+      - key: TRAIL_TP1_LOCK
+        value: "0.3"
+      - key: TRAIL_TP2_LOCK
+        value: "0.8"
+      - key: TRAIL_TP3_LOCK
+        value: "1.5"
+      - key: TRAIL_MICRO_STEP_PCT
+        value: "0.3"
+    healthCheckPath: /health
+    autoDeploy: true
+
+databases:
+  - name: liquidity-bot-db
+    plan: free
+    ipAllowList: []
