@@ -968,10 +968,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "pattern":          patterns[0].name if patterns else "",
             "smc_data":         smc_data,
             # ✅ v2.8: Order Block данные для лимитных входов
-            "ob_data":          ob_data,
-            "entry_type":       ob_data.get("entry_type", "MARKET") if ob_data else "MARKET",
-            "limit_price":      ob_data.get("limit_price") if ob_data else None,
-            "limit_ttl":        symbol_profile.calculate_limit_ttl(ob_data.get("ob_freshness", "medium")) if symbol_profile and ob_data else 900,
+            "ob_data":          ob_data if isinstance(ob_data, dict) else None,
+            "entry_type":       ob_data.get("entry_type", "MARKET") if isinstance(ob_data, dict) else "MARKET",
+            "limit_price":      ob_data.get("limit_price") if isinstance(ob_data, dict) else None,
+            "limit_ttl":        symbol_profile.calculate_limit_ttl(ob_data.get("ob_freshness", "medium")) if symbol_profile and isinstance(ob_data, dict) else 900,
             "profile":          {
                 "volatility_class": symbol_profile.volatility_class if symbol_profile else "medium",
                 "ideal_tf": symbol_profile.ideal_tf if symbol_profile else "30m",
