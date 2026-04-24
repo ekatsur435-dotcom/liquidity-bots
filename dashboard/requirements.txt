@@ -1,4 +1,5 @@
 flask==2.3.3
+flask-sock==0.7.0
 simple-websocket==0.10.1
 upstash-redis==0.15.0
 gunicorn==21.2.0
