@@ -1,6 +1,10 @@
 """
-🔴 SHORT BOT v2.8 — FastAPI Application
+🔴 SHORT BOT v2.9 — FastAPI Application
 
+ИСПРАВЛЕНИЯ v2.9:
+  🎢 Micro-Step Trailing Stop — плавное движение SL микро-шагами
+     TP1: +0.3%, TP2: +0.8%, TP3: +1.5% — не выбивает сделки!
+  
 ИСПРАВЛЕНИЯ v2.8:
   ✅ Symbol Profiler — индивидуальный анализ каждой монеты
   ✅ Order Block Detector — институциональные зоны входа
