@@ -490,7 +490,14 @@ class PositionTracker:
         else:
             tp_level_label = "SL"
 
-        # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии позиции
+        # 🎢 Phase 3: Информация о Micro-Step при закрытии
+        trail_summary = self.micro_trailing.get_summary(symbol)
+        micro_info = ""
+        if trail_summary and trail_summary['steps_taken'] > 0:
+            micro_info = (f"\n🎢 Micro-Step: {trail_summary['steps_taken']} шагов, "
+                         f"защита +{trail_summary['total_moved_pct']:.2f}%")
+        
+        # Очистка Micro-Step Trailing
         self.micro_trailing.remove(symbol)
         
         signal["status"]      = "closed_sl"
