@@ -404,6 +404,21 @@ class PositionTracker:
                 
                 # Перемещаем SL на бирже
                 await self._move_sl(signal, old_sl, new_sl_micro, "трейлинг")
+                
+                # 🎢 Phase 3: Красивое уведомление о Micro-Step Trailing
+                summary = self.micro_trailing.get_summary(symbol)
+                if summary:
+                    trail_lines = [
+                        f"🎢 <b>Стоп передвинут — Micro-Step #{summary['steps_taken']}</b>",
+                        "",
+                        f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}",
+                        f"📍 Вход:       <b>${entry:,.6f}</b>",
+                        f"🛑 Было SL:    <b>${old_sl:,.6f}</b>",
+                        f"✅ Теперь SL:  <b>${new_sl_micro:,.6f}</b>",
+                        f"📊 TP взято:   {len(taken)}/{total}",
+                        f"🎯 Защита:    <b>+{summary['total_moved_pct']:.2f}%</b> от входа",
+                    ]
+                    await self._notify(signal, "\n".join(trail_lines))
         
         self._save(symbol, signal)
 
