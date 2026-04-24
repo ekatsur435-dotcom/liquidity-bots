@@ -159,3 +159,24 @@ class LimitExecutor:
             result.status = LimitOrderStatus.EXPIRED
             
         return result
+
+
+# Singleton instance
+_limit_executor_instance = None
+_slippage_tracker_instance = None
+
+
+def get_limit_executor() -> LimitExecutor:
+    """Get singleton LimitExecutor instance"""
+    global _limit_executor_instance
+    if _limit_executor_instance is None:
+        _limit_executor_instance = LimitExecutor()
+    return _limit_executor_instance
+
+
+def get_slippage_tracker() -> SlippageTracker:
+    """Get singleton SlippageTracker instance"""
+    global _slippage_tracker_instance
+    if _slippage_tracker_instance is None:
+        _slippage_tracker_instance = SlippageTracker()
+    return _slippage_tracker_instance
