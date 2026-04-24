@@ -14,9 +14,11 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from flask import Flask, render_template, jsonify, request
+from flask_sock import Sock
 from upstash.redis_client import get_redis_client
 
 app = Flask(__name__)
+sock = Sock(app)
 
 
 def get_trading_stats(days=7):
@@ -179,6 +181,34 @@ def api_chart_data():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+# ⚡ WebSocket для real-time обновлений
+@sock.route("/ws")
+def ws_handler(ws):
+    """WebSocket endpoint для real-time обновлений"""
+    import asyncio
+    
+    while True:
+        try:
+            # Получаем актуальные данные
+            stats = get_trading_stats(days=1)
+            
+            # Отправляем клиенту
+            ws.send(json.dumps({
+                "type": "update",
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": stats
+            }))
+            
+            # Ждем 5 секунд перед следующим обновлением
+            import time
+            time.sleep(5)
+            
+        except Exception as e:
+            print(f"WebSocket error: {e}")
+            break
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
