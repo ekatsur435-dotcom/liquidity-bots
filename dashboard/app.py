@@ -37,8 +37,19 @@ def get_redis_long():
     return Redis(url=url, token=token)
 
 
+# Кэш для статистики
+_stats_cache = {"data": None, "timestamp": 0}
+CACHE_TTL = 30  # секунды
+
 def get_trading_stats(days=7):
-    """Получение статистики торговли за N дней (оба бота)"""
+    """Получение статистики торговли за N дней (оба бота) с кэшированием"""
+    global _stats_cache
+    
+    # Проверяем кэш
+    now = datetime.utcnow().timestamp()
+    if _stats_cache["data"] and (now - _stats_cache["timestamp"]) < CACHE_TTL:
+        return _stats_cache["data"]
+    
     stats = {
         "total_trades": 0,
         "win_count": 0,
@@ -55,20 +66,21 @@ def get_trading_stats(days=7):
         "long_pnl": 0.0
     }
     
-    # Считываем из обоих ботов
+    # Считываем из обоих ботов - только последние 50 сделок для скорости
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как LIST (lrange) для реальной статистики
+            # Читаем all_trades как LIST - только последние 50 для скорости
             all_trades_key = f"{prefix}:all_trades"
             try:
                 # Получаем длину списка
                 list_len = redis.llen(all_trades_key) or 0
                 if list_len > 0:
-                    # Читаем все элементы списка
-                    trades_json_list = redis.lrange(all_trades_key, 0, -1)
+                    # Читаем только последние 50 сделок (быстро!)
+                    start = max(0, list_len - 50)
+                    trades_json_list = redis.lrange(all_trades_key, start, -1)
                     trades = []
                     for trade_json in trades_json_list:
                         try:
@@ -120,6 +132,10 @@ def get_trading_stats(days=7):
     total = stats["win_count"] + stats["loss_count"]
     stats["win_rate"] = round(stats["win_count"] / total * 100, 1) if total > 0 else 0
     stats["total_pnl"] = round(stats["total_pnl"], 2)
+    
+    # Сохраняем в кэш
+    _stats_cache["data"] = stats
+    _stats_cache["timestamp"] = datetime.utcnow().timestamp()
     
     return stats
 
@@ -255,40 +271,8 @@ def health():
     return jsonify({"status": "ok"})
 
 
-# ⚡ WebSocket для real-time обновлений (async версия)
-@sock.route("/ws")
-def ws_handler(ws):
-    """WebSocket endpoint для real-time обновлений"""
-    import threading
-    import time
-    
-    def send_updates():
-        while True:
-            try:
-                stats = get_trading_stats(days=1)
-                ws.send(json.dumps({
-                    "type": "update",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "data": stats
-                }))
-            except Exception as e:
-                print(f"WebSocket send error: {e}")
-                break
-            time.sleep(5)
-    
-    # Запускаем в отдельном потоке чтобы не блокировать
-    thread = threading.Thread(target=send_updates, daemon=True)
-    thread.start()
-    
-    # Ждем закрытия соединения
-    try:
-        while True:
-            message = ws.receive()
-            if message is None:
-                break
-    except:
-        pass
-
+# ⚡ Убран WebSocket - вызывает таймауты на бесплатном Render
+# Используйте /api/stats для получения данных (обновляется раз в 30 сек кэш)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
