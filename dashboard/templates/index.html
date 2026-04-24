@@ -1,21 +1,232 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>🚀 Trading Dashboard — Phase 3</title>
+    <title>🚀 Trading Dashboard — Phase 3 Complete</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
-        .card { background: #16213e; padding: 20px; border-radius: 10px; margin: 20px 0; }
-        .metric { display: inline-block; margin: 10px 20px; text-align: center; }
-        .metric-value { font-size: 32px; font-weight: bold; color: #00d9ff; }
-        .metric-label { font-size: 14px; color: #888; }
-        .positive { color: #00ff88; }
-        .negative { color: #ff4444; }
-        h1 { color: #00d9ff; }
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            margin: 20px; 
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+            color: #eee; 
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 15px;
+        }
+        .card { 
+            background: rgba(22, 33, 62, 0.9); 
+            padding: 25px; 
+            border-radius: 15px; 
+            margin: 20px 0; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 15px;
+        }
+        .metric { 
+            display: inline-block; 
+            margin: 15px 25px; 
+            text-align: center;
+            padding: 15px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            transition: transform 0.3s;
+        }
+        .metric:hover { transform: translateY(-5px); }
+        .metric-value { 
+            font-size: 36px; 
+            font-weight: bold; 
+            color: #00d9ff; 
+            text-shadow: 0 0 10px rgba(0,217,255,0.3);
+        }
+        .metric-label { 
+            font-size: 13px; 
+            color: #888; 
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .positive { color: #00ff88; text-shadow: 0 0 10px rgba(0,255,136,0.3); }
+        .negative { color: #ff4444; text-shadow: 0 0 10px rgba(255,68,68,0.3); }
+        .neutral { color: #ffa500; }
+        h1 { 
+            color: #00d9ff; 
+            margin: 0;
+            font-size: 32px;
+            text-shadow: 0 0 20px rgba(0,217,255,0.5);
+        }
         .status-active { color: #00ff88; }
+        .status-inactive { color: #ff4444; }
+        
+        /* 🎯 Phase 3: Filters */
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .filter-label {
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+        }
+        select, input {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #00d9ff;
+            color: #eee;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        select:hover, input:hover {
+            border-color: #00ff88;
+        }
+        button {
+            background: linear-gradient(135deg, #00d9ff, #00ff88);
+            border: none;
+            color: #1a1a2e;
+            padding: 12px 25px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0,217,255,0.4);
+        }
+        
+        /* Charts */
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin: 20px 0;
+        }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 900px) {
+            .grid-2 { grid-template-columns: 1fr; }
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        th {
+            color: #00d9ff;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+        tr:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        
+        /* Progress bars */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            transition: width 0.5s ease;
+        }
+        
+        /* Risk indicator */
+        .risk-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .risk-low { background: rgba(0,255,136,0.2); color: #00ff88; }
+        .risk-medium { background: rgba(255,165,0,0.2); color: #ffa500; }
+        .risk-high { background: rgba(255,68,68,0.2); color: #ff4444; }
     </style>
 </head>
 <body>
-    <h1>🚀 Trading Dashboard — Phase 3</h1>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Trading Dashboard — Phase 3 Complete</h1>
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <span id="last-update">Last update: --</span>
+                <div class="risk-indicator risk-low" id="system-risk">🛡️ System Normal</div>
+            </div>
+        </div>
+        
+        <!-- 🎯 Phase 3: Filters -->
+        <div class="filters">
+            <div class="filter-group">
+                <span class="filter-label">Time Range</span>
+                <select id="time-filter" onchange="updateAll()">
+                    <option value="1">Last 24 Hours</option>
+                    <option value="7" selected>Last 7 Days</option>
+                    <option value="30">Last 30 Days</option>
+                    <option value="90">Last 90 Days</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <span class="filter-label">Symbol Filter</span>
+                <input type="text" id="symbol-filter" placeholder="e.g. BTC" onchange="updateAll()">
+            </div>
+            <div class="filter-group">
+                <span class="filter-label">Direction</span>
+                <select id="direction-filter" onchange="updateAll()">
+                    <option value="all">All</option>
+                    <option value="long">Long Only</option>
+                    <option value="short">Short Only</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <span class="filter-label">Entry Type</span>
+                <select id="entry-filter" onchange="updateAll()">
+                    <option value="all">All Entries</option>
+                    <option value="limit">Limit Orders</option>
+                    <option value="market">Market Orders</option>
+                </select>
+            </div>
+            <button onclick="refreshData()">🔄 Refresh</button>
+        </div>
+    
     
     <div class="card">
         <h2>📊 Trading Stats (7 days)</h2>
@@ -84,6 +295,85 @@
             <div class="metric-label">Recommended Step %</div>
         </div>
     </div>
+    
+    <!-- 🎯 Phase 3: Charts -->
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-header">
+                <h2>📈 P&L Trend</h2>
+                <span class="filter-label">Daily Performance</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="pnlChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>🎯 Win Rate Trend</h2>
+                <span class="filter-label">% Successful Trades</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="winRateChart"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h2>🔥 Risk Metrics</h2>
+            <span class="filter-label">Portfolio Health</span>
+        </div>
+        <div style="display: flex; gap: 40px; flex-wrap: wrap;">
+            <div class="metric">
+                <div class="metric-value" id="total-exposure">-</div>
+                <div class="metric-label">Total Exposure</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="exposure-bar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="portfolio-heat">-</div>
+                <div class="metric-label">Portfolio Heat</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="heat-bar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="concentration-risk">-</div>
+                <div class="metric-label">Concentration Risk</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="conc-bar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="var-95">-</div>
+                <div class="metric-label">VaR (95%)</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h2>📊 Recent Trades</h2>
+            <span class="filter-label">Last 10 Positions</span>
+        </div>
+        <table id="trades-table">
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Direction</th>
+                    <th>Entry</th>
+                    <th>Exit</th>
+                    <th>P&L %</th>
+                    <th>Entry Type</th>
+                </tr>
+            </thead>
+            <tbody id="trades-body">
+                <tr><td colspan="6" style="text-align: center; color: #888;">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
 
     <script>
         async function loadStats() {
@@ -123,6 +413,111 @@
         loadStats();
         loadSlippage();
         setInterval(() => { loadStats(); loadSlippage(); }, 30000); // Обновление каждые 30 сек
+        
+        // 🎯 Phase 3: Chart.js для графиков
+        let pnlChart, winRateChart;
+        
+        async function loadCharts() {
+            try {
+                const days = document.getElementById('time-filter')?.value || 7;
+                const response = await fetch(`/api/chart_data?days=${days}`);
+                const data = await response.json();
+                
+                // P&L Chart
+                const pnlCtx = document.getElementById('pnlChart');
+                if (pnlCtx) {
+                    if (pnlChart) pnlChart.destroy();
+                    
+                    pnlChart = new Chart(pnlCtx, {
+                        type: 'line',
+                        data: {
+                            labels: data.dates,
+                            datasets: [{
+                                label: 'Daily P&L %',
+                                data: data.pnl,
+                                borderColor: data.pnl.map(v => v >= 0 ? '#00ff88' : '#ff4444'),
+                                backgroundColor: data.pnl.map(v => v >= 0 ? 'rgba(0,255,136,0.1)' : 'rgba(255,68,68,0.1)'),
+                                fill: true,
+                                tension: 0.4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false }
+                            },
+                            scales: {
+                                y: {
+                                    grid: { color: 'rgba(255,255,255,0.1)' },
+                                    ticks: { color: '#888' }
+                                },
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { color: '#888' }
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                // Win Rate Chart
+                const wrCtx = document.getElementById('winRateChart');
+                if (wrCtx) {
+                    if (winRateChart) winRateChart.destroy();
+                    
+                    winRateChart = new Chart(wrCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.dates,
+                            datasets: [{
+                                label: 'Win Rate %',
+                                data: data.win_rate,
+                                backgroundColor: data.win_rate.map(v => v >= 50 ? '#00ff88' : '#ffa500'),
+                                borderRadius: 4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false }
+                            },
+                            scales: {
+                                y: {
+                                    min: 0,
+                                    max: 100,
+                                    grid: { color: 'rgba(255,255,255,0.1)' },
+                                    ticks: { color: '#888' }
+                                },
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { color: '#888' }
+                                }
+                            }
+                        }
+                    });
+                }
+                
+            } catch (e) {
+                console.error('Error loading charts:', e);
+            }
+        }
+        
+        // Load charts initially
+        loadCharts();
+        
+        // Refresh function for filters
+        function updateAll() {
+            loadStats();
+            loadSlippage();
+            loadCharts();
+        }
+        
+        function refreshData() {
+            updateAll();
+            document.getElementById('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+        }
     </script>
 </body>
 </html>
