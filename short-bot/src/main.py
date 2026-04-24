@@ -73,7 +73,7 @@ from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
 from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
-from core.symbol_profiler import get_profile, SymbolProfile  # ✅ v2.8
+from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile  # ✅ v2.8
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
