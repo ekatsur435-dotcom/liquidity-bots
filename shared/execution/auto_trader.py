@@ -206,6 +206,8 @@ class AutoTrader:
             print(f"✅ [AutoTrader][{symbol}] Limit filled @{result.filled_price:.6f}")
             # Обновляем entry_price в сигнале на фактическую цену
             signal["entry_price"] = result.filled_price
+            signal["entry_type"] = "LIMIT"  # Phase 3: отмечаем тип входа
+            signal["slippage"] = ((result.filled_price - limit_price) / limit_price * 100) if limit_price else 0
             return await self.open_position(
                 symbol=symbol,
                 direction=direction,
