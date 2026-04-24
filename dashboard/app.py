@@ -15,8 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from flask import Flask, render_template, jsonify, request
 from flask_sock import Sock
-from upstash.redis_client import get_redis_client
-import httpx
+from upstash_redis import Redis
 
 app = Flask(__name__)
 sock = Sock(app)
