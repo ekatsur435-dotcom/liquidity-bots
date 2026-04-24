@@ -115,11 +115,14 @@ services:
     name: trading-dashboard
     runtime: python
     plan: free
-    buildCommand: pip install -r dashboard/requirements.txt
-    startCommand: cd dashboard && python app.py
+    rootDir: dashboard
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -b 0.0.0.0:10000 app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: PORT
+        value: 10000
       - key: UPSTASH_REDIS_REST_URL
         fromDatabase:
           name: liquidity-bot-db
