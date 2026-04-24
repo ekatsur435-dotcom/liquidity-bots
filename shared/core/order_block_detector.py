@@ -137,6 +137,7 @@ class OrderBlockDetector:
         self.min_volume_ratio = min_volume_ratio
         self.min_impulse_body_pct = min_impulse_body_pct
         self.max_ob_age = max_ob_age_candles
+        self.max_ob = max_ob_age_candles  # Alias для совместимости
         self.use_sweep_confirmation = use_sweep_confirmation
     
     def detect(self, 
