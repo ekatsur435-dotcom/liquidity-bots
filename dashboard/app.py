@@ -103,5 +103,27 @@ def api_saved_trades():
         return jsonify([])
 
 
+@app.route("/api/slippage")
+def api_slippage():
+    """API: Статистика проскальзывания"""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from execution.limit_executor import get_slippage_tracker
+        
+        tracker = get_slippage_tracker()
+        stats = tracker.get_stats(days=7)
+        
+        return jsonify({
+            "avg_slippage_pct": stats.get("avg_slippage", 0),
+            "total_records": stats.get("count", 0),
+            "by_source": stats.get("by_source", {}),
+            "limit_avg": stats.get("limit_avg", 0),
+            "market_avg": stats.get("market_avg", 0),
+            "recommended_micro_step": tracker.get_recommended_micro_step()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
