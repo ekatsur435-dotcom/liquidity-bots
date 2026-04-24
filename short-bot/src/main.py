@@ -1,6 +1,12 @@
 """
-🔴 SHORT BOT v2.7 — FastAPI Application
+🔴 SHORT BOT v2.8 — FastAPI Application
 
+ИСПРАВЛЕНИЯ v2.8:
+  ✅ Symbol Profiler — индивидуальный анализ каждой монеты
+  ✅ Order Block Detector — институциональные зоны входа
+  ✅ Adaptive Timeframes — авто-выбор ТФ под волатильность
+  ✅ Limit Entry System — лимитные ордера с TTL + fallback
+  
 ИСПРАВЛЕНИЯ v2.7:
   ✅ Liquidity Sweep Detection (ловля сборов стопов)
   ✅ TBS — Test Before Strike (ретест Order Block)
@@ -63,6 +69,8 @@ from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
 from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
+from core.symbol_profiler import get_profile, SymbolProfile  # ✅ v2.8
+from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -654,6 +662,45 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # Используем свечи лучшего ТФ для основного анализа
         tf_map = {"15m": ohlcv_15m, "30m": ohlcv_30m, "1h": ohlcv_1h, "2h": ohlcv_2h, "4h": ohlcv_4h}
         ohlcv_primary = tf_map.get(primary_tf, ohlcv_15m)
+        
+        # =========================================================================
+        # ✅ v2.8: SYMBOL PROFILER — индивидуальный профиль монеты
+        # =========================================================================
+        symbol_profile = None
+        try:
+            symbol_profile = await get_profile(symbol, state.binance)
+            if symbol_profile:
+                # Адаптируем ТФ под профиль (если монета волатильная)
+                if symbol_profile.ideal_tf != primary_tf and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
+                    # Перезагружаем данные на оптимальном ТФ
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
+                    if new_ohlcv and len(new_ohlcv) >= 20:
+                        ohlcv_primary = new_ohlcv
+                        primary_tf = symbol_profile.ideal_tf
+                        print(f"📊 [v2.8] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
+        except Exception as e:
+            print(f"⚠️ [v2.8] {symbol}: Profile error: {e}")
+        
+        # =========================================================================
+        # ✅ v2.8: ORDER BLOCK DETECTOR — институциональные зоны
+        # =========================================================================
+        ob_data = None
+        ob_result = None
+        try:
+            current_price = md.price
+            ob_result = detect_order_blocks(
+                ohlcv_primary, 
+                direction="short",  # Для SHORT бота ищем bearish OB
+                current_price=current_price
+            )
+            
+            if ob_result and ob_result.bearish_ob:
+                ob = ob_result.bearish_ob
+                if ob.quality >= 60 and ob.freshness.value in ["fresh", "medium"]:
+                    ob_data = format_ob_for_signal(ob)
+                    print(f"🎯 [v2.8] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
+        except Exception as e:
+            print(f"⚠️ [v2.8] {symbol}: OB detection error: {e}")
 
         # =========================================================================
         # ✅ v2.7: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
@@ -1005,6 +1052,16 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "atr_14_pct":       round(getattr(md, "atr_14_pct", 0.5), 3),
             "pattern":          patterns[0].name if patterns else "",
             "smc_data":         smc_data,
+            # ✅ v2.8: Order Block данные для лимитных входов
+            "ob_data":          ob_data,
+            "entry_type":       ob_data.get("entry_type", "MARKET") if ob_data else "MARKET",
+            "limit_price":      ob_data.get("limit_price") if ob_data else None,
+            "limit_ttl":        symbol_profile.calculate_limit_ttl(ob_data.get("ob_freshness", "medium")) if symbol_profile and ob_data else 900,
+            "profile":          {
+                "volatility_class": symbol_profile.volatility_class if symbol_profile else "medium",
+                "ideal_tf": symbol_profile.ideal_tf if symbol_profile else "30m",
+                "atr_pct": symbol_profile.atr_14_pct if symbol_profile else 1.0,
+            } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
         }
