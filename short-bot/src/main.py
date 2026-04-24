@@ -75,6 +75,7 @@ from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
 from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
 from core.symbol_profiler import get_profile, SymbolProfile  # ✅ v2.8
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
+from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
 
 
@@ -630,6 +631,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         md = await state.binance.get_complete_market_data(symbol)
         if not md:
             return None
+
+        # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
+        price = md.price
 
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
