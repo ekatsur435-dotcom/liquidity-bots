@@ -110,6 +110,23 @@ services:
     healthCheckPath: /health
     autoDeploy: true
 
+  # 🎯 Phase 3: Dashboard Web Service
+  - type: web
+    name: trading-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r dashboard/requirements.txt
+    startCommand: cd dashboard && python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: UPSTASH_REDIS_REST_URL
+        fromDatabase:
+          name: liquidity-bot-db
+          property: connectionString
+    healthCheckPath: /health
+    autoDeploy: true
+
 databases:
   - name: liquidity-bot-db
     plan: free
