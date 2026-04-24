@@ -67,6 +67,47 @@ class LimitExecutor:
         
         print(f"🎯 Limit Executor: enabled={self.enabled}, TTL={self.default_ttl}s")
     
+    def calculate_adaptive_ttl(self, 
+                              symbol_profile: Any,
+                              ob_freshness: str = "medium",
+                              timeframe: str = "30m") -> int:
+        """
+        Адаптивный TTL на основе таймфрейма и профиля
+        """
+        # Базовый TTL по ТФ
+        tf_base_ttl = {
+            "5m": 60,      # 1 мин
+            "15m": 150,    # 2.5 мин
+            "30m": 300,    # 5 мин (default)
+            "1h": 600,     # 10 мин
+            "2h": 900,     # 15 мин
+            "4h": 1200,    # 20 мин
+            "6h": 1800,    # 30 мин
+            "8h": 2400,    # 40 мин
+            "1d": 3600,    # 60 мин
+        }
+        
+        base_ttl = tf_base_ttl.get(timeframe, self.default_ttl)
+        
+        # Корректировка по свежести OB
+        freshness_multiplier = {
+            "fresh": 1.5,
+            "medium": 1.0,
+            "aging": 0.7,
+            "stale": 0.3
+        }
+        
+        multiplier = freshness_multiplier.get(ob_freshness, 1.0)
+        
+        # Корректировка по волатильности
+        if symbol_profile:
+            if symbol_profile.volatility_class == "high":
+                multiplier *= 0.7
+            elif symbol_profile.volatility_class == "low":
+                multiplier *= 1.3
+        
+        return int(base_ttl * multiplier)
+    
     def should_use_limit(self, signal: Dict[str, Any]) -> bool:
         if not self.enabled:
             return False
