@@ -13,7 +13,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 from upstash.redis_client import get_redis_client
 
 app = Flask(__name__)
@@ -123,6 +123,56 @@ def api_slippage():
         })
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+@app.route("/api/chart_data")
+def api_chart_data():
+    """API: Данные для графиков (P&L, Win Rate по дням)"""
+    days = int(request.args.get('days', 7))
+    
+    try:
+        redis = get_redis_client()
+    except:
+        return jsonify({"dates": [], "pnl": [], "win_rate": [], "trades": []})
+    
+    dates = []
+    pnl_data = []
+    win_rate_data = []
+    trades_data = []
+    
+    for i in range(days-1, -1, -1):
+        date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+        key = f"stats:daily:{date}"
+        
+        try:
+            data = redis.get(key)
+            if data:
+                day_stats = json.loads(data)
+                dates.append(date[5:])  # MM-DD
+                pnl_data.append(day_stats.get("pnl", 0))
+                
+                wins = day_stats.get("wins", 0)
+                total = day_stats.get("trades", 0)
+                win_rate = (wins / total * 100) if total > 0 else 0
+                win_rate_data.append(round(win_rate, 1))
+                trades_data.append(total)
+            else:
+                dates.append(date[5:])
+                pnl_data.append(0)
+                win_rate_data.append(0)
+                trades_data.append(0)
+        except:
+            dates.append(date[5:])
+            pnl_data.append(0)
+            win_rate_data.append(0)
+            trades_data.append(0)
+    
+    return jsonify({
+        "dates": dates,
+        "pnl": pnl_data,
+        "win_rate": win_rate_data,
+        "trades": trades_data
+    })
 
 
 if __name__ == "__main__":
