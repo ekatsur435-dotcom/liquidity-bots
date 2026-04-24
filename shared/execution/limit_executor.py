@@ -1,5 +1,8 @@
 """
-🎯 Limit Executor v1.0 — Адаптивное исполнение лимитных ордеров
+🎯 Limit Executor v1.1 — Адаптивное исполнение лимитных ордеров
+
+Phase 2: Limit Executor с адаптивным TTL и fallback
+Phase 3: Slippage Tracking — отслеживание проскальзывания
 """
 
 import asyncio
