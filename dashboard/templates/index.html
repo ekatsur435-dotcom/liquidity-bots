@@ -64,6 +64,26 @@
             <div class="metric-label">Score Bonus</div>
         </div>
     </div>
+    
+    <div class="card">
+        <h2>💰 Slippage Analysis (7 days)</h2>
+        <div class="metric">
+            <div class="metric-value" id="avg-slippage">-</div>
+            <div class="metric-label">Avg Slippage %</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="limit-slippage">-</div>
+            <div class="metric-label">Limit Orders</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="market-slippage">-</div>
+            <div class="metric-label">Market Orders</div>
+        </div>
+        <div class="metric">
+            <div class="metric-value" id="recommended-step">-</div>
+            <div class="metric-label">Recommended Step %</div>
+        </div>
+    </div>
 
     <script>
         async function loadStats() {
@@ -83,8 +103,26 @@
             }
         }
         
+        // 🎯 Phase 3: Slippage stats
+        async function loadSlippage() {
+            try {
+                const response = await fetch('/api/slippage');
+                const data = await response.json();
+                
+                document.getElementById('avg-slippage').textContent = (data.avg_slippage_pct || 0).toFixed(3) + '%';
+                document.getElementById('avg-slippage').className = 'metric-value ' + (Math.abs(data.avg_slippage_pct || 0) < 0.05 ? 'positive' : 'negative');
+                
+                document.getElementById('limit-slippage').textContent = (data.limit_avg || 0).toFixed(3) + '%';
+                document.getElementById('market-slippage').textContent = (data.market_avg || 0).toFixed(3) + '%';
+                document.getElementById('recommended-step').textContent = (data.recommended_micro_step || 0.02).toFixed(2) + '%';
+            } catch (e) {
+                console.error('Error loading slippage:', e);
+            }
+        }
+        
         loadStats();
-        setInterval(loadStats, 30000); // Обновление каждые 30 сек
+        loadSlippage();
+        setInterval(() => { loadStats(); loadSlippage(); }, 30000); // Обновление каждые 30 сек
     </script>
 </body>
 </html>
