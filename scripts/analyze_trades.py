@@ -9,9 +9,24 @@ import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Добавляем корень проекта в путь
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from shared.core.redis_client import get_redis_short, get_redis_long
+# Импортируем Redis клиент как в dashboard
+from upstash_redis import Redis
+import os
+
+def get_redis_short():
+    """Redis для SHORT бота"""
+    url = os.environ.get("UPSTASH_REDIS_REST_URL")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    return Redis(url=url, token=token)
+
+def get_redis_long():
+    """Redis для LONG бота"""
+    url = os.environ.get("UPSTASH_REDIS_LONG_URL", os.environ.get("UPSTASH_REDIS_REST_URL"))
+    token = os.environ.get("UPSTASH_REDIS_LONG_TOKEN", os.environ.get("UPSTASH_REDIS_REST_TOKEN", ""))
+    return Redis(url=url, token=token)
 
 def analyze_trades(hours=24):
     """Анализ сделок за последние N часов"""
