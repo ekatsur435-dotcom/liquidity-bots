@@ -182,9 +182,12 @@ class BingXClient:
     # SYMBOL INFO — включает max_notional для auto_trader
     # =========================================================================
 
-    async def _load_contracts(self):
-        if self._symbols_loaded:
+    async def _load_contracts(self, force_refresh=False):
+        if self._symbols_loaded and not force_refresh:
             return
+        if force_refresh:
+            self._symbol_info_cache.clear()
+            self._active_symbols.clear()
         result = await self._make_request(
             "GET", "/openApi/swap/v2/quote/contracts", params={}, signed=False
         )
@@ -233,8 +236,14 @@ class BingXClient:
         })
 
     async def is_symbol_active(self, symbol: str) -> bool:
+        symbol = self._normalize_symbol(symbol)
         await self._load_contracts()
         info = self._symbol_info_cache.get(symbol)
+        if info is None:
+            # ✅ FIX: символ не найден в кэше — пробуем обновить список контрактов
+            print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
+            await self._load_contracts(force_refresh=True)
+            info = self._symbol_info_cache.get(symbol)
         return info.get("online", True) if info else False
 
     async def _round_price(self, symbol: str, price: float) -> float:
@@ -244,6 +253,20 @@ class BingXClient:
     def _normalize_symbol(self, symbol: str) -> str:
         """Нормализует символ для BingX API (убирает дефисы)."""
         return symbol.replace('-', '').replace('_', '')
+
+    def _format_symbol_for_positions(self, symbol: str) -> str:
+        """
+        Форматирует символ для /user/positions endpoint.
+        BingX требует формат с -USDT суффиксом: APE-USDT, не APEUSDT
+        """
+        # Убираем все дефисы сначала
+        clean = symbol.replace('-', '').replace('_', '')
+        # Если уже заканчивается на USDT или USDC, добавляем дефис перед ним
+        if clean.endswith('USDT') and not clean.endswith('-USDT'):
+            return clean[:-4] + '-USDT'
+        if clean.endswith('USDC') and not clean.endswith('-USDC'):
+            return clean[:-4] + '-USDC'
+        return clean
 
     async def _round_qty(self, symbol: str, qty: float) -> float:
         info    = await self.get_symbol_info(symbol)
@@ -278,7 +301,8 @@ class BingXClient:
         endpoint = "/openApi/swap/v2/user/positions"
         params = {}
         if symbol:
-            params["symbol"] = self._normalize_symbol(symbol)
+            # ✅ FIX: positions endpoint требует формат с -USDT (APE-USDT, не APEUSDT)
+            params["symbol"] = self._format_symbol_for_positions(symbol)
         result = await self._make_request("GET", endpoint, params=params)
         positions = []
         if result and result.get("code") == 0:
@@ -320,8 +344,10 @@ class BingXClient:
         return positions
 
     async def close_position(self, symbol: str, position_side: str) -> bool:
+        # ✅ FIX: используем нормализованный символ
+        symbol_api = self._normalize_symbol(symbol)
         result = await self._make_request("POST", "/openApi/swap/v2/trade/closePosition",
-                                          body={"symbol": symbol, "positionSide": position_side})
+                                          body={"symbol": symbol_api, "positionSide": position_side})
         if result and result.get("code") == 0:
             print(f"✅ Closed: {symbol} {position_side}")
             return True
@@ -454,9 +480,11 @@ class BingXClient:
         BingX API: DELETE /openApi/swap/v2/trade/allOpenOrders
         """
         try:
+            # ✅ FIX: используем нормализованный символ (без дефиса)
+            symbol_api = self._normalize_symbol(symbol)
             result = await self._make_request(
                 "DELETE", "/openApi/swap/v2/trade/allOpenOrders",
-                params={"symbol": symbol},
+                params={"symbol": symbol_api},
             )
             ok = result and result.get("code") == 0
             if ok:
@@ -479,10 +507,10 @@ class BingXClient:
         direction = "short" → side = "BUY"  (закрывает SHORT)
         """
         try:
-            # Для фьючерсов BingX использует формат без дефиса (MANTAUSDT, не MANTAUSDT-USDT)
-            # Убираем дефис если он есть
-            symbol_api = symbol.replace('-', '')
-            print(f"🔍 [BingX] update_stop_loss START: {symbol} | new_sl={new_sl} | dir={direction} | pos_side={position_side}")
+            # Для ордеров BingX использует формат без дефиса (MANTAUSDT, не MANTAUSDT-USDT)
+            # Но для positions endpoint нужен формат с -USDT (MANTA-USDT)
+            symbol_api = self._normalize_symbol(symbol)
+            print(f"🔍 [BingX] update_stop_loss START: {symbol} (api={symbol_api}) | new_sl={new_sl} | dir={direction} | pos_side={position_side}")
 
             rounded_sl = await self._round_price(symbol, new_sl)
             print(f"🔍 [BingX] rounded_sl={rounded_sl}")
@@ -524,7 +552,7 @@ class BingXClient:
 
             # Ставим новый SL ордер
             body = {
-                "symbol":       symbol,
+                "symbol":       symbol_api,  # ✅ FIX: используем нормализованный символ
                 "side":         sl_side,
                 "positionSide": position_side,
                 "type":         "STOP_MARKET",
