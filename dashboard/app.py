@@ -72,25 +72,18 @@ def get_trading_stats(days=7):
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как JSON (ReJSON-RL тип)
             all_trades_key = f"{prefix}:all_trades"
             try:
-                # Получаем JSON массив целиком
-                # Upstash Redis 1.0.0+: используем execute() с массивом
-                result = redis.execute(["JSON.GET", all_trades_key, "$"])
-                # execute возвращает строку JSON, парсим её
-                trades_data = None
-                if result:
-                    try:
-                        parsed = json.loads(result) if isinstance(result, str) else result
-                        # JSON.GET с $ возвращает список с одним элементом
-                        if isinstance(parsed, list) and len(parsed) > 0:
-                            trades_data = parsed[0]
-                        else:
-                            trades_data = parsed
-                    except:
-                        pass
-                if trades_data and isinstance(trades_data, list):
+                # Читаем all_trades как LIST (не JSON!)
+                # Боты сохраняют через LPUSH в redis_client.py
+                try:
+                    trades_json = redis.execute(["LRANGE", all_trades_key, "0", "49"])
+                    trades_data = [json.loads(t) for t in trades_json] if trades_json else []
+                except Exception as e:
+                    print(f"Error reading list for {bot_name}: {e}")
+                    trades_data = []
+                
+                if trades_data:
                     # Берем только последние 50 сделок
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
                     
@@ -115,40 +108,21 @@ def get_trading_stats(days=7):
             except Exception as e:
                 print(f"Error reading all_trades for {bot_name}: {e}")
                     
-            # Micro-step saves (JSON)
+            # Micro-step saves (LIST)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                result = redis.execute(["JSON.GET", saves_key, "$"])
-                saves_data = None
-                if result:
-                    try:
-                        parsed = json.loads(result) if isinstance(result, str) else result
-                        if isinstance(parsed, list) and len(parsed) > 0:
-                            saves_data = parsed[0]
-                        else:
-                            saves_data = parsed
-                    except:
-                        pass
-                if saves_data and isinstance(saves_data, list):
-                    stats["micro_step_saves"] += len(saves_data)
+                saves_json = redis.execute(["LRANGE", saves_key, "0", "-1"])
+                if saves_json:
+                    stats["micro_step_saves"] += len(saves_json)
             except:
                 pass
                 
-            # Active positions - из bot_state (не используем keys)
+            # Active positions - из state (STRING)
             try:
-                result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
-                bot_state = None
-                if result:
-                    try:
-                        parsed = json.loads(result) if isinstance(result, str) else result
-                        if isinstance(parsed, list) and len(parsed) > 0:
-                            bot_state = parsed[0]
-                        else:
-                            bot_state = parsed
-                    except:
-                        pass
-                if bot_state and isinstance(bot_state, dict):
-                    stats["active_positions"] += bot_state.get("active_signals", 0)
+                state_data = redis.execute(["GET", f"{prefix}:state"])
+                if state_data:
+                    bot_state = json.loads(state_data)
+                    stats["active_positions"] += len(bot_state.get("active_positions", []))
             except:
                 pass
                 
@@ -173,22 +147,13 @@ def get_micro_trail_stats():
     for redis_getter in [get_redis_short, get_redis_long]:
         try:
             redis = redis_getter()
-            # Подсчитываем trailing из bot_state (не используем keys)
+            # Подсчитываем trailing из state (STRING)
             for pfx in ["short", "long"]:
                 try:
-                    result = redis.execute(["JSON.GET", f"{pfx}:bot_state", "$"])
-                    bot_state = None
-                    if result:
-                        try:
-                            parsed = json.loads(result) if isinstance(result, str) else result
-                            if isinstance(parsed, list) and len(parsed) > 0:
-                                bot_state = parsed[0]
-                            else:
-                                bot_state = parsed
-                        except:
-                            pass
-                    if bot_state and isinstance(bot_state, dict):
-                        total_active += bot_state.get("active_signals", 0)
+                    state_data = redis.execute(["GET", f"{pfx}:state"])
+                    if state_data:
+                        bot_state = json.loads(state_data)
+                        total_active += len(bot_state.get("active_positions", []))
                 except:
                     pass
         except:
@@ -316,22 +281,14 @@ def api_trades():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades
-            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
-            if result:
-                try:
-                    parsed = json.loads(result) if isinstance(result, str) else result
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        all_trades = parsed[0]
-                    else:
-                        all_trades = parsed
-                    
-                    if isinstance(all_trades, list):
-                        # Берём последние 5, сортируем по времени (если есть timestamp)
-                        recent = sorted(all_trades, key=lambda x: x.get('timestamp', ''), reverse=True)[:5]
-                        trades[prefix] = recent
-                except:
-                    pass
+            # Читаем all_trades как LIST
+            try:
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "4"])
+                if trades_json:
+                    all_trades = [json.loads(t) for t in trades_json]
+                    trades[prefix] = all_trades[:5]
+            except:
+                pass
         except Exception as e:
             print(f"Error reading trades for {bot_name}: {e}")
     
@@ -348,31 +305,28 @@ def api_active_positions():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем active_signals из bot_state
-            result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
-            if result:
-                try:
-                    parsed = json.loads(result) if isinstance(result, str) else result
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        bot_state = parsed[0]
-                    else:
-                        bot_state = parsed
-                    
-                    if isinstance(bot_state, dict):
-                        active = bot_state.get("active_signals", [])
-                        for pos in active:
+            # Читаем активные позиции из positions:*
+            try:
+                # Получаем все ключи позиций
+                position_keys = redis.execute(["KEYS", f"{prefix}:positions:*"])
+                if position_keys:
+                    for key in position_keys[:10]:  # Максимум 10
+                        pos_data = redis.execute(["GET", key])
+                        if pos_data:
+                            pos = json.loads(pos_data)
+                            symbol = key.split(":")[-1]
                             positions.append({
-                                "symbol": pos.get("symbol", "UNKNOWN"),
+                                "symbol": symbol,
                                 "direction": prefix,
                                 "entry": pos.get("entry_price", 0),
-                                "current_pnl": pos.get("current_pnl", 0),
-                                "tp": pos.get("take_profits", [[]])[0] if pos.get("take_profits") else 0,
+                                "current_pnl": pos.get("pnl", 0),
+                                "tp": pos.get("take_profit", 0),
                                 "sl": pos.get("stop_loss", 0),
                                 "duration_min": pos.get("duration_min", 0),
-                                "taken_tps": len(pos.get("taken_tps", []))
+                                "taken_tps": pos.get("partial_exits", 0)
                             })
-                except:
-                    pass
+            except:
+                pass
         except Exception as e:
             print(f"Error reading positions for {bot_name}: {e}")
     
@@ -389,54 +343,25 @@ def api_feed():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем recent_events (если есть)
-            result = redis.execute(["JSON.GET", f"{prefix}:recent_events", "$"])
-            if result:
-                try:
-                    parsed = json.loads(result) if isinstance(result, str) else result
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        events_data = parsed[0]
-                    else:
-                        events_data = parsed
-                    
-                    if isinstance(events_data, list):
-                        for ev in events_data[-10:]:  # Последние 10
+            # Читаем историю (LIST) для событий TP/SL
+            try:
+                history_key = f"{prefix}:history"
+                history_json = redis.execute(["LRANGE", history_key, "0", "9"])
+                if history_json:
+                    for t_json in history_json:
+                        t = json.loads(t_json)
+                        if t.get("status") == "closed":
                             events.append({
-                                "type": ev.get("type", "info"),  # tbs, entry, tp, sl
-                                "symbol": ev.get("symbol", ""),
+                                "type": (t.get("tp_level") or "sl").lower(),
+                                "symbol": t.get("symbol", ""),
                                 "direction": prefix,
-                                "message": ev.get("message", ""),
-                                "timestamp": ev.get("timestamp", ""),
-                                "price": ev.get("price", 0),
-                                "pnl": ev.get("pnl", None)
+                                "message": f"Closed @ {t.get('close_price', 0)}",
+                                "timestamp": t.get("closed_at", ""),
+                                "price": t.get("close_price", 0),
+                                "pnl": t.get("pnl", 0)
                             })
-                except:
-                    pass
-            
-            # Также проверяем recent_trades для TP/SL событий
-            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
-            if result:
-                try:
-                    parsed = json.loads(result) if isinstance(result, str) else result
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        trades = parsed[0]
-                    else:
-                        trades = parsed
-                    
-                    if isinstance(trades, list):
-                        for t in trades[-5:]:
-                            if t.get("exit_reason") in ["TP1", "TP2", "TP3", "SL"]:
-                                events.append({
-                                    "type": t.get("exit_reason", "").lower(),
-                                    "symbol": t.get("symbol", ""),
-                                    "direction": prefix,
-                                    "message": f"{t.get('exit_reason')} @ {t.get('exit_price', 0)}",
-                                    "timestamp": t.get("exit_time", ""),
-                                    "price": t.get("exit_price", 0),
-                                    "pnl": t.get("pnl", 0)
-                                })
-                except:
-                    pass
+            except:
+                pass
                     
         except Exception as e:
             print(f"Error reading feed for {bot_name}: {e}")
@@ -463,18 +388,14 @@ def api_summary():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
-            if result:
-                try:
-                    parsed = json.loads(result) if isinstance(result, str) else result
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        trades = parsed[0]
-                    else:
-                        trades = parsed
-                    
-                    if isinstance(trades, list):
-                        for t in trades:
-                            trade_date = t.get("exit_time", "")[:10] if t.get("exit_time") else ""
+            # Читаем all_trades как LIST
+            try:
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "-1"])
+                if trades_json:
+                    for t_json in trades_json:
+                        try:
+                            t = json.loads(t_json)
+                            trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
                             pnl = t.get("pnl", 0)
                             is_win = pnl > 0
                             
@@ -497,8 +418,10 @@ def api_summary():
                                 summary["yesterday"]["trades"] += 1
                                 if is_win:
                                     summary["yesterday"]["wins"] = summary["yesterday"].get("wins", 0) + 1
-                except:
-                    pass
+                        except:
+                            continue
+            except:
+                pass
         except Exception as e:
             print(f"Error reading summary for {bot_name}: {e}")
     
