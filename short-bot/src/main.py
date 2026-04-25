@@ -1004,7 +1004,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                   f"Позиция={wave_result.position.value} | "
                   f"Уверенность={wave_result.confidence:.0%} | "
                   f"Качество={wave_result.structure_quality}")
-            print(f"🌊 [ELLIOTT-SHORT] {symbol}: Детали: {wave_result.details.get('reason', 'N/A')}")
+            # Безопасный доступ к details
+            details_reason = wave_result.details.get('reason', 'N/A') if isinstance(wave_result.details, dict) else 'N/A'
+            print(f"🌊 [ELLIOTT-SHORT] {symbol}: Детали: {details_reason}")
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
             if wave_result.is_trap:
@@ -1012,6 +1014,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа
                 try:
+                    reason_text = wave_result.details.get('reason', 'Wave 2 or B trap') if isinstance(wave_result.details, dict) else 'Wave 2 or B trap'
                     state.redis.save_signal(Config.BOT_TYPE, symbol, {
                         "timestamp": datetime.utcnow().isoformat(),
                         "symbol": symbol,
@@ -1019,7 +1022,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "wave": wave_result.wave,
                         "position": wave_result.position.value,
                         "action": "BLOCKED_TRAP",
-                        "reason": wave_result.details.get('reason', 'Wave 2 or B trap'),
+                        "reason": reason_text,
                         "score": final_score,
                         "price": md.price
                     })
