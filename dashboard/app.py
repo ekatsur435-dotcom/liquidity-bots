@@ -117,14 +117,23 @@ def get_trading_stats(days=7):
             except:
                 pass
                 
-            # Active positions - из state (STRING)
+            # Active positions - считаем из positions:* ключей (как в api_active_positions)
             try:
-                state_data = redis.execute(["GET", f"{prefix}:state"])
-                if state_data:
-                    bot_state = json.loads(state_data)
-                    stats["active_positions"] += len(bot_state.get("active_positions", []))
-            except:
-                pass
+                cursor = 0
+                pos_count = 0
+                while True:
+                    result = redis.execute(["SCAN", str(cursor), "MATCH", f"{prefix}:positions:*", "COUNT", "100"])
+                    if result and len(result) >= 2:
+                        cursor = int(result[0])
+                        keys = result[1] if isinstance(result[1], list) else []
+                        pos_count += len(keys)
+                        if cursor == 0:
+                            break
+                    else:
+                        break
+                stats["active_positions"] += pos_count
+            except Exception as e:
+                print(f"Error counting positions for {bot_name}: {e}")
                 
         except Exception as e:
             print(f"Redis {bot_name} error: {e}")
@@ -222,7 +231,13 @@ def api_slippage():
 @app.route("/api/chart_data")
 def api_chart_data():
     """API: Данные для графиков (P&L, Win Rate по дням)"""
-    days = int(request.args.get('days', 7))
+    days_param = request.args.get('days', '7')
+    
+    # Handle 'all' period - get all available data
+    if days_param == 'all':
+        days = 90  # Default to 90 days for 'all' (3 months)
+    else:
+        days = int(days_param)
     
     dates = []
     pnl_data = []
