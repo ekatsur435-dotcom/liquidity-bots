@@ -686,10 +686,11 @@
                 const stats = await statsRes.json();
                 updateStats(stats);
                 
-                // 2. Chart Data
+                // 2. Chart Data + Stats for Win Distribution
                 const chartRes = await fetch('/api/chart_data');
                 const chartData = await chartRes.json();
-                updateCharts(chartData);
+                // Pass both chart data and stats to updateCharts
+                updateCharts(chartData, stats);
                 
                 // 3. Trades
                 const tradesRes = await fetch('/api/trades');
@@ -740,18 +741,26 @@
             document.getElementById('long-trades-stat').textContent = data.long_trades || 0;
         }
         
-        function updateCharts(data) {
-            if (pnlChart && data.dates) {
-                pnlChart.data.labels = data.dates;
-                pnlChart.data.datasets[0].data = data.pnl || [];
+        function updateCharts(chartData, statsData) {
+            // Update P&L Line Chart
+            if (pnlChart && chartData.dates) {
+                pnlChart.data.labels = chartData.dates;
+                // Use real P&L data per bot if available, otherwise use total
+                pnlChart.data.datasets[0].data = chartData.short_pnl || chartData.pnl || [];
+                pnlChart.data.datasets[1].data = chartData.long_pnl || chartData.pnl || [];
                 pnlChart.update();
             }
             
-            if (winChart && data.short_trades !== undefined) {
-                const shortWins = Math.round((data.short_winrate || 0) / 100 * (data.short_trades || 0));
-                const longWins = Math.round((data.long_winrate || 0) / 100 * (data.long_trades || 0));
-                const losses = (data.total_trades || 0) - shortWins - longWins;
-                winChart.data.datasets[0].data = [shortWins, longWins, Math.max(0, losses)];
+            // Update Win Distribution Doughnut Chart using stats data
+            if (winChart && statsData) {
+                const shortWins = statsData.short_winrate ? Math.round(statsData.short_winrate / 100 * (statsData.short_trades || 0)) : 0;
+                const longWins = statsData.long_winrate ? Math.round(statsData.long_winrate / 100 * (statsData.long_trades || 0)) : 0;
+                const totalTrades = statsData.total_trades || 0;
+                const losses = Math.max(0, totalTrades - shortWins - longWins);
+                
+                console.log('Win Chart Update:', { shortWins, longWins, losses, totalTrades });
+                
+                winChart.data.datasets[0].data = [shortWins, longWins, losses];
                 winChart.update();
             }
         }
