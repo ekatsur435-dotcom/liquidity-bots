@@ -313,23 +313,31 @@ class PositionTracker:
         if self.auto_trader and self.auto_trader.bingx:
             try:
                 bingx_symbol = symbol + "-USDT" if "-USDT" not in symbol else symbol
+                print(f"🔍 [PT] _move_sl: symbol={symbol}, bingx_symbol={bingx_symbol}, position_side={position_side}")
                 # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.7)
                 for attempt in range(3):
+                    print(f"🔍 [PT] Attempt {attempt + 1}/3")
                     for sym_fmt in [bingx_symbol, symbol.replace("USDT", "-USDT"), symbol]:
+                        print(f"🔍 [PT] Trying sym_fmt={sym_fmt}")
                         ok = await self.auto_trader.bingx.update_stop_loss(
                             sym_fmt, position_side, new_sl, direction
                         )
+                        print(f"🔍 [PT] update_stop_loss returned: {ok}")
                         if ok:
                             exchange_updated = True
+                            print(f"✅ [PT] SL updated successfully with sym_fmt={sym_fmt}")
                             break
                     if exchange_updated:
                         break
                     if attempt < 2:  # Пауза между попытками (не после последней)
+                        print(f"🔍 [PT] Waiting 1s before next attempt...")
                         await asyncio.sleep(1)
                 if not exchange_updated:
                     print(f"⚠️  [PT] SL на бирже не обновлён для {symbol} после 3 попыток — только Redis")
             except Exception as e:
                 print(f"⚠️  [PT] update_stop_loss error {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
 
         # ✅ ШАГ 2: Обновляем Redis (всегда)
         signal["stop_loss"] = round(new_sl, 8)
