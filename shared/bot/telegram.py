@@ -466,7 +466,8 @@ class TelegramCommandHandler:
             cmd   = parts[0].split("@")[0].lower()
             args  = parts[1:]
 
-            print(f"📨 Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
+            print(f"📨 [Telegram] Command: {cmd} from chat {reply_chat_id} (user {user_id}, type={chat_type})")
+            print(f"📨 [Telegram] Full text: {text}")
 
             # ✅ FIX: Игнорируем команду /liq в публичном чате 1003867089540
             if cmd == "/liq" and reply_chat_id == "1003867089540":
@@ -526,11 +527,19 @@ class TelegramCommandHandler:
                 # 🆕 Полная аналитика
                 "/alltradestat": self.cmd_alltradestat,
             }
+            print(f"📨 [Telegram] Executing handler for {cmd}")
             await handlers[cmd](args, reply_chat_id)
+            print(f"✅ [Telegram] Command {cmd} executed successfully")
             return True
 
         except Exception as e:
-            print(f"Error handling update: {e}")
+            print(f"❌ [Telegram] Error handling command {cmd}: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await self._reply(reply_chat_id, f"❌ Ошибка выполнения команды: {e}")
+            except:
+                pass
             return False
 
     # =========================================================================
@@ -644,7 +653,9 @@ class TelegramCommandHandler:
         await self._reply(reply_chat_id, "🏓 Pong! Бот активен ✅")
 
     async def cmd_status(self, args, reply_chat_id: str):
+        print(f"[cmd_status] START for {self.bot_type}")
         if not self.state:
+            print("[cmd_status] No state available")
             await self._reply(reply_chat_id, "✅ Бот работает")
             return
         wl        = len(self.state.watchlist)
@@ -657,24 +668,32 @@ class TelegramCommandHandler:
         
         # ✅ FIX: Считаем реальные позиции на бирже, а не Redis сигналы
         real_positions_count = 0
+        bingx_error = None
         if self.state and self.state.auto_trader:
             try:
+                print(f"[cmd_status] Fetching positions from BingX...")
                 all_positions = await self.state.auto_trader.bingx.get_positions()
+                print(f"[cmd_status] BingX returned {len(all_positions)} total positions")
                 # SHORT бот → SHORT позиции, LONG бот → LONG позиции
-                # BingX возвращает side как "LONG" или "SHORT"
                 expected_side = "SHORT" if self.bot_type == "short" else "LONG"
-                real_positions_count = len([p for p in all_positions if (
+                filtered = [p for p in all_positions if (
                     getattr(p, "side", "").upper() == expected_side
-                )])
-            except Exception:
-                pass  # Fallback к сигналам если ошибка
+                )]
+                real_positions_count = len(filtered)
+                print(f"[cmd_status] Filtered {real_positions_count} {expected_side} positions")
+            except Exception as e:
+                bingx_error = str(e)
+                print(f"[cmd_status] ERROR fetching positions: {e}")
         
+        # Добавляем ошибку BingX если была
+        error_msg = f"\n⚠️ BingX Error: {bingx_error[:50]}..." if bingx_error else ""
+        print(f"[cmd_status] Sending reply with positions={real_positions_count}, error={bingx_error}")
         await self._reply(reply_chat_id,
             f"🤖 <b>Статус бота - {self.bot_type.upper()}</b>\n\n"
             f"Состояние: {running} {paused}\n"
             f"Watchlist: {wl} монет\n"
             f"Последний скан: {last}\n"
-            f"📊 Позиций на бирже: {real_positions_count}/{max_pos}\n"
+            f"📊 Позиций на бирже: {real_positions_count}/{max_pos}{error_msg}\n"
             f"📡 Redis сигналов: {self.state.active_signals}\n"
             f"Мин. скор: {min_score}%\n"
             f"Redis: {redis_ok}\n"
@@ -809,11 +828,15 @@ class TelegramCommandHandler:
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_balance(self, args, reply_chat_id: str):
+        print(f"[cmd_balance] START for {self.bot_type}")
         if not (self.state and self.state.auto_trader):
+            print("[cmd_balance] ERROR: AutoTrader not initialized")
             await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
             return
         try:
+            print("[cmd_balance] Fetching balance from BingX...")
             bal  = await self.state.auto_trader.bingx.get_account_balance()
+            print(f"[cmd_balance] BingX balance: {bal}")
             mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
             if not bal:
                 await self._reply(reply_chat_id, "❌ Не удалось получить баланс")
@@ -827,25 +850,32 @@ class TelegramCommandHandler:
                 f"✅ Available:  <b>${avail:,.2f}</b>\n"
                 f"📊 uPNL:       <b>${upnl:+,.2f}</b>\n"
                 f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}")
+            print(f"[cmd_balance] Success: equity=${eq:,.2f}")
         except Exception as e:
+            print(f"[cmd_balance] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_positions(self, args, reply_chat_id: str):
+        print(f"[cmd_positions] START for {self.bot_type}")
         if not (self.state and self.state.auto_trader):
+            print("[cmd_positions] ERROR: AutoTrader not initialized")
             await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
             return
         try:
+            print("[cmd_positions] Fetching positions from BingX...")
             all_positions = await self.state.auto_trader.bingx.get_positions()
+            print(f"[cmd_positions] BingX returned {len(all_positions) if all_positions else 0} total positions")
             mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
             
             # ✅ FIX: Фильтруем позиции по стороне бота
-            # SHORT бот видит только SHORT, LONG — только LONG
-            # BingX возвращает side как "LONG" или "SHORT"
             expected_side = "SHORT" if self.bot_type == "short" else "LONG"
             expected_side_display = "SHORT" if self.bot_type == "short" else "LONG"
             positions = [p for p in all_positions if (
                 getattr(p, "side", "").upper() == expected_side
             )]
+            print(f"[cmd_positions] Filtered {len(positions)} {expected_side} positions")
             
             if not positions:
                 await self._reply(reply_chat_id, f"📉 Нет открытых {expected_side_display} позиций [{mode}]")
@@ -864,8 +894,12 @@ class TelegramCommandHandler:
                 )
             pnl_sign = "+" if total_upnl >= 0 else ""
             msg += f"💵 Итого uPNL: <b>{pnl_sign}${total_upnl:.2f}</b>"
+            print(f"[cmd_positions] Success: returning {len(positions)} positions, uPNL=${total_upnl:.2f}")
             await self._reply(reply_chat_id, msg)
         except Exception as e:
+            print(f"[cmd_positions] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             await self._reply(reply_chat_id, f"❌ Ошибка: {e}")
 
     async def cmd_closeall(self, args, reply_chat_id: str):
@@ -975,15 +1009,19 @@ class TelegramCommandHandler:
 
     async def cmd_sync(self, args, reply_chat_id: str):
         """🔄 Синхронизация позиций с биржей BingX"""
+        print(f"[cmd_sync] START for {self.bot_type}")
         try:
             if not (self.state and self.state.auto_trader):
+                print("[cmd_sync] ERROR: AutoTrader not initialized")
                 await self._reply(reply_chat_id, "❌ AutoTrader не инициализирован")
                 return
             
             await self._reply(reply_chat_id, "🔄 Синхронизация с биржей...")
+            print("[cmd_sync] Fetching positions from BingX...")
             
             # Получаем реальные позиции с биржи
             positions = await self.state.auto_trader.bingx.get_positions()
+            print(f"[cmd_sync] BingX returned {len(positions) if positions else 0} positions")
             mode = "DEMO" if getattr(self.config, "BINGX_DEMO", True) else "REAL"
             
             if positions is None:
@@ -1028,6 +1066,7 @@ class TelegramCommandHandler:
             if self.state:
                 self.state.active_signals = len(positions)
             
+            print(f"[cmd_sync] Sync complete: total={len(positions)}, added={added}, synced={synced}")
             await self._reply(reply_chat_id,
                 f"✅ <b>Синхронизация завершена [{mode}]</b>\n\n"
                 f"📊 Позиций на бирже: {len(positions)}\n"
@@ -1036,6 +1075,9 @@ class TelegramCommandHandler:
                 f"✅ Готово к отслеживанию!")
                 
         except Exception as e:
+            print(f"[cmd_sync] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             await self._reply(reply_chat_id, f"❌ Ошибка синхронизации: {e}")
 
     async def cmd_flushdb(self, args, reply_chat_id: str):
