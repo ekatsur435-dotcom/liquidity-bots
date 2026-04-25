@@ -903,8 +903,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         try:
             from core.elliott_detector import detect_elliott_wave, WavePosition
             
-            # Получаем OHLCV для анализа волн
-            wave_ohlcv = _ohlcv(ohlcv_primary if primary_tf == "1h" else ohlcv_15m)
+            # Получаем OHLCV для анализа волн (используем оригинальные данные, не _ohlcv)
+            wave_ohlcv = ohlcv_primary if primary_tf == "1h" else ohlcv_15m
             wave_result = detect_elliott_wave(wave_ohlcv, direction="long")
             
             # 📝 ЛОГИРОВАНИЕ ВОЛН (для анализа)
