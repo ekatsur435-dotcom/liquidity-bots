@@ -77,7 +77,7 @@ def get_trading_stats(days=7):
             try:
                 # Получаем JSON массив целиком
                 # Upstash Redis 0.x: используем execute() для JSON команд
-                result = redis.execute("JSON.GET", all_trades_key, "$")
+                result = redis.execute(["JSON.GET", all_trades_key, "$"])
                 # execute возвращает строку JSON, парсим её
                 trades_data = None
                 if result:
@@ -118,7 +118,7 @@ def get_trading_stats(days=7):
             # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                result = redis.execute("JSON.GET", saves_key, "$")
+                result = redis.execute(["JSON.GET", saves_key, "$"])
                 saves_data = None
                 if result:
                     try:
@@ -136,7 +136,7 @@ def get_trading_stats(days=7):
                 
             # Active positions - из bot_state (не используем keys)
             try:
-                result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
+                result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
                 bot_state = None
                 if result:
                     try:
@@ -176,7 +176,7 @@ def get_micro_trail_stats():
             # Подсчитываем trailing из bot_state (не используем keys)
             for pfx in ["short", "long"]:
                 try:
-                    result = redis.execute("JSON.GET", f"{pfx}:bot_state", "$")
+                    result = redis.execute(["JSON.GET", f"{pfx}:bot_state", "$"])
                     bot_state = None
                     if result:
                         try:
