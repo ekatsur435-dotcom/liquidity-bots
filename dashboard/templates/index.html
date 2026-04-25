@@ -295,6 +295,12 @@
             overflow-y: auto;
         }
         
+        /* Active Positions */
+        .positions-scrollable {
+            max-height: 320px;
+            overflow-y: auto;
+        }
+        
         .feed-item {
             padding: 10px 12px;
             border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -525,7 +531,7 @@
             <!-- Active Positions -->
             <div class="section-card">
                 <div class="section-title">⚡ Active Positions</div>
-                <div id="active-positions-list">
+                <div id="active-positions-list" class="positions-scrollable">
                     <div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">
                         No active positions
                     </div>
