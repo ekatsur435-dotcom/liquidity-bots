@@ -223,7 +223,9 @@ class BingXClient:
             print(f"📋 [BingX] {len(self._symbol_info_cache)} contracts, "
                   f"{len(self._active_symbols)} active")
 
-    async def get_symbol_info(self, symbol: str) -> Dict:
+    async def get_symbol_info(self, symbol: str) -> Optional[Dict]:
+        """Получает информацию о символе (precision, min_qty и т.д.)."""
+        symbol = self._normalize_symbol(symbol)
         await self._load_contracts()
         return self._symbol_info_cache.get(symbol, {
             "price_precision": 4, "qty_precision": 3, "min_qty": 0.001,
@@ -238,6 +240,10 @@ class BingXClient:
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
         return round(price, info.get("price_precision", 4))
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Нормализует символ для BingX API (убирает дефисы)."""
+        return symbol.replace('-', '').replace('_', '')
 
     async def _round_qty(self, symbol: str, qty: float) -> float:
         info    = await self.get_symbol_info(symbol)
@@ -268,9 +274,12 @@ class BingXClient:
     # POSITIONS
     # =========================================================================
 
-    async def get_positions(self, symbol=None) -> List[BingXPosition]:
-        params = {"symbol": symbol} if symbol else {}
-        result = await self._make_request("GET", "/openApi/swap/v2/user/positions", params=params)
+    async def get_positions(self, symbol: str = None) -> List[Dict]:
+        endpoint = "/openApi/swap/v2/user/positions"
+        params = {}
+        if symbol:
+            params["symbol"] = self._normalize_symbol(symbol)
+        result = await self._make_request("GET", endpoint, params=params)
         positions = []
         if result and result.get("code") == 0:
             for d in result.get("data", []):
@@ -342,6 +351,8 @@ class BingXClient:
           5. takeProfit: {"type":"TAKE_PROFIT_MARKET", "stopPrice": float, ...}
           6. Все значения — числа, не строки (fix float64 mismatch)
         """
+        # Нормализуем символ для API (убираем дефисы)
+        symbol = self._normalize_symbol(symbol)
         if not await self.is_symbol_active(symbol):
             self.last_error = f"{symbol} offline on BingX"
             print(f"⏭ SKIP — {self.last_error}")
@@ -468,9 +479,9 @@ class BingXClient:
         direction = "short" → side = "BUY"  (закрывает SHORT)
         """
         try:
-            # ✅ FIX: Нормализуем символ к формату BingX API
-            if not symbol.endswith("-USDT") and not symbol.endswith("-USDC"):
-                symbol = f"{symbol}-USDT"
+            # Для фьючерсов BingX использует формат без дефиса (MANTAUSDT, не MANTAUSDT-USDT)
+            # Убираем дефис если он есть
+            symbol_api = symbol.replace('-', '')
             print(f"🔍 [BingX] update_stop_loss START: {symbol} | new_sl={new_sl} | dir={direction} | pos_side={position_side}")
 
             rounded_sl = await self._round_price(symbol, new_sl)
@@ -550,7 +561,6 @@ class BingXClient:
         except Exception as e:
             print(f"⚠️  cancel_order {symbol}/{order_id}: {e}")
             return False
-        try:
             balance = await self.get_account_balance()
             if balance:
                 print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
