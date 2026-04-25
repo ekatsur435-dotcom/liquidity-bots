@@ -76,7 +76,11 @@ def get_trading_stats(days=7):
             all_trades_key = f"{prefix}:all_trades"
             try:
                 # Получаем JSON массив целиком
-                trades_data = redis.json.get(all_trades_key)
+                # Upstash Redis: используем json().get() с путем "$" для получения всего JSON
+                trades_data = redis.json().get(all_trades_key, "$")
+                # json().get возвращает список при использовании пути "$", берем первый элемент
+                if trades_data and isinstance(trades_data, list) and len(trades_data) > 0:
+                    trades_data = trades_data[0]
                 if trades_data and isinstance(trades_data, list):
                     # Берем только последние 50 сделок
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
@@ -105,7 +109,9 @@ def get_trading_stats(days=7):
             # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                saves_data = redis.json.get(saves_key)
+                saves_data = redis.json().get(saves_key, "$")
+                if saves_data and isinstance(saves_data, list) and len(saves_data) > 0:
+                    saves_data = saves_data[0]
                 if saves_data and isinstance(saves_data, list):
                     stats["micro_step_saves"] += len(saves_data)
             except:
@@ -113,7 +119,9 @@ def get_trading_stats(days=7):
                 
             # Active positions - из bot_state (не используем keys)
             try:
-                bot_state = redis.json.get(f"{prefix}:bot_state")
+                bot_state = redis.json().get(f"{prefix}:bot_state", "$")
+                if bot_state and isinstance(bot_state, list) and len(bot_state) > 0:
+                    bot_state = bot_state[0]
                 if bot_state and isinstance(bot_state, dict):
                     stats["active_positions"] += bot_state.get("active_signals", 0)
             except:
@@ -142,9 +150,14 @@ def get_micro_trail_stats():
             redis = redis_getter()
             # Подсчитываем trailing из bot_state (не используем keys)
             for pfx in ["short", "long"]:
-                bot_state = redis.json.get(f"{pfx}:bot_state")
-                if bot_state and isinstance(bot_state, dict):
-                    total_active += bot_state.get("active_signals", 0)
+                try:
+                    bot_state = redis.json().get(f"{pfx}:bot_state", "$")
+                    if bot_state and isinstance(bot_state, list) and len(bot_state) > 0:
+                        bot_state = bot_state[0]
+                    if bot_state and isinstance(bot_state, dict):
+                        total_active += bot_state.get("active_signals", 0)
+                except:
+                    pass
         except:
             pass
     
