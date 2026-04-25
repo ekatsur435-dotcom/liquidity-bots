@@ -78,8 +78,13 @@ class ElliottWaveDetector:
         
         # 🔧 FIX: Поддержка и словарей и NamedTuple
         def get_val(c, key):
-            if hasattr(c, key):
+            # Для NamedTuple (CandleData)
+            if hasattr(c, '_fields') and key in c._fields:
                 return getattr(c, key)
+            # Для обычного объекта
+            elif hasattr(c, key):
+                return getattr(c, key)
+            # Для словаря
             elif isinstance(c, dict):
                 return c.get(key, c.get(key.upper(), 0))
             return 0
