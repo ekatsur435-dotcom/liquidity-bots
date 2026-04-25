@@ -72,22 +72,14 @@ def get_trading_stats(days=7):
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как LIST - только последние 50 для скорости
+            # Читаем all_trades как JSON (ReJSON-RL тип)
             all_trades_key = f"{prefix}:all_trades"
             try:
-                # Получаем длину списка
-                list_len = redis.llen(all_trades_key) or 0
-                if list_len > 0:
-                    # Читаем только последние 50 сделок (быстро!)
-                    start = max(0, list_len - 50)
-                    trades_json_list = redis.lrange(all_trades_key, start, -1)
-                    trades = []
-                    for trade_json in trades_json_list:
-                        try:
-                            trade = json.loads(trade_json)
-                            trades.append(trade)
-                        except:
-                            pass
+                # Получаем JSON массив целиком
+                trades_data = redis.json.get(all_trades_key)
+                if trades_data and isinstance(trades_data, list):
+                    # Берем только последние 50 сделок
+                    trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
                     
                     total = len(trades)
                     wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
@@ -110,18 +102,20 @@ def get_trading_stats(days=7):
             except Exception as e:
                 print(f"Error reading all_trades for {bot_name}: {e}")
                     
-            # Micro-step saves
+            # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                saves_len = redis.llen(saves_key) or 0
-                stats["micro_step_saves"] += saves_len
+                saves_data = redis.json.get(saves_key)
+                if saves_data and isinstance(saves_data, list):
+                    stats["micro_step_saves"] += len(saves_data)
             except:
                 pass
                 
-            # Active positions - считаем ключи positions:*
+            # Active positions - из bot_state (не используем keys)
             try:
-                active_keys = redis.keys(f"{prefix}:positions:*") or []
-                stats["active_positions"] += len(active_keys)
+                bot_state = redis.json.get(f"{prefix}:bot_state")
+                if bot_state and isinstance(bot_state, dict):
+                    stats["active_positions"] += bot_state.get("active_signals", 0)
             except:
                 pass
                 
@@ -146,10 +140,11 @@ def get_micro_trail_stats():
     for redis_getter in [get_redis_short, get_redis_long]:
         try:
             redis = redis_getter()
-            # Подсчитываем trailing ключи
-            keys_short = redis.keys("trailing:*") or []
-            keys_long = redis.keys("micro_trail:*") or []
-            total_active += len(keys_short) + len(keys_long)
+            # Подсчитываем trailing из bot_state (не используем keys)
+            for pfx in ["short", "long"]:
+                bot_state = redis.json.get(f"{pfx}:bot_state")
+                if bot_state and isinstance(bot_state, dict):
+                    total_active += bot_state.get("active_signals", 0)
         except:
             pass
     
