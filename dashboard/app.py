@@ -117,23 +117,18 @@ def get_trading_stats(days=7):
             except:
                 pass
                 
-            # Active positions - считаем из positions:* ключей (как в api_active_positions)
+            # Active positions - считаем из positions:* ключей
             try:
-                cursor = 0
-                pos_count = 0
-                while True:
-                    result = redis.execute(["SCAN", str(cursor), "MATCH", f"{prefix}:positions:*", "COUNT", "100"])
-                    if result and len(result) >= 2:
-                        cursor = int(result[0])
-                        keys = result[1] if isinstance(result[1], list) else []
-                        pos_count += len(keys)
-                        if cursor == 0:
-                            break
-                    else:
-                        break
-                stats["active_positions"] += pos_count
+                # Используем KEYS для Upstash (SCAN может работать нестабильно)
+                result = redis.execute(["KEYS", f"{prefix}:positions:*"])
+                if result and isinstance(result, list):
+                    pos_count = len(result)
+                    stats["active_positions"] += pos_count
+                    print(f"[Dashboard] {bot_name} positions: {pos_count} keys found")
+                else:
+                    print(f"[Dashboard] {bot_name} positions: no keys found (result={result})")
             except Exception as e:
-                print(f"Error counting positions for {bot_name}: {e}")
+                print(f"[Dashboard] Error counting positions for {bot_name}: {e}")
                 
         except Exception as e:
             print(f"Redis {bot_name} error: {e}")
@@ -335,21 +330,10 @@ def api_active_positions():
             prefix = bot_name.lower()
             
             # Читаем активные позиции из positions:*
-            # Используем SCAN вместо KEYS для Upstash совместимости
             try:
-                cursor = 0
-                position_keys = []
-                # Получаем ключи через SCAN (не KEYS)
-                while True:
-                    result = redis.execute(["SCAN", str(cursor), "MATCH", f"{prefix}:positions:*", "COUNT", "100"])
-                    if result and len(result) >= 2:
-                        cursor = int(result[0])
-                        keys = result[1] if isinstance(result[1], list) else []
-                        position_keys.extend(keys)
-                        if cursor == 0:
-                            break
-                    else:
-                        break
+                # Используем KEYS для Upstash
+                result = redis.execute(["KEYS", f"{prefix}:positions:*"])
+                position_keys = result if result and isinstance(result, list) else []
                 
                 for key in position_keys[:10]:  # Максимум 10
                     pos_data = redis.execute(["GET", key])
