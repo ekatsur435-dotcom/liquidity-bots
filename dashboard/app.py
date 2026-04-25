@@ -76,8 +76,8 @@ def get_trading_stats(days=7):
             all_trades_key = f"{prefix}:all_trades"
             try:
                 # Получаем JSON массив целиком
-                # Upstash Redis 0.x: используем execute() для JSON команд
-                result = redis.execute("JSON.GET", all_trades_key, "$")
+                # Upstash Redis 1.0.0+: используем execute() с массивом
+                result = redis.execute(["JSON.GET", all_trades_key, "$"])
                 # execute возвращает строку JSON, парсим её
                 trades_data = None
                 if result:
@@ -118,7 +118,7 @@ def get_trading_stats(days=7):
             # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                result = redis.execute("JSON.GET", saves_key, "$")
+                result = redis.execute(["JSON.GET", saves_key, "$"])
                 saves_data = None
                 if result:
                     try:
@@ -136,7 +136,7 @@ def get_trading_stats(days=7):
                 
             # Active positions - из bot_state (не используем keys)
             try:
-                result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
+                result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
                 bot_state = None
                 if result:
                     try:
@@ -176,7 +176,7 @@ def get_micro_trail_stats():
             # Подсчитываем trailing из bot_state (не используем keys)
             for pfx in ["short", "long"]:
                 try:
-                    result = redis.execute("JSON.GET", f"{pfx}:bot_state", "$")
+                    result = redis.execute(["JSON.GET", f"{pfx}:bot_state", "$"])
                     bot_state = None
                     if result:
                         try:
@@ -317,7 +317,7 @@ def api_trades():
             prefix = bot_name.lower()
             
             # Читаем all_trades
-            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
             if result:
                 try:
                     parsed = json.loads(result) if isinstance(result, str) else result
@@ -349,7 +349,7 @@ def api_active_positions():
             prefix = bot_name.lower()
             
             # Читаем active_signals из bot_state
-            result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
+            result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
             if result:
                 try:
                     parsed = json.loads(result) if isinstance(result, str) else result
@@ -390,7 +390,7 @@ def api_feed():
             prefix = bot_name.lower()
             
             # Читаем recent_events (если есть)
-            result = redis.execute("JSON.GET", f"{prefix}:recent_events", "$")
+            result = redis.execute(["JSON.GET", f"{prefix}:recent_events", "$"])
             if result:
                 try:
                     parsed = json.loads(result) if isinstance(result, str) else result
@@ -414,7 +414,7 @@ def api_feed():
                     pass
             
             # Также проверяем recent_trades для TP/SL событий
-            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
             if result:
                 try:
                     parsed = json.loads(result) if isinstance(result, str) else result
@@ -463,7 +463,7 @@ def api_summary():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            result = redis.execute(["JSON.GET", f"{prefix}:all_trades", "$"])
             if result:
                 try:
                     parsed = json.loads(result) if isinstance(result, str) else result
