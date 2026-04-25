@@ -898,8 +898,87 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             final_score += 3
             reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
         
-        if final_score < Config.MIN_SCORE:
-            print(f"🔴 [FILTER1-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
+        # 🌊 ELLIOTT WAVE v3.0: Детекция волн для точных входов
+        elliott_min_score = Config.MIN_SCORE  # По умолчанию
+        try:
+            from core.elliott_detector import detect_elliott_wave, WavePosition
+            
+            # Получаем OHLCV для анализа волн
+            wave_ohlcv = _ohlcv(ohlcv_primary if primary_tf == "1h" else ohlcv_15m)
+            wave_result = detect_elliott_wave(wave_ohlcv, direction="long")
+            
+            # 📝 ЛОГИРОВАНИЕ ВОЛН (для анализа)
+            print(f"🌊 [ELLIOTT-LONG] {symbol}: Волна={wave_result.wave} | "
+                  f"Тип={wave_result.wave_type.value} | "
+                  f"Позиция={wave_result.position.value} | "
+                  f"Уверенность={wave_result.confidence:.0%} | "
+                  f"Качество={wave_result.structure_quality}")
+            print(f"🌊 [ELLIOTT-LONG] {symbol}: Детали: {wave_result.details.get('reason', 'N/A')}")
+            
+            # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
+            if wave_result.is_trap:
+                print(f"🚫 [ELLIOTT-BLOCK-LONG] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
+                      f"Блокируем вход. Следующая цель: {wave_result.next_target}")
+                # Пишем в Redis для анализа
+                try:
+                    state.redis.save_signal(Config.BOT_TYPE, symbol, {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "symbol": symbol,
+                        "direction": "long",
+                        "wave": wave_result.wave,
+                        "position": wave_result.position.value,
+                        "action": "BLOCKED_TRAP",
+                        "reason": wave_result.details.get('reason', 'Wave 2 or B trap'),
+                        "score": final_score,
+                        "price": md.price
+                    })
+                except:
+                    pass
+                return None  # 🚫 БЛОКИРУЕМ ВХОД
+            
+            # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
+            if wave_result.ideal_entry:
+                wave_boost = 10 if wave_result.confidence > 0.75 else 5
+                final_score += wave_boost
+                elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
+                reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
+                print(f"🎯 [ELLIOTT-BOOST-LONG] {symbol}: Идеальная волна {wave_result.wave}! "
+                      f"Бонус +{wave_boost}, мин скор={elliott_min_score}")
+            
+            # 📈 ТРЕНД (Волна 3) — небольшой бонус
+            elif wave_result.position == WavePosition.TREND:
+                final_score += 3
+                reasons.append(f"🌊 Elliott Wave 3 (trend) +3")
+                print(f"📈 [ELLIOTT-TREND-LONG] {symbol}: Волна 3 тренда")
+            
+            # ⚠️ ФИНАЛ (Волна 5) — осторожно, но можно
+            elif wave_result.position == WavePosition.FINAL:
+                reasons.append(f"⚠️ Elliott Wave 5 (final) — осторожно!")
+                print(f"⚠️ [ELLIOTT-FINAL-LONG] {symbol}: Волна 5 — финал импульса")
+                # Можно добавить ужесточение SL здесь если нужно
+            
+            # 📝 Сохраняем инфо о волне в данные сигнала
+            elliott_data = {
+                "wave": wave_result.wave,
+                "wave_type": wave_result.wave_type.value,
+                "position": wave_result.position.value,
+                "confidence": wave_result.confidence,
+                "ideal_entry": wave_result.ideal_entry,
+                "is_trap": wave_result.is_trap,
+                "fib_ratio": wave_result.fib_ratio,
+                "next_target": wave_result.next_target,
+                "structure_quality": wave_result.structure_quality
+            }
+            
+        except Exception as e:
+            print(f"🌊 [ELLIOTT-ERROR-LONG] {symbol}: {e}")
+            elliott_data = {"error": str(e)}
+        
+        # Используем скорректированный минимум скора
+        min_score_for_entry = elliott_min_score if 'elliott_min_score' in locals() else Config.MIN_SCORE
+        
+        if final_score < min_score_for_entry:
+            print(f"🔴 [FILTER1-LONG] {symbol}: score={final_score} < MIN={min_score_for_entry} — отфильтрован!")
             return None
 
         # OI proxy — тихо (убраны verbose debug logs)
@@ -995,6 +1074,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
             "best_pattern": patterns[0].name if patterns else None,
+            "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
                 "Funding": f"{md.funding_rate:+.3f}%",
