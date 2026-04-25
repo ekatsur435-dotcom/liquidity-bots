@@ -301,7 +301,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.9...")
+    print("🚀 Starting LONG Bot v2.7...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -454,7 +454,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.7")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
 
 
 # ============================================================================
@@ -464,19 +464,19 @@ app = FastAPI(lifespan=lifespan, title="LONG Bot v2.7")
 # ✅ HEAD + GET для UptimeRobot (405 → 200)
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return JSONResponse({"status": "ok", "bot": "long", "version": "2.3",
+    return JSONResponse({"status": "ok", "bot": "long", "version": "2.9",
                          "watchlist": len(state.watchlist),
                          "active": state.active_signals})
 
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.7", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
     return {
-        "bot_type": Config.BOT_TYPE, "version": "2.7",
+        "bot_type": Config.BOT_TYPE, "version": "2.9",
         "is_running": state.is_running, "is_paused": state.is_paused,
         "watchlist_count": len(state.watchlist), "active_signals": state.active_signals,
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
@@ -629,12 +629,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
-                        print(f"📊 [v2.8] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
+                        print(f"📊 [v2.9] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
         except Exception as e:
-            print(f"⚠️ [v2.8] {symbol}: Profile error: {e}")
+            print(f"⚠️ [v2.9] {symbol}: Profile error: {e}")
         
         # =========================================================================
-        # ✅ v2.8: ORDER BLOCK DETECTOR — институциональные зоны
+        # ✅ v2.9: ORDER BLOCK DETECTOR — институциональные зоны
         # =========================================================================
         ob_data = None
         ob_result = None
@@ -650,12 +650,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 ob = ob_result.bullish_ob
                 if ob.quality >= 60 and ob.freshness.value in ["fresh", "medium"]:
                     ob_data = format_ob_for_signal(ob)
-                    print(f"🎯 [v2.8] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
+                    print(f"🎯 [v2.9] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
         except Exception as e:
-            print(f"⚠️ [v2.8] {symbol}: OB detection error: {e}")
+            print(f"⚠️ [v2.9] {symbol}: OB detection error: {e}")
 
         # =========================================================================
-        # ✅ v2.7: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # ✅ v2.9: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
             # 1. Проверяем Liquidity Sweep (сбор стопов лонгистов = шорт ликвидность)
@@ -682,7 +682,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     tp2 = entry * (1 + 0.08)  # 8%
                     tp3 = entry * (1 + 0.12)  # 12%
                     
-                    print(f"🎯 [v2.7] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
                     return {
                         "symbol": symbol,
@@ -700,9 +700,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
-                    print(f"⚠️ [v2.7] {symbol}: Sweep найден но не подтверждён")
+                    print(f"⚠️ [v2.9] {symbol}: Sweep найден но не подтверждён")
             
-            # 3. Нет sweep — проверяем обычные фильтры (v2.7: бонусы, не блок)
+            # 3. Нет sweep — проверяем обычные фильтры (v2.9: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
             
@@ -712,31 +712,31 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 direction="long"
             )
             
-            # v2.7: Не блокируем, используем как бонус к скору
+            # v2.9: Не блокируем, используем как бонус к скору
             if confirmation["score"] >= 70:
                 base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
-                print(f"✅ [v2.7] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+                print(f"✅ [v2.9] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
             elif confirmation["score"] >= 50:
                 base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
-                print(f"⚠️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+                print(f"⚠️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
             else:
                 base_score_bonus = 0
-                print(f"ℹ️ [v2.7] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
+                print(f"ℹ️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
-            print(f"⚠️ [v2.7] {symbol}: Ошибка: {e}")
+            print(f"⚠️ [v2.9] {symbol}: Ошибка: {e}")
             base_score_bonus = 0
         
-        # ✅ v2.7: TBS (Test Before Strike) — ретест поддержки
+        # ✅ v2.9: TBS (Test Before Strike) — ретест поддержки
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="long")
             if tbs and tbs["found"]:
-                print(f"🎯 [v2.7] {symbol}: TBS DETECTED! Ретест ${tbs['zone']:.4f}")
+                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест ${tbs['zone']:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
-            print(f"⚠️ [v2.7] {symbol}: TBS error: {e}")
+            print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — бонус/штраф к скору (v2.7: не блокер)
+        # ✅ RSI 30m — бонус/штраф к скору (v2.9: не блокер)
         rsi_30m_adj = 0
         try:
             if ohlcv_30m and len(ohlcv_30m) >= 14:
@@ -884,7 +884,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
         price       = md.price
         
-        # ✅ v2.7: Пробуем использовать Liquidity Sweep Tail для точного стопа
+        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
@@ -893,7 +893,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_low > 0:
                 # Стоп за хвост свечи sweep + 0.3% buffer
                 sweep_sl = sweep_result.sweep_low * 0.997
-                print(f"🎯 [v2.7] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
+                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
         except Exception as e:
             pass  # Fallback на стандартный расчёт
         
