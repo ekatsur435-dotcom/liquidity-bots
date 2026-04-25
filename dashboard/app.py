@@ -327,6 +327,7 @@ def api_trades():
 def api_active_positions():
     """API: Активные позиции с текущим P&L"""
     positions = []
+    seen_symbols = set()  # 🔧 FIX: Дедупликация по нормализованным символам
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
@@ -356,6 +357,13 @@ def api_active_positions():
                         try:
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
+                            
+                            # 🔧 FIX: Нормализуем символ для дедупликации (убираем '-')
+                            symbol_normalized = symbol.replace('-', '').upper()
+                            if symbol_normalized in seen_symbols:
+                                continue  # Пропускаем дубликат
+                            seen_symbols.add(symbol_normalized)
+                            
                             positions.append({
                                 "symbol": symbol,
                                 "direction": prefix,
