@@ -67,7 +67,7 @@ class ElliottWaveDetector:
         Основной метод детекции волны
         
         Args:
-            ohlcv: список свечей [{open, high, low, close, timestamp}]
+            ohlcv: список свечей [{open, high, low, close, timestamp}] или NamedTuple
             direction: "long" или "short"
         
         Returns:
@@ -76,9 +76,21 @@ class ElliottWaveDetector:
         if len(ohlcv) < 20:
             return self._empty_result("Недостаточно данных")
         
-        closes = np.array([c["close"] for c in ohlcv])
-        highs = np.array([c["high"] for c in ohlcv])
-        lows = np.array([c["low"] for c in ohlcv])
+        # 🔧 FIX: Поддержка и словарей и NamedTuple
+        def get_val(c, key):
+            if hasattr(c, key):
+                return getattr(c, key)
+            elif isinstance(c, dict):
+                return c.get(key, c.get(key.upper(), 0))
+            return 0
+        
+        try:
+            closes = np.array([get_val(c, "close") for c in ohlcv])
+            highs = np.array([get_val(c, "high") for c in ohlcv])
+            lows = np.array([get_val(c, "low") for c in ohlcv])
+        except Exception as e:
+            print(f"🌊 [ELLIOTT-DEBUG] Ошибка парсинга OHLCV: {e}")
+            return self._empty_result(f"Ошибка парсинга OHLCV: {e}")
         
         # Находим свинги (точки разворота)
         swings = self._find_swing_points(highs, lows, closes)
