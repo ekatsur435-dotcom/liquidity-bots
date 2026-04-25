@@ -149,6 +149,13 @@ class PositionTracker:
             return
         price = _f(md.price)
 
+        # 🆕 Обновляем unrealized P&L в Redis position для дашборда
+        try:
+            unrealized_pnl = _pnl(direction, entry, price)
+            self._update_position_pnl(symbol, price, unrealized_pnl)
+        except Exception as e:
+            print(f"[PT][{symbol}] unrealized_pnl update error: {e}")
+
         # ── ДЕТАЛЬНЫЙ ЛОГ RENDER ─────────────────────────────────────────────
         be_done      = signal.get("be_done", False)
         trail_active = signal.get("trailing_active", False)
@@ -695,6 +702,19 @@ class PositionTracker:
             self.redis.save_signal(self.bot_type, symbol, signal)
         except Exception as e:
             print(f"[PT] redis save: {e}")
+
+    def _update_position_pnl(self, symbol: str, current_price: float, unrealized_pnl: float):
+        """Обновляем текущий P&L и цену в позиции для дашборда"""
+        try:
+            # Получаем текущую позицию
+            pos = self.redis.get_position(self.bot_type, symbol)
+            if pos:
+                pos["current_price"] = current_price
+                pos["unrealized_pnl"] = round(unrealized_pnl, 2)
+                pos["last_updated"] = datetime.utcnow().isoformat()
+                self.redis.save_position(self.bot_type, symbol, pos)
+        except Exception as e:
+            print(f"[PT] _update_position_pnl error: {e}")
 
     async def _send(self, text: str):
         try:
