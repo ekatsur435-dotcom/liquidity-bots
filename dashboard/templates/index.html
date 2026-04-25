@@ -301,6 +301,43 @@
             overflow-y: auto;
         }
         
+        /* Period Selector */
+        .period-selector {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
+        }
+        
+        .period-btn {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.05);
+            color: rgba(255,255,255,0.6);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .period-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.9);
+        }
+        
+        .period-btn.active {
+            background: rgba(0,212,255,0.2);
+            border-color: rgba(0,212,255,0.4);
+            color: #00d4ff;
+        }
+        
+        .section-title-with-selector {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+        
         .feed-item {
             padding: 10px 12px;
             border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -542,7 +579,15 @@
         <!-- Charts Row -->
         <div class="charts-row">
             <div class="section-card">
-                <div class="section-title">📊 P&L Performance (7 Days)</div>
+                <div class="section-title section-title-with-selector">
+                    📊 P&L Performance
+                    <div class="period-selector">
+                        <button class="period-btn" data-period="1" onclick="changePeriod(1)">1D</button>
+                        <button class="period-btn active" data-period="7" onclick="changePeriod(7)">7D</button>
+                        <button class="period-btn" data-period="30" onclick="changePeriod(30)">30D</button>
+                        <button class="period-btn" data-period="all" onclick="changePeriod('all')">All</button>
+                    </div>
+                </div>
                 <div class="chart-container">
                     <canvas id="pnlChart"></canvas>
                 </div>
@@ -682,6 +727,42 @@
             if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
             if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
             return Math.floor(diff / 86400) + 'd ago';
+        }
+        
+        // Global variable for current period
+        let currentPeriod = 7;
+        
+        // Change period and reload chart
+        async function changePeriod(period) {
+            currentPeriod = period;
+            
+            // Update button styles
+            document.querySelectorAll('.period-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.period === String(period)) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            // Reload chart data
+            try {
+                let url = '/api/chart_data';
+                if (period !== 'all') {
+                    url += `?days=${period}`;
+                }
+                const chartRes = await fetch(url);
+                const chartData = await chartRes.json();
+                
+                // Update chart
+                if (pnlChart && chartData.dates) {
+                    pnlChart.data.labels = chartData.dates;
+                    pnlChart.data.datasets[0].data = chartData.short_pnl || chartData.pnl.map(() => 0);
+                    pnlChart.data.datasets[1].data = chartData.long_pnl || chartData.pnl.map(() => 0);
+                    pnlChart.update();
+                }
+            } catch (e) {
+                console.error('Chart reload error:', e);
+            }
         }
         
         // Load all data
