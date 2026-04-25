@@ -86,7 +86,8 @@ class Config:
     BOT_TYPE      = "long"
     # ✅ FIX: MIN_LONG_SCORE default = 70
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "70"))
+    # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -973,9 +974,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception as e:
             print(f"🌊 [ELLIOTT-ERROR-LONG] {symbol}: {e}")
             elliott_data = {"error": str(e)}
+            # 🔥 FIX: При ошибке Elliott Wave — снижаем минимум для TBS+OB сигналов
+            if tbs_detected and ob_quality >= 70:
+                elliott_min_score = 55  # Очень низкий порог при ошибке
+                print(f"💡 [ELLIOTT-FALLBACK-LONG] {symbol}: Ошибка волн, но TBS+OB_Q{ob_quality} — снижаем мин до 55")
         
-        # Используем скорректированный минимум скора
-        min_score_for_entry = elliott_min_score if 'elliott_min_score' in locals() else Config.MIN_SCORE
+        # 🔥 FIX: Fallback для TBS+OB при любой ошибке Elliott
+        if 'elliott_min_score' not in locals():
+            elliott_min_score = Config.MIN_SCORE
+            # Если нет данных Elliott но есть сильный TBS+OB — снижаем порог
+            if tbs_detected and ob_quality >= 70:
+                elliott_min_score = max(55, Config.MIN_SCORE - 10)
+                print(f"💡 [LONG-FALLBACK] {symbol}: Нет данных Elliott, TBS+OB_Q{ob_quality} — мин={elliott_min_score}")
+        
+        min_score_for_entry = elliott_min_score
         
         if final_score < min_score_for_entry:
             print(f"🔴 [FILTER1-LONG] {symbol}: score={final_score} < MIN={min_score_for_entry} — отфильтрован!")
