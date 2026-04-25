@@ -358,14 +358,14 @@ def api_active_positions():
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
                             
-                            # 🔧 FIX: Нормализуем символ для дедупликации (убираем '-')
+                            # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
                             symbol_normalized = symbol.replace('-', '').upper()
                             if symbol_normalized in seen_symbols:
                                 continue  # Пропускаем дубликат
                             seen_symbols.add(symbol_normalized)
-                            
+
                             positions.append({
-                                "symbol": symbol,
+                                "symbol": symbol_normalized,  # Возвращаем нормализованный символ
                                 "direction": prefix,
                                 "entry": pos.get("entry_price", 0),
                                 "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
