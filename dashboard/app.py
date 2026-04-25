@@ -228,6 +228,8 @@ def api_chart_data():
     pnl_data = []
     win_rate_data = []
     trades_data = []
+    short_pnl_data = []
+    long_pnl_data = []
     
     for i in range(days-1, -1, -1):
         date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -237,6 +239,8 @@ def api_chart_data():
         day_wins = 0
         day_losses = 0
         day_trades = 0
+        day_short_pnl = 0
+        day_long_pnl = 0
         
         for redis_getter in [get_redis_short, get_redis_long]:
             try:
@@ -248,10 +252,15 @@ def api_chart_data():
                         data = redis.get(key)
                         if data:
                             day_stats = json.loads(data)
-                            day_pnl += day_stats.get("pnl", 0)
+                            pnl = day_stats.get("pnl", 0)
+                            day_pnl += pnl
                             day_wins += day_stats.get("wins", 0)
                             day_losses += day_stats.get("losses", 0)
                             day_trades += day_stats.get("trades", 0)
+                            if prefix == "short":
+                                day_short_pnl += pnl
+                            else:
+                                day_long_pnl += pnl
                     except:
                         pass
             except:
@@ -259,6 +268,8 @@ def api_chart_data():
         
         dates.append(date[5:])  # MM-DD
         pnl_data.append(round(day_pnl, 2))
+        short_pnl_data.append(round(day_short_pnl, 2))
+        long_pnl_data.append(round(day_long_pnl, 2))
         win_rate = (day_wins / day_trades * 100) if day_trades > 0 else 0
         win_rate_data.append(round(win_rate, 1))
         trades_data.append(day_trades)
@@ -266,6 +277,8 @@ def api_chart_data():
     return jsonify({
         "dates": dates,
         "pnl": pnl_data,
+        "short_pnl": short_pnl_data,
+        "long_pnl": long_pnl_data,
         "win_rate": win_rate_data,
         "trades": trades_data
     })
@@ -306,27 +319,42 @@ def api_active_positions():
             prefix = bot_name.lower()
             
             # Читаем активные позиции из positions:*
+            # Используем SCAN вместо KEYS для Upstash совместимости
             try:
-                # Получаем все ключи позиций
-                position_keys = redis.execute(["KEYS", f"{prefix}:positions:*"])
-                if position_keys:
-                    for key in position_keys[:10]:  # Максимум 10
-                        pos_data = redis.execute(["GET", key])
-                        if pos_data:
+                cursor = 0
+                position_keys = []
+                # Получаем ключи через SCAN (не KEYS)
+                while True:
+                    result = redis.execute(["SCAN", str(cursor), "MATCH", f"{prefix}:positions:*", "COUNT", "100"])
+                    if result and len(result) >= 2:
+                        cursor = int(result[0])
+                        keys = result[1] if isinstance(result[1], list) else []
+                        position_keys.extend(keys)
+                        if cursor == 0:
+                            break
+                    else:
+                        break
+                
+                for key in position_keys[:10]:  # Максимум 10
+                    pos_data = redis.execute(["GET", key])
+                    if pos_data:
+                        try:
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
                             positions.append({
                                 "symbol": symbol,
                                 "direction": prefix,
                                 "entry": pos.get("entry_price", 0),
-                                "current_pnl": pos.get("pnl", 0),
-                                "tp": pos.get("take_profit", 0),
-                                "sl": pos.get("stop_loss", 0),
+                                "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
+                                "tp": pos.get("take_profit", pos.get("tp", 0)),
+                                "sl": pos.get("stop_loss", pos.get("sl", 0)),
                                 "duration_min": pos.get("duration_min", 0),
-                                "taken_tps": pos.get("partial_exits", 0)
+                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
                             })
-            except:
-                pass
+                        except:
+                            continue
+            except Exception as e:
+                print(f"Error scanning positions for {bot_name}: {e}")
         except Exception as e:
             print(f"Error reading positions for {bot_name}: {e}")
     
@@ -343,23 +371,62 @@ def api_feed():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем историю (LIST) для событий TP/SL
+            # Читаем all_trades для событий TP/SL (последние закрытия)
             try:
-                history_key = f"{prefix}:history"
-                history_json = redis.execute(["LRANGE", history_key, "0", "9"])
-                if history_json:
-                    for t_json in history_json:
-                        t = json.loads(t_json)
-                        if t.get("status") == "closed":
-                            events.append({
-                                "type": (t.get("tp_level") or "sl").lower(),
-                                "symbol": t.get("symbol", ""),
-                                "direction": prefix,
-                                "message": f"Closed @ {t.get('close_price', 0)}",
-                                "timestamp": t.get("closed_at", ""),
-                                "price": t.get("close_price", 0),
-                                "pnl": t.get("pnl", 0)
-                            })
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "9"])
+                if trades_json:
+                    for t_json in trades_json:
+                        try:
+                            t = json.loads(t_json)
+                            # Показываем только закрытые сделки с exit_reason
+                            if t.get("exit_reason") or t.get("status") == "closed":
+                                events.append({
+                                    "type": t.get("exit_reason", "closed").lower(),
+                                    "symbol": t.get("symbol", ""),
+                                    "direction": prefix,
+                                    "message": f"{t.get('exit_reason', 'Closed')} @ {t.get('exit_price', t.get('close_price', 0))}",
+                                    "timestamp": t.get("exit_time", t.get("closed_at", "")),
+                                    "price": t.get("exit_price", t.get("close_price", 0)),
+                                    "pnl": t.get("pnl", 0)
+                                })
+                        except:
+                            continue
+            except:
+                pass
+                    
+            # Также читаем активные сигналы для входов
+            try:
+                signal_keys = []
+                cursor = 0
+                while True:
+                    result = redis.execute(["SCAN", str(cursor), "MATCH", f"{prefix}:signals:*", "COUNT", "100"])
+                    if result and len(result) >= 2:
+                        cursor = int(result[0])
+                        keys = result[1] if isinstance(result[1], list) else []
+                        signal_keys.extend(keys)
+                        if cursor == 0:
+                            break
+                    else:
+                        break
+                
+                for key in signal_keys[:5]:
+                    sig_list = redis.execute(["LRANGE", key, "0", "0"])
+                    if sig_list:
+                        try:
+                            sig = json.loads(sig_list[0])
+                            if sig.get("status") == "active" or sig.get("type") == "entry":
+                                symbol = key.split(":")[-1]
+                                events.append({
+                                    "type": "entry",
+                                    "symbol": symbol,
+                                    "direction": prefix,
+                                    "message": f"Entry @ {sig.get('entry_price', 0)}",
+                                    "timestamp": sig.get("timestamp", ""),
+                                    "price": sig.get("entry_price", 0),
+                                    "pnl": None
+                                })
+                        except:
+                            continue
             except:
                 pass
                     
