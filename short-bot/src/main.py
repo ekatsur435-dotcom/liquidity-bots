@@ -711,6 +711,21 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"⚠️ [v2.9] {symbol}: OB detection error: {e}")
 
         # =========================================================================
+        # ✅ v2.9: TBS (Test Before Strike) — ретест зоны сопротивления/поддержки
+        # =========================================================================
+        tbs_found = False
+        tbs_zone = None
+        try:
+            from core.tbs_detector import detect_tbs_entry
+            tbs = detect_tbs_entry(ohlcv_primary, direction="short")
+            if tbs and tbs["found"]:
+                tbs_found = True
+                tbs_zone = tbs['zone']
+                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs_zone:.4f}")
+        except Exception as e:
+            pass  # TBS не критичен
+
+        # =========================================================================
         # ✅ v2.9: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
@@ -898,9 +913,29 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
+        # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
+        ob_quality_high = ob_result and ob_result.bearish_ob and ob_result.bearish_ob.quality >= 70
+        
         if not score_result.is_valid:
-            print(f"🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован!")
-            return None
+            # Проверяем: TBS есть? OB качество >= 70?
+            if tbs_found and ob_quality_high:
+                # УМНЫЙ ОВЕРРАЙД: Разворот подтверждён технически — заходим!
+                print(f"� [SMART-SCORE] {symbol}: is_valid=False, но TBS+OB_Q{ob_result.bearish_ob.quality} — ОВЕРРАЙД! Скор поднимаем до 75")
+                # Создаём новый результат с принудительным is_valid=True и скором 75
+                from shared.core.scorer import ScoreResult, Confidence
+                score_result = ScoreResult(
+                    total_score=max(75, score_result.total_score + 15),  # +15 бонус за TBS+OB
+                    max_possible=score_result.max_possible,
+                    direction=score_result.direction,
+                    is_valid=True,  # Принудительно валидный
+                    confidence=Confidence.HIGH,
+                    grade="A",
+                    components=score_result.components,
+                    reasons=score_result.reasons + [f"🎯 TBS+ОБ_Q{ob_result.bearish_ob.quality} — умный вход"]
+                )
+            else:
+                print(f"�🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS+OB70)")
+                return None
 
         price       = md.price
         final_score = score_result.total_score + oi_score_adj + base_score_bonus
