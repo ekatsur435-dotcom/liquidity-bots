@@ -76,11 +76,20 @@ def get_trading_stats(days=7):
             all_trades_key = f"{prefix}:all_trades"
             try:
                 # Получаем JSON массив целиком
-                # Upstash Redis: используем json().get() с путем "$" для получения всего JSON
-                trades_data = redis.json().get(all_trades_key, "$")
-                # json().get возвращает список при использовании пути "$", берем первый элемент
-                if trades_data and isinstance(trades_data, list) and len(trades_data) > 0:
-                    trades_data = trades_data[0]
+                # Upstash Redis 0.x: используем execute() для JSON команд
+                result = redis.execute("JSON.GET", all_trades_key, "$")
+                # execute возвращает строку JSON, парсим её
+                trades_data = None
+                if result:
+                    try:
+                        parsed = json.loads(result) if isinstance(result, str) else result
+                        # JSON.GET с $ возвращает список с одним элементом
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            trades_data = parsed[0]
+                        else:
+                            trades_data = parsed
+                    except:
+                        pass
                 if trades_data and isinstance(trades_data, list):
                     # Берем только последние 50 сделок
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
@@ -109,9 +118,17 @@ def get_trading_stats(days=7):
             # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                saves_data = redis.json().get(saves_key, "$")
-                if saves_data and isinstance(saves_data, list) and len(saves_data) > 0:
-                    saves_data = saves_data[0]
+                result = redis.execute("JSON.GET", saves_key, "$")
+                saves_data = None
+                if result:
+                    try:
+                        parsed = json.loads(result) if isinstance(result, str) else result
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            saves_data = parsed[0]
+                        else:
+                            saves_data = parsed
+                    except:
+                        pass
                 if saves_data and isinstance(saves_data, list):
                     stats["micro_step_saves"] += len(saves_data)
             except:
@@ -119,9 +136,17 @@ def get_trading_stats(days=7):
                 
             # Active positions - из bot_state (не используем keys)
             try:
-                bot_state = redis.json().get(f"{prefix}:bot_state", "$")
-                if bot_state and isinstance(bot_state, list) and len(bot_state) > 0:
-                    bot_state = bot_state[0]
+                result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
+                bot_state = None
+                if result:
+                    try:
+                        parsed = json.loads(result) if isinstance(result, str) else result
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            bot_state = parsed[0]
+                        else:
+                            bot_state = parsed
+                    except:
+                        pass
                 if bot_state and isinstance(bot_state, dict):
                     stats["active_positions"] += bot_state.get("active_signals", 0)
             except:
@@ -151,9 +176,17 @@ def get_micro_trail_stats():
             # Подсчитываем trailing из bot_state (не используем keys)
             for pfx in ["short", "long"]:
                 try:
-                    bot_state = redis.json().get(f"{pfx}:bot_state", "$")
-                    if bot_state and isinstance(bot_state, list) and len(bot_state) > 0:
-                        bot_state = bot_state[0]
+                    result = redis.execute("JSON.GET", f"{pfx}:bot_state", "$")
+                    bot_state = None
+                    if result:
+                        try:
+                            parsed = json.loads(result) if isinstance(result, str) else result
+                            if isinstance(parsed, list) and len(parsed) > 0:
+                                bot_state = parsed[0]
+                            else:
+                                bot_state = parsed
+                        except:
+                            pass
                     if bot_state and isinstance(bot_state, dict):
                         total_active += bot_state.get("active_signals", 0)
                 except:
