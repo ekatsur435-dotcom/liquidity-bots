@@ -77,7 +77,7 @@ def get_trading_stats(days=7):
             try:
                 # Получаем JSON массив целиком
                 # Upstash Redis 0.x: используем execute() для JSON команд
-                result = redis.execute(["JSON.GET", all_trades_key, "$"])
+                result = redis.execute("JSON.GET", all_trades_key, "$")
                 # execute возвращает строку JSON, парсим её
                 trades_data = None
                 if result:
@@ -118,7 +118,7 @@ def get_trading_stats(days=7):
             # Micro-step saves (JSON)
             try:
                 saves_key = f"{prefix}:micro_step:saved_trades"
-                result = redis.execute(["JSON.GET", saves_key, "$"])
+                result = redis.execute("JSON.GET", saves_key, "$")
                 saves_data = None
                 if result:
                     try:
@@ -136,7 +136,7 @@ def get_trading_stats(days=7):
                 
             # Active positions - из bot_state (не используем keys)
             try:
-                result = redis.execute(["JSON.GET", f"{prefix}:bot_state", "$"])
+                result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
                 bot_state = None
                 if result:
                     try:
@@ -176,7 +176,7 @@ def get_micro_trail_stats():
             # Подсчитываем trailing из bot_state (не используем keys)
             for pfx in ["short", "long"]:
                 try:
-                    result = redis.execute(["JSON.GET", f"{pfx}:bot_state", "$"])
+                    result = redis.execute("JSON.GET", f"{pfx}:bot_state", "$")
                     bot_state = None
                     if result:
                         try:
@@ -306,14 +306,216 @@ def api_chart_data():
     })
 
 
+@app.route("/api/trades")
+def api_trades():
+    """API: Последние 5 сделок SHORT и LONG с деталями"""
+    trades = {"short": [], "long": []}
+    
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            
+            # Читаем all_trades
+            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            if result:
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        all_trades = parsed[0]
+                    else:
+                        all_trades = parsed
+                    
+                    if isinstance(all_trades, list):
+                        # Берём последние 5, сортируем по времени (если есть timestamp)
+                        recent = sorted(all_trades, key=lambda x: x.get('timestamp', ''), reverse=True)[:5]
+                        trades[prefix] = recent
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error reading trades for {bot_name}: {e}")
+    
+    return jsonify(trades)
+
+
+@app.route("/api/active_positions")
+def api_active_positions():
+    """API: Активные позиции с текущим P&L"""
+    positions = []
+    
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            
+            # Читаем active_signals из bot_state
+            result = redis.execute("JSON.GET", f"{prefix}:bot_state", "$")
+            if result:
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        bot_state = parsed[0]
+                    else:
+                        bot_state = parsed
+                    
+                    if isinstance(bot_state, dict):
+                        active = bot_state.get("active_signals", [])
+                        for pos in active:
+                            positions.append({
+                                "symbol": pos.get("symbol", "UNKNOWN"),
+                                "direction": prefix,
+                                "entry": pos.get("entry_price", 0),
+                                "current_pnl": pos.get("current_pnl", 0),
+                                "tp": pos.get("take_profits", [[]])[0] if pos.get("take_profits") else 0,
+                                "sl": pos.get("stop_loss", 0),
+                                "duration_min": pos.get("duration_min", 0),
+                                "taken_tps": len(pos.get("taken_tps", []))
+                            })
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error reading positions for {bot_name}: {e}")
+    
+    return jsonify({"positions": positions, "count": len(positions)})
+
+
+@app.route("/api/feed")
+def api_feed():
+    """API: Live feed последних событий (TBS, входы, TP/SL)"""
+    events = []
+    
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            
+            # Читаем recent_events (если есть)
+            result = redis.execute("JSON.GET", f"{prefix}:recent_events", "$")
+            if result:
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        events_data = parsed[0]
+                    else:
+                        events_data = parsed
+                    
+                    if isinstance(events_data, list):
+                        for ev in events_data[-10:]:  # Последние 10
+                            events.append({
+                                "type": ev.get("type", "info"),  # tbs, entry, tp, sl
+                                "symbol": ev.get("symbol", ""),
+                                "direction": prefix,
+                                "message": ev.get("message", ""),
+                                "timestamp": ev.get("timestamp", ""),
+                                "price": ev.get("price", 0),
+                                "pnl": ev.get("pnl", None)
+                            })
+                except:
+                    pass
+            
+            # Также проверяем recent_trades для TP/SL событий
+            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            if result:
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        trades = parsed[0]
+                    else:
+                        trades = parsed
+                    
+                    if isinstance(trades, list):
+                        for t in trades[-5:]:
+                            if t.get("exit_reason") in ["TP1", "TP2", "TP3", "SL"]:
+                                events.append({
+                                    "type": t.get("exit_reason", "").lower(),
+                                    "symbol": t.get("symbol", ""),
+                                    "direction": prefix,
+                                    "message": f"{t.get('exit_reason')} @ {t.get('exit_price', 0)}",
+                                    "timestamp": t.get("exit_time", ""),
+                                    "price": t.get("exit_price", 0),
+                                    "pnl": t.get("pnl", 0)
+                                })
+                except:
+                    pass
+                    
+        except Exception as e:
+            print(f"Error reading feed for {bot_name}: {e}")
+    
+    # Сортируем по времени (новые сверху)
+    events.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    return jsonify({"events": events[:15]})
+
+
+@app.route("/api/summary")
+def api_summary():
+    """API: Сводка P&L за сегодня, вчера, неделю"""
+    summary = {
+        "today": {"pnl": 0, "trades": 0, "winrate": 0},
+        "yesterday": {"pnl": 0, "trades": 0, "winrate": 0},
+        "week": {"pnl": 0, "trades": 0, "winrate": 0}
+    }
+    
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            
+            result = redis.execute("JSON.GET", f"{prefix}:all_trades", "$")
+            if result:
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        trades = parsed[0]
+                    else:
+                        trades = parsed
+                    
+                    if isinstance(trades, list):
+                        for t in trades:
+                            trade_date = t.get("exit_time", "")[:10] if t.get("exit_time") else ""
+                            pnl = t.get("pnl", 0)
+                            is_win = pnl > 0
+                            
+                            # Week
+                            summary["week"]["pnl"] += pnl
+                            summary["week"]["trades"] += 1
+                            if is_win:
+                                summary["week"]["wins"] = summary["week"].get("wins", 0) + 1
+                            
+                            # Today
+                            if trade_date == today:
+                                summary["today"]["pnl"] += pnl
+                                summary["today"]["trades"] += 1
+                                if is_win:
+                                    summary["today"]["wins"] = summary["today"].get("wins", 0) + 1
+                            
+                            # Yesterday
+                            if trade_date == yesterday:
+                                summary["yesterday"]["pnl"] += pnl
+                                summary["yesterday"]["trades"] += 1
+                                if is_win:
+                                    summary["yesterday"]["wins"] = summary["yesterday"].get("wins", 0) + 1
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error reading summary for {bot_name}: {e}")
+    
+    # Calculate winrates
+    for period in ["today", "yesterday", "week"]:
+        total = summary[period]["trades"]
+        wins = summary[period].get("wins", 0)
+        summary[period]["winrate"] = round(wins / total * 100, 1) if total > 0 else 0
+    
+    return jsonify(summary)
+
+
 # Health check для Render
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
 
-
-# ⚡ Убран WebSocket - вызывает таймауты на бесплатном Render
-# Используйте /api/stats для получения данных (обновляется раз в 30 сек кэш)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
