@@ -223,16 +223,18 @@ class BingXClient:
                 except Exception:
                     pass
 
-                self._symbol_info_cache[sym] = {
+                # ✅ FIX: Нормализуем символ для ключа кэша
+                sym_normalized = self._normalize_symbol(sym)
+                self._symbol_info_cache[sym_normalized] = {
                     "price_precision": int(c.get("pricePrecision", 4)),
                     "qty_precision":   int(c.get("quantityPrecision", 3)),
                     "min_qty":         float(c.get("tradeMinQuantity", 0.001)),
                     "max_leverage":    int(c.get("maxLeverage", 50)),
                     "online":          (status != 0),
-                    "max_notional":    max_notional,   # ← НОВОЕ: лимит позиции
+                    "max_notional":    max_notional,
                 }
                 if status != 0:
-                    self._active_symbols.add(sym)
+                    self._active_symbols.add(sym_normalized)
             self._symbols_loaded = True
             print(f"📋 [BingX] {len(self._symbol_info_cache)} contracts, "
                   f"{len(self._active_symbols)} active")
