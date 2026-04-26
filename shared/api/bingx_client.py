@@ -123,7 +123,7 @@ class BingXClient:
         offset = getattr(self, "_time_offset", 0)
         return int(time.time() * 1000) + offset
 
-    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
+    async def _make_request(self, method, endpoint, params=None, body=None, signed=True, _retry=0):
         try:
             session  = await self._get_session()
             all_p    = {}
@@ -143,7 +143,13 @@ class BingXClient:
             timeout = aiohttp.ClientTimeout(total=30)
             fn = {"GET": session.get, "POST": session.post, "DELETE": session.delete}[method]
             async with fn(full_url, timeout=timeout) as r:
-                return await self._parse_response(r, endpoint)
+                result = await self._parse_response(r, endpoint)
+                # ✅ FIX: Retry при ошибке 109400 (timestamp invalid)
+                if result and result.get("code") == 109400 and _retry < 1:
+                    print(f"🔄 [BingX] Повторная попытка после синхронизации...")
+                    self._time_offset = 0  # сбросим для пересинхронизации
+                    return await self._make_request(method, endpoint, params, body, signed, _retry=_retry+1)
+                return result
         except Exception as e:
             self.last_error = str(e)
             print(f"❌ [BingX] {method} {endpoint}: {e}")
@@ -162,11 +168,6 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
-                    # ✅ AUTO-SYNC: при ошибке timestamp пересинхронизируем время
-                    if code == 109400:
-                        print("🔄 [BingX] Синхронизируем время с сервером...")
-                        await self._sync_server_time()
-                        print(f"🔄 [BingX] Новый offset: {self._time_offset}ms")
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
                 return data
