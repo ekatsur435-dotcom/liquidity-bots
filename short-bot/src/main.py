@@ -1,7 +1,7 @@
 """
-🤖 SHORT BOT v4.0 — FastAPI Application
+🤖 SHORT BOT v5.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v4.0 (критические):
+ИСПРАВЛЕНИЯ v5.0 (критические):
   ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
      Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
   ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
@@ -53,14 +53,14 @@ from core.pattern_detector import ShortPatternDetector   # ← единый фа
 from core.position_tracker import PositionTracker
 from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
-from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
-from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
-from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile  # ✅ v2.8
-from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v5.0
+from core.entry_confirmation import EntryConfirmation  # ✅ v5.0
+from core.tbs_detector import detect_tbs_entry  # ✅ v5.0 TBS
+from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile  # ✅ v5.0
+from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v5.0
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
-from core.market_context import get_market_context  # ✅ v4.0
+from core.market_context import get_market_context  # ✅ v5.0
 
 
 # ============================================================================
@@ -70,7 +70,7 @@ from core.market_context import get_market_context  # ✅ v4.0
 class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
-    # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
+    # ✅ v5.0 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
     MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
@@ -127,7 +127,7 @@ class BotState:
         self.auto_trader      = None
         self.tracker: Optional[PositionTracker] = None
         self.coinglass        = None
-        self.market_ctx       = None  # ✅ v4.0 Market Context Filter
+        self.market_ctx       = None  # ✅ v5.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
 
@@ -209,7 +209,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
         print(f"⚠️ _init_source error: {e}")
 
     # ── Bybit (основной источник) ─────────────────────────────────────────
-    # ✅ v2.4: При 403 (Render IP заблокирован Bybit) — автоматически
+    # ✅ v5.0: При 403 (Render IP заблокирован Bybit) — автоматически
     #          переключаемся на Binance фьючерсы как источник watchlist.
     total_bybit_checked = 0
     total_bybit_usdt    = 0
@@ -238,7 +238,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
         print(f"⚠️ Bybit watchlist error: {e}")
 
     # ── Binance (если есть прокси OR Bybit вернул 403/пусто) ─────────────
-    # ✅ v2.4: force_binance_fallback если Bybit заблокирован
+    # ✅ v5.0: force_binance_fallback если Bybit заблокирован
     force_binance = not bybit_ok
     try:
         if binance_client._use_binance or force_binance:
@@ -296,7 +296,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v2.7...")
+    print("🚀 Starting SHORT Bot v5.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -304,7 +304,7 @@ async def lifespan(app: FastAPI):
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
     
-    # ✅ v4.0 FIX: Инициализируем Market Context Filter
+    # ✅ v5.0 FIX: Инициализируем Market Context Filter
     from core.market_context import MarketContextFilter
     state.market_ctx = MarketContextFilter(
         binance_client=state.binance,
@@ -426,7 +426,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🤖 <b>SHORT Bot v2.9 запущен</b>\n\n"
+        f"🤖 <b>SHORT Bot v5.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -455,7 +455,7 @@ async def lifespan(app: FastAPI):
     print("👋 SHORT Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="SHORT Bot v5.0")
 
 
 # ============================================================================
@@ -472,7 +472,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "SHORT Bot v5.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -583,7 +583,7 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
+    ✅ v5.0 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
     БЫЛО: len(get_positions()) — считало ВСЕ позиции BingX включая
           Результат: SHORT бот всегда видел 19-20 и был заблокирован навсегда!
     СТАЛО: фильтр side == "SHORT" → считаем только наши шорты.
@@ -612,7 +612,7 @@ async def _count_real_positions() -> int:
 
 async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
-    SHORT scan_symbol v2.7 (NO BTC CORR):
+    SHORT scan_symbol v5.0 (NO BTC CORR):
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
       - TP НИЖЕ входа (short: take profit = цена * (1 - TP%))
       - OI Proxy: bear_confirm / accumulation / weakness
@@ -627,7 +627,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
 
-        # ✅ v4.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
+        # ✅ v5.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
             ctx = await state.market_ctx.check(
                 direction="short",
@@ -678,7 +678,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ohlcv_primary = tf_map.get(primary_tf, ohlcv_15m)
         
         # =========================================================================
-        # ✅ v2.8: SYMBOL PROFILER — индивидуальный профиль монеты
+        # ✅ v5.0: SYMBOL PROFILER — индивидуальный профиль монеты
         # =========================================================================
         symbol_profile = None
         try:
@@ -691,12 +691,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
-                        print(f"📊 [v2.9] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
+                        print(f"📊 [v5.0] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: Profile error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: Profile error: {e}")
         
         # =========================================================================
-        # ✅ v2.9: ORDER BLOCK DETECTOR — институциональные зоны
+        # ✅ v5.0: ORDER BLOCK DETECTOR — институциональные зоны
         # =========================================================================
         ob_data = None
         ob_result = None
@@ -712,12 +712,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 ob = ob_result.bearish_ob
                 if ob.quality >= 60 and ob.freshness.value in ["fresh", "medium"]:
                     ob_data = format_ob_for_signal(ob)
-                    print(f"🎯 [v2.9] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
+                    print(f"🎯 [v5.0] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: OB detection error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: OB detection error: {e}")
 
         # =========================================================================
-        # ✅ v2.9: TBS (Test Before Strike) — ретест зоны сопротивления/поддержки
+        # ✅ v5.0: TBS (Test Before Strike) — ретест зоны сопротивления/поддержки
         # =========================================================================
         tbs_found = False
         tbs_zone = None
@@ -727,12 +727,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if tbs and tbs["found"]:
                 tbs_found = True
                 tbs_zone = tbs['zone']
-                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs_zone:.4f}")
+                print(f"🎯 [v5.0] {symbol}: TBS DETECTED! Ретест зоны ${tbs_zone:.4f}")
         except Exception as e:
             pass  # TBS не критичен
 
         # =========================================================================
-        # ✅ v2.9: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # ✅ v5.0: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
             # 1. Проверяем Liquidity Sweep (сбор стопов = сильнейший сигнал!)
@@ -762,7 +762,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     tp2 = entry * (1 - 0.08)  # 8%
                     tp3 = entry * (1 - 0.12)  # 12%
                     
-                    print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    print(f"🎯 [v5.0] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
                     return {
                         "symbol": symbol,
@@ -781,9 +781,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     }
                 else:
                     # Sweep есть но не подтверждён — логируем но пропускаем
-                    print(f"⚠️ [v2.9] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
+                    print(f"⚠️ [v5.0] {symbol}: Sweep найден но не подтверждён (score={confirmation.get('score', 0)})")
             
-            # 3. Нет sweep — проверяем обычные фильтры (v2.9: бонусы, не блок)
+            # 3. Нет sweep — проверяем обычные фильтры (v5.0: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
             if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
@@ -795,31 +795,31 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 direction="short"
             )
             
-            # v2.9: Не блокируем, используем как бонус к скору
+            # v5.0: Не блокируем, используем как бонус к скору
             if confirmation["score"] >= 70:
                 base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
-                print(f"✅ [v2.9] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+                print(f"✅ [v5.0] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
             elif confirmation["score"] >= 50:
                 base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
-                print(f"⚠️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+                print(f"⚠️ [v5.0] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
             else:
                 base_score_bonus = 0
-                print(f"ℹ️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
+                print(f"ℹ️ [v5.0] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: Ошибка EntryConfirmation: {e}")
+            print(f"⚠️ [v5.0] {symbol}: Ошибка EntryConfirmation: {e}")
             base_score_bonus = 0  # При ошибке продолжаем без бонуса
         
-        # ✅ v2.9: TBS (Test Before Strike) — ретест Order Block
+        # ✅ v5.0: TBS (Test Before Strike) — ретест Order Block
         tbs_detected = False  # ✅ Для fallback паттерна
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="short")
             if tbs and tbs["found"]:
                 tbs_detected = True  # ✅ FIX: Сохраняем для fallback
-                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
+                print(f"🎯 [v5.0] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: TBS error: {e}")
 
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
@@ -1132,7 +1132,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ── SL ВЫШЕ входа, TP НИЖЕ входа (SHORT) ─────────────────────────────
         
-        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
+        # ✅ v5.0: Пробуем использовать Liquidity Sweep Tail для точного стопа
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
@@ -1141,7 +1141,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_high > 0:
                 # Стоп за хвост свечи sweep + 0.3% buffer (выше для SHORT)
                 sweep_sl = sweep_result.sweep_high * 1.003
-                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_high=${sweep_result.sweep_high:.6f})")
+                print(f"🎯 [v5.0] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_high=${sweep_result.sweep_high:.6f})")
         except Exception as e:
             pass  # Fallback на стандартный расчёт
         
@@ -1149,7 +1149,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         default_sl = price * (1 + Config.SL_BUFFER / 100)
         if sweep_sl and sweep_sl > price and sweep_sl < price * 1.03:  # Не более 3% от цены
             stop_loss = sweep_sl
-            reasons.append(f"🎯 v2.9 Sweep Tail SL: ${stop_loss:.6f}")
+            reasons.append(f"🎯 v5.0 Sweep Tail SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
             
@@ -1226,7 +1226,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "atr_14_pct":       round(getattr(md, "atr_14_pct", 0.5), 3),
             "pattern":          patterns[0].name if patterns else "",
             "smc_data":         smc_data,
-            # ✅ v2.8: Order Block данные для лимитных входов
+            # ✅ v5.0: Order Block данные для лимитных входов
             "ob_data":          ob_data if isinstance(ob_data, dict) else None,
             "entry_type":       ob_data.get("entry_type", "MARKET") if isinstance(ob_data, dict) else "MARKET",
             "limit_price":      ob_data.get("limit_price") if isinstance(ob_data, dict) else None,
@@ -1247,7 +1247,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def scan_market():
     """
-    ✅ v2.7 АРХИТЕКТУРА (SHORT, NO BTC CORR):
+    ✅ v5.0 АРХИТЕКТУРА (SHORT, NO BTC CORR):
     - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20 SHORT на бирже)
     - Биржевое исполнение: только если active_short < MAX и не /pause
     - Единственный блокер: команда /pause
@@ -1291,7 +1291,7 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.7)
+            # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v5.0)
             primary_tf = signal.get("timeframe", "15m")
             tf_for_execution = True  # Разрешаем всем ТФ
 
