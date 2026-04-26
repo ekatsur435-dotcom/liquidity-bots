@@ -573,6 +573,20 @@ def _is_fresh(existing: List[Dict]) -> bool:
     except Exception:
         return True
 
+async def _is_cooldown_active(symbol: str) -> bool:
+    """✅ v5.0: Проверяем cooldown после SL (2-4 часа)"""
+    try:
+        cooldown_key = f"sl_cooldown:{symbol}"
+        # Проверяем в Redis
+        if hasattr(state, 'redis') and state.redis:
+            result = state.redis.get(cooldown_key)
+            if result:
+                print(f"⏸️ [COOLDOWN] {symbol}: SL cooldown active (2-4h)")
+                return True
+    except Exception:
+        pass
+    return False
+
 def _ohlcv(candles) -> List[List[float]]:
     return [[c.open, c.high, c.low, c.close, c.volume] for c in candles]
 
@@ -581,13 +595,18 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
-    LONG scan_symbol v2.3:
+    LONG scan_symbol v5.0:
       - SL НИЖЕ входа (long: stop loss = цена * (1 - SL_BUFFER%))
       - TP ВЫШЕ входа (long: фиксируем прибыль при росте)
       - OI Proxy: bull_confirm / accumulation / weakness_long
       - volume_spike_ratio + atr_14_pct → scorer
+      - ✅ v5.0: Cooldown после SL (2-4 часа)
     """
     try:
+        # ✅ v5.0: Проверяем cooldown после SL
+        if await _is_cooldown_active(symbol):
+            return None
+        
         md = await state.binance.get_complete_market_data(symbol)
         if not md:
             return None
