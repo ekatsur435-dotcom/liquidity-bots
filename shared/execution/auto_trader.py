@@ -23,7 +23,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from api.bingx_client import BingXClient
+from core.position_tracker import PositionTracker
 from upstash.redis_client import get_redis_client
+from utils.sector_mapper import get_sector, count_positions_by_sector
 from execution.limit_executor import LimitExecutor, LimitOrderConfig, get_limit_executor
 
 
@@ -309,9 +311,30 @@ class AutoTrader:
             )
             return None
 
+        # ── 3a. Sector limit (max 3 positions per sector) ─────────────────────
+        sector = get_sector(symbol)
+        sector_limit = getattr(self.config, 'max_positions_per_sector', 3)
+        sector_count = count_positions_by_sector(
+            [{"symbol": p.symbol} for p in current_positions], sector
+        )
+        if sector_count >= sector_limit:
+            print(f"{pfx} ⏸ SKIP — sector {sector} limit ({sector_count}/{sector_limit})")
+            await self._tg_reply(
+                f"⏸ <b>Лимит сектора</b> ({sector_count}/{sector_limit})\n"
+                f"<b>#{symbol}</b> ({sector}) — сигнал пропущен", tg_msg_id
+            )
+            return None
+        print(f"{pfx} 📊 Sector: {sector} ({sector_count}/{sector_limit})")
+
         # ── 4. Symbol online? ─────────────────────────────────────────────────
         if not await self.bingx.is_symbol_active(bingx_symbol):
-            print(f"{pfx} ⏭ SKIP — {bingx_symbol} offline/delisted")
+            error_msg = f"🔴 #{symbol} ДЕЛИСТИРОВАНА на BingX"
+            print(f"{pfx} ⏭ SKIP — {error_msg}")
+            await self._tg_reply(
+                f"{error_msg}\n\n"
+                f"Монета не торгуется на бирже — пропускаем сигнал.",
+                tg_msg_id
+            )
             return None
 
         # ── 5. Balance ────────────────────────────────────────────────────────
