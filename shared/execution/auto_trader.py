@@ -1,11 +1,10 @@
 """
-Auto Trader v2.7
+Auto Trader v5.0
 
-ИСПРАВЛЕНИЯ v2.7:
+ИСПРАВЛЕНИЯ v5.0:
+  ✅ Sector limit: 5 позиций на сектор (через MAX_POSITIONS_PER_SECTOR env)
+  ✅ Порядок инициализации: AutoTrader ДО TelegramCommandHandler
   ✅ code=101209 RETRY: парсим фактический лимит из текста ошибки → retry
-     Было: cap=$5000, но если лимит=5000 → reject (edge case точное совпадение)
-     Стало: cap = parsed_max * 0.92 (8% запас) → retry 1 раз
-     Пример: "max is 5000 USDT" → cap = 4600, retry → успех
   ✅ daily_pnl: единицы в % (5.0 = 5%), не дробях (было 0.05)
   ✅ cooldown 30с между открытиями (защита от дублей)
   ✅ TP Hedge Mode: нет reduceOnly
