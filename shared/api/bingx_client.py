@@ -66,6 +66,7 @@ class BingXClient:
                 "Уменьши размер или снизи плечо. AutoTrader авто-уменьшит в следующий раз.",
         109201: "Leverage exceeds max allowed",
         109400: "Timestamp invalid — разница времени между сервером и клиентом > 1000ms",
+        109418: "Symbol offline/delisted — монета не торгуется на BingX",
     }
 
     def __init__(self, api_key=None, api_secret=None, demo=True):
@@ -81,6 +82,7 @@ class BingXClient:
         self.session: Optional[aiohttp.ClientSession] = None
         self._symbol_info_cache: Dict[str, Dict] = {}
         self._active_symbols: Set[str] = set()
+        self._offline_symbols: Set[str] = set()  # ✅ FIX: кэш делистированных монет
         self._symbols_loaded = False
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
@@ -257,6 +259,10 @@ class BingXClient:
 
     async def is_symbol_active(self, symbol: str) -> bool:
         symbol = self._normalize_symbol(symbol)
+        # ✅ FIX: Проверяем кэш офлайн символов
+        if symbol in self._offline_symbols:
+            print(f"🔴 [BingX] {symbol}: OFFLINE (cached delisted)")
+            return False
         await self._load_contracts()
         info = self._symbol_info_cache.get(symbol)
         if info is None:
@@ -266,15 +272,15 @@ class BingXClient:
             info = self._symbol_info_cache.get(symbol)
         # ✅ DEBUG: Логируем статус символа
         if info:
-            print(f"🔍 [BingX] {symbol}: online={info.get('online')}, status={'found' if info else 'not found'}")
-            return info.get("online", True)
+            is_online = info.get("online", False)
+            if not is_online:
+                self._offline_symbols.add(symbol)  # ✅ FIX: кэшируем офлайн символ
+            print(f"🔍 [BingX] {symbol}: online={is_online}, status={'found' if info else 'not found'}")
+            return is_online
         else:
             print(f"🔍 [BingX] {symbol}: NOT IN CACHE (total cached: {len(self._symbol_info_cache)})")
-            # ✅ FIX: Если символ не найден в кэше API, но он USDT-пара — разрешаем торговлю
-            # API BingX может возвращать неполный список
-            if symbol.endswith('USDT'):
-                print(f"   ⚠️ [BingX] {symbol} не в кэше API, но это USDT пара — разрешаем торговлю")
-                return True
+            # ✅ FIX: Символа нет на бирже — добавляем в кэш офлайн
+            self._offline_symbols.add(symbol)
             return False
 
     async def _round_price(self, symbol: str, price: float) -> float:
