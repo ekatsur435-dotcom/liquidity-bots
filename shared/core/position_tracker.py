@@ -379,12 +379,18 @@ class PositionTracker:
         exchange_updated = False
         if self.auto_trader and self.auto_trader.bingx:
             try:
-                bingx_symbol = symbol + "-USDT" if "-USDT" not in symbol else symbol
+                # ✅ FIX: Правильное форматирование символа как в aegis-bots
+                # MAGMAUSDT → MAGMA-USDT
+                if "-" not in symbol and symbol.endswith("USDT"):
+                    bingx_symbol = symbol[:-4] + "-USDT"
+                else:
+                    bingx_symbol = symbol
                 print(f"🔍 [PT] _move_sl: symbol={symbol}, bingx_symbol={bingx_symbol}, position_side={position_side}")
                 # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.7)
                 for attempt in range(3):
                     print(f"🔍 [PT] Attempt {attempt + 1}/3")
-                    for sym_fmt in [bingx_symbol, symbol.replace("USDT", "-USDT"), symbol]:
+                    # ✅ FIX: Правильный порядок форматов — сначала с дефисом
+                    for sym_fmt in [bingx_symbol, symbol]:
                         print(f"🔍 [PT] Trying sym_fmt={sym_fmt}")
                         ok = await self.auto_trader.bingx.update_stop_loss(
                             sym_fmt, position_side, new_sl, direction
