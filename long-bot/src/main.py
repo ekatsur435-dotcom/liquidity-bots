@@ -733,10 +733,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ v2.9: TBS (Test Before Strike) — ретест поддержки
         tbs_found = False
         tbs_zone = None
+        tbs_detected = False  # ✅ Для fallback паттерна
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="long")
             if tbs and tbs["found"]:
                 tbs_found = True
+                tbs_detected = True  # ✅ FIX: Для fallback паттерна
                 tbs_zone = tbs['zone']
                 print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест ${tbs_zone:.4f}")
                 base_score_bonus += 10  # +10 за TBS
@@ -1057,6 +1059,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ── LONG TP уровни из Config ──────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
+        # ✅ FIX: Fallback на TBS если именованный паттерн не детектирован
+        if not best_pattern and tbs_detected:
+            best_pattern = "TBS_STRUCTURE"
         # LONG: TP levels & weights from Config (optimised)
         tp_levels  = Config.TP_LEVELS
         tp_weights = Config.TP_WEIGHTS
