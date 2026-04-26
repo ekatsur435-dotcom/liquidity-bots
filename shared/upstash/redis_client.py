@@ -390,6 +390,54 @@ class UpstashRedisClient:
             print(f"Redis execute error: {e}")
             return None
 
+    # =========================================================================
+    # ✅ v5.0: Прокси-методы для прямого доступа (position_tracker использует)
+    # =========================================================================
+
+    def lpush(self, key: str, value: str) -> int:
+        """Добавить элемент в начало списка"""
+        return self.client.lpush(key, value)
+
+    def ltrim(self, key: str, start: int, end: int) -> bool:
+        """Обрезать список до указанного диапазона"""
+        return self.client.ltrim(key, start, end)
+
+    def lrange(self, key: str, start: int, end: int) -> List[str]:
+        """Получить диапазон элементов списка"""
+        return self.client.lrange(key, start, end)
+
+    def incr(self, key: str) -> int:
+        """Инкрементировать значение"""
+        return self.client.incr(key)
+
+    def expire(self, key: str, seconds: int) -> bool:
+        """Установить TTL для ключа"""
+        return self.client.expire(key, seconds)
+
+    def hset(self, key: str, field: str, value: str) -> int:
+        """Установить поле в хэше"""
+        return self.client.hset(key, field, value)
+
+    def hgetall(self, key: str) -> Dict[str, str]:
+        """Получить все поля хэша"""
+        return self.client.hgetall(key)
+
+    def keys(self, pattern: str) -> List[str]:
+        """Найти ключи по паттерну"""
+        return self.client.keys(pattern)
+
+    def delete(self, key: str) -> int:
+        """Удалить ключ"""
+        return self.client.delete(key)
+
+    def get(self, key: str) -> Optional[str]:
+        """Получить значение по ключу"""
+        return self.client.get(key)
+
+    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
+        """Установить значение с опциональным TTL"""
+        return self.client.set(key, value, ex=ex)
+
 
 # ============================================================================
 # SINGLETON INSTANCE
