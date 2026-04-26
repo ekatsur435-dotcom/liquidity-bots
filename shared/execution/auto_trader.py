@@ -313,7 +313,7 @@ class AutoTrader:
 
         # ── 3a. Sector limit (max 3 positions per sector) ─────────────────────
         sector = get_sector(symbol)
-        sector_limit = getattr(self.config, 'max_positions_per_sector', 3)
+        sector_limit = getattr(self.config, 'max_positions_per_sector', 5)
         sector_count = count_positions_by_sector(
             [{"symbol": p.symbol} for p in current_positions], sector
         )
