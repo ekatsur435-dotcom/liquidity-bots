@@ -47,8 +47,8 @@ class PositionTracker:
     BREAKEVEN_BUFFER = 0.001  # SL в безубыток = entry + 0.1%
 
     # ── Безубыток: переносим SL после этого тейка ────────────────────────────
-    # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
-    BREAKEVEN_AFTER_TP = 1   # ✅ FIX: BE после TP1 (было 2) — сокращает SL rate
+    # ✅ FIX v5.0: BE после TP2 = 40% позиции зафиксировано, меньше шумовых SL
+    BREAKEVEN_AFTER_TP = 2   # ✅ FIX: BE после TP2 (было 1) — даём позиции дышать
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -150,7 +150,6 @@ class PositionTracker:
                     
                     # Вычисляем P&L на момент закрытия
                     if entry and entry > 0:
-                        from shared.core.position_tracker import _pnl
                         pnl = _pnl(direction, float(entry), float(current_price))
                     else:
                         pnl = 0.0
