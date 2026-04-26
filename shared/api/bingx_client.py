@@ -146,9 +146,14 @@ class BingXClient:
                 result = await self._parse_response(r, endpoint)
                 # ✅ FIX: Retry при ошибке 109400 (timestamp invalid)
                 if result and result.get("code") == 109400 and _retry < 1:
-                    print(f"🔄 [BingX] Повторная попытка после синхронизации...")
+                    print(f"🔄 [BingX] Повторная попытка после синхронизации... (attempt {_retry+1}/2)")
                     self._time_offset = 0  # сбросим для пересинхронизации
-                    return await self._make_request(method, endpoint, params, body, signed, _retry=_retry+1)
+                    retry_result = await self._make_request(method, endpoint, params, body, signed, _retry=_retry+1)
+                    if retry_result and retry_result.get("code") == 0:
+                        print(f"✅ [BingX] Retry successful! {endpoint}")
+                    elif retry_result:
+                        print(f"❌ [BingX] Retry failed: code={retry_result.get('code')} | {retry_result.get('msg', 'unknown')}")
+                    return retry_result
                 return result
         except Exception as e:
             self.last_error = str(e)
