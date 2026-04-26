@@ -67,6 +67,7 @@ class BingXClient:
         109201: "Leverage exceeds max allowed",
         109400: "Timestamp invalid — разница времени между сервером и клиентом > 1000ms",
         109418: "Symbol offline/delisted — монета не торгуется на BingX",
+        109425: "Symbol does not exist — пара не существует на BingX",
     }
 
     def __init__(self, api_key=None, api_secret=None, demo=True):
