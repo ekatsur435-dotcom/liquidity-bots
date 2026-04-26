@@ -331,6 +331,44 @@ class UpstashRedisClient:
             return {}
 
 
+    # =========================================================================
+    # GENERIC REDIS METHODS (proxy to self.client)
+    # =========================================================================
+    
+    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
+        """Set key with optional TTL"""
+        try:
+            self.client.set(key, value, ex=ex)
+            return True
+        except Exception as e:
+            print(f"Redis set error: {e}")
+            return False
+    
+    def get(self, key: str) -> Optional[str]:
+        """Get value by key"""
+        try:
+            return self.client.get(key)
+        except Exception as e:
+            print(f"Redis get error: {e}")
+            return None
+    
+    def keys(self, pattern: str = "*") -> List[str]:
+        """Get keys matching pattern"""
+        try:
+            return self.client.keys(pattern)
+        except Exception as e:
+            print(f"Redis keys error: {e}")
+            return []
+    
+    def delete(self, *keys: str) -> int:
+        """Delete keys, returns number of deleted keys"""
+        try:
+            return self.client.delete(*keys)
+        except Exception as e:
+            print(f"Redis delete error: {e}")
+            return 0
+
+
 # ============================================================================
 # SINGLETON INSTANCE
 # ============================================================================
