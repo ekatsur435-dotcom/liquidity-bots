@@ -1,7 +1,7 @@
 """
-🤖 LONG BOT v4.0 — FastAPI Application
+🤖 LONG BOT v5.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v4.0 (критические):
+ИСПРАВЛЕНИЯ v5.0 (критические):
   ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
      Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
   ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
@@ -53,14 +53,14 @@ from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
-from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
-from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
+from core.liquidity_detector import detect_smart_money_entry  # ✅ v5.0
+from core.entry_confirmation import EntryConfirmation  # ✅ v5.0
+from core.tbs_detector import detect_tbs_entry  # ✅ v5.0 TBS
 from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal
-from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
+from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v5.0
 from bot.telegram import TelegramBot, TelegramCommandHandler
-from core.market_context import get_market_context, MarketContextFilter  # ✅ v4.0: Market Context Filter
+from core.market_context import get_market_context, MarketContextFilter  # ✅ v5.0: Market Context Filter
 
 
 # ============================================================================
@@ -70,7 +70,7 @@ from core.market_context import get_market_context, MarketContextFilter  # ✅ v
 class Config:
     BOT_TYPE      = "long"
     # ✅ FIX: MIN_LONG_SCORE default = 70
-    # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
+    # ✅ v5.0 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
     # ✅ FIX v5.0: Повышаем MIN_SCORE 60→65 (качество > количество)
     MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
@@ -127,7 +127,7 @@ class BotState:
         self.auto_trader      = None
         self.tracker: Optional[PositionTracker] = None
         self.coinglass        = None
-        self.market_ctx       = None  # ✅ v4.0 Market Context Filter
+        self.market_ctx       = None  # ✅ v5.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
 
@@ -288,7 +288,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.7...")
+    print("🚀 Starting LONG Bot v5.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -296,13 +296,13 @@ async def lifespan(app: FastAPI):
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
     
-    # ✅ v4.0 FIX: Инициализируем Market Context Filter
+    # ✅ v5.0 FIX: Инициализируем Market Context Filter
     state.market_ctx = MarketContextFilter(
         binance_client=state.binance,
         redis_client=state.redis
     )
     print("✅ MarketContextFilter initialized")
-    # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
+    # ✅ FIX v5.0: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("LONG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
@@ -419,7 +419,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🟢 <b>LONG Bot v2.9 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v5.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -448,7 +448,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v5.0")
 
 
 # ============================================================================
@@ -465,7 +465,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v5.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -614,7 +614,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
 
-        # ✅ v4.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
+        # ✅ v5.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
             ctx = await state.market_ctx.check(
                 direction="long",
@@ -644,7 +644,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ohlcv_primary = ohlcv_30m
         
         # =========================================================================
-        # ✅ v2.8: SYMBOL PROFILER — индивидуальный профиль монеты
+        # ✅ v5.0: SYMBOL PROFILER — индивидуальный профиль монеты
         # =========================================================================
         symbol_profile = None
         try:
@@ -657,12 +657,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
-                        print(f"📊 [v2.9] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
+                        print(f"📊 [v5.0] {symbol}: Switched to {primary_tf} (volatility: {symbol_profile.volatility_class})")
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: Profile error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: Profile error: {e}")
         
         # =========================================================================
-        # ✅ v2.9: ORDER BLOCK DETECTOR — институциональные зоны
+        # ✅ v5.0: ORDER BLOCK DETECTOR — институциональные зоны
         # =========================================================================
         ob_data = None
         ob_result = None
@@ -678,12 +678,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 ob = ob_result.bullish_ob
                 if ob.quality >= 60 and ob.freshness.value in ["fresh", "medium"]:
                     ob_data = format_ob_for_signal(ob)
-                    print(f"🎯 [v2.9] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
+                    print(f"🎯 [v5.0] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: OB detection error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: OB detection error: {e}")
 
         # =========================================================================
-        # ✅ v2.9: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
+        # ✅ v5.0: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
         # =========================================================================
         try:
             # 1. Проверяем Liquidity Sweep (сбор стопов лонгистов = шорт ликвидность)
@@ -706,12 +706,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     
                     entry = md.price
                     sl = entry * (1 - Config.SL_BUFFER / 100)
-                    # ✅ v4.0 FIX: Используем Config.TP_LEVELS вместо хардкода 4%/8%/12%
+                    # ✅ v5.0 FIX: Используем Config.TP_LEVELS вместо хардкода 4%/8%/12%
                     tp1 = entry * (1 + Config.TP_LEVELS[0] / 100)  # 1.5%
                     tp2 = entry * (1 + Config.TP_LEVELS[1] / 100)  # 3.0%
                     tp3 = entry * (1 + Config.TP_LEVELS[2] / 100)  # 5.0%
                     
-                    print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
+                    print(f"🎯 [v5.0] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
                     # ✅ FIX: Формат TP с весами для совместимости с position_tracker
                     tp_weights_sweep = Config.TP_WEIGHTS[:3]  # Берем первые 3 веса
@@ -737,9 +737,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
-                    print(f"⚠️ [v2.9] {symbol}: Sweep найден но не подтверждён")
+                    print(f"⚠️ [v5.0] {symbol}: Sweep найден но не подтверждён")
             
-            # 3. Нет sweep — проверяем обычные фильтры (v2.9: бонусы, не блок)
+            # 3. Нет sweep — проверяем обычные фильтры (v5.0: бонусы, не блок)
             tf_data_v26 = {}
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
             
@@ -749,22 +749,22 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 direction="long"
             )
             
-            # v2.9: Не блокируем, используем как бонус к скору
+            # v5.0: Не блокируем, используем как бонус к скору
             if confirmation["score"] >= 70:
                 base_score_bonus = (confirmation["score"] - 50) // 3  # +6..+16 бонус
-                print(f"✅ [v2.9] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
+                print(f"✅ [v5.0] {symbol}: Confirmation score={confirmation['score']}, бонус +{base_score_bonus}")
             elif confirmation["score"] >= 50:
                 base_score_bonus = (confirmation["score"] - 50) // 5  # +0..+4 бонус
-                print(f"⚠️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
+                print(f"⚠️ [v5.0] {symbol}: Confirmation score={confirmation['score']} (слабый сигнал)")
             else:
                 base_score_bonus = 0
-                print(f"ℹ️ [v2.9] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
+                print(f"ℹ️ [v5.0] {symbol}: Confirmation score={confirmation['score']} (нейтрально)")
             
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: Ошибка: {e}")
+            print(f"⚠️ [v5.0] {symbol}: Ошибка: {e}")
             base_score_bonus = 0
         
-        # ✅ v2.9: TBS (Test Before Strike) — ретест поддержки
+        # ✅ v5.0: TBS (Test Before Strike) — ретест поддержки
         tbs_found = False
         tbs_zone = None
         tbs_detected = False  # ✅ Для fallback паттерна
@@ -774,12 +774,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 tbs_found = True
                 tbs_detected = True  # ✅ FIX: Для fallback паттерна
                 tbs_zone = tbs['zone']
-                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест ${tbs_zone:.4f}")
+                print(f"🎯 [v5.0] {symbol}: TBS DETECTED! Ретест ${tbs_zone:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
+            print(f"⚠️ [v5.0] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — бонус/штраф к скору (v2.9: не блокер)
+        # ✅ RSI 30m — бонус/штраф к скору (v5.0: не блокер)
         rsi_30m_adj = 0
         try:
             if ohlcv_30m and len(ohlcv_30m) >= 14:
@@ -788,7 +788,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
                 ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # v2.7: Не блокируем, корректируем скор
+                # v5.0: Не блокируем, корректируем скор
                 if rsi_30m < 30:
                     rsi_30m_adj = +5  # Перепродан — хорошо для LONG
                 elif rsi_30m > 75:
@@ -798,7 +798,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception:
             pass
         
-        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
+        # ✅ Multi-TF RSI 4h — бонус/штраф (v5.0: не блокер)
         rsi_4h_adj = 0
         try:
             ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
@@ -808,7 +808,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
                 ag = sum(gains)/13; al = sum(losses)/13
                 rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # v2.7: Не блокируем, корректируем скор
+                # v5.0: Не блокируем, корректируем скор
                 if rsi_4h < 35:
                     rsi_4h_adj = +8   # Перепродан на 4h — отлично для LONG
                 elif rsi_4h > 70:
@@ -872,7 +872,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"OI Proxy error {symbol}: {e}")
 
         # ── Base score ────────────────────────────────────────────────────────
-        # ✅ v4.0: Рассчитываем изменение альта за 1ч для детектора независимости
+        # ✅ v5.0: Рассчитываем изменение альта за 1ч для детектора независимости
         symbol_change_1h = 0.0
         btc_change_1h_score = 0.0
         try:
@@ -901,8 +901,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
-            symbol_change_1h=symbol_change_1h,        # ✅ v4.0: для decoupling bonus
-            btc_change_1h=btc_change_1h_score,        # ✅ v4.0: для decoupling bonus
+            symbol_change_1h=symbol_change_1h,        # ✅ v5.0: для decoupling bonus
+            btc_change_1h=btc_change_1h_score,        # ✅ v5.0: для decoupling bonus
         )
         
         # ✅ FIX v3.1: SMART SCORING — многоуровневый оверрайд для LONG
@@ -1105,7 +1105,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
         price       = md.price
         
-        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
+        # ✅ v5.0: Пробуем использовать Liquidity Sweep Tail для точного стопа
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
@@ -1114,7 +1114,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_low > 0:
                 # Стоп за хвост свечи sweep + 0.3% buffer
                 sweep_sl = sweep_result.sweep_low * 0.997
-                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
+                print(f"🎯 [v5.0] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
         except Exception as e:
             pass  # Fallback на стандартный расчёт
         
@@ -1122,7 +1122,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         default_sl = price * (1 - Config.SL_BUFFER / 100)
         if sweep_sl and sweep_sl < price and sweep_sl > price * 0.97:  # Не более 3% от цены
             stop_loss = sweep_sl
-            reasons.append(f"🎯 v2.7 Sweep Tail SL: ${stop_loss:.6f}")
+            reasons.append(f"🎯 v5.0 Sweep Tail SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
             
@@ -1160,7 +1160,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     "active_sweeps": len(pool_scan.active_sweeps)
                 }
         except Exception as e:
-            print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
+            print(f"🌊 [v5.0] Pool scan error {symbol}: {e}")
 
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
@@ -1213,7 +1213,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "atr_14_pct":       round(getattr(md, "atr_14_pct", 0.5), 3),
             "pattern":          patterns[0].name if patterns else "",
             "smc_data":         smc_data,
-            # ✅ v2.8: Order Block данные для лимитных входов
+            # ✅ v5.0: Order Block данные для лимитных входов
             "ob_data":          ob_data if isinstance(ob_data, dict) else None,
             "entry_type":       ob_data.get("entry_type", "MARKET") if isinstance(ob_data, dict) else "MARKET",
             "limit_price":      ob_data.get("limit_price") if isinstance(ob_data, dict) else None,
@@ -1233,7 +1233,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
+    ✅ v5.0: Считаем ТОЛЬКО LONG позиции этого бота.
     Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
     """
     if state.auto_trader:
@@ -1257,7 +1257,7 @@ async def _count_real_positions() -> int:
 
 async def scan_market():
     """
-    ✅ v2.7 АРХИТЕКТУРА (NO BTC CORR):
+    ✅ v5.0 АРХИТЕКТУРА (NO BTC CORR):
     - Telegram сигналы: ВСЕГДА при score >= MIN_SCORE (даже при 20/20)
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - Единственный блокер: команда /pause
