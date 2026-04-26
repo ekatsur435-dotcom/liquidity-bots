@@ -179,6 +179,16 @@ class TelegramBot:
                     data = await resp.json()
                     msg_id = data.get("result", {}).get("message_id")
                     return msg_id  # ← возвращаем message_id!
+                # ✅ FIX: Обработка 429 rate limit
+                if resp.status == 429:
+                    try:
+                        data = await resp.json()
+                        retry_after = data.get("parameters", {}).get("retry_after", 5)
+                        print(f"⚠️ Telegram 429 — ждём {retry_after}s...")
+                        await asyncio.sleep(retry_after)
+                    except Exception:
+                        await asyncio.sleep(5)
+                    return None  # Пусть вызывающий решит retry
                 error_text = await resp.text()
                 print(f"Telegram API error: {resp.status} — {error_text[:120]}")
                 return None
