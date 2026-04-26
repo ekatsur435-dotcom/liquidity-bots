@@ -199,6 +199,23 @@ class AutoTrader:
         # Выполняем лимитный ордер с fallback
         print(f"🎯 [AutoTrader][{symbol}] Limit @{limit_price:.6f} TTL={config.ttl_seconds}s")
         
+        # ✅ v5.0: Уведомление о лимитке в Telegram (reply на исходный сигнал)
+        direction = signal.get("direction", "?")
+        direction_emoji = "🟢" if direction == "long" else "🔴"
+        limit_time_min = config.ttl_seconds // 60
+        tp_count = len(signal.get('take_profits', []))
+        tg_msg_id = signal.get('tg_msg_id')
+        await self._tg_reply(
+            f"{direction_emoji} <b>Лимит-ордер установлен</b> #{symbol}\n\n"
+            f"💰 Limit: ${limit_price:.6f}\n"
+            f"⏳ Ожидание: {limit_time_min} мин\n"
+            f"🛑 SL: ${signal['stop_loss']:.6f}\n"
+            f"🎯 TP1: ${signal['take_profits'][0]:.6f} (+{tp_count-1} TP после исполнения)\n"
+            f"✅ Quality: {ob_data.get('ob_quality', 0)} | Freshness: {ob_data.get('ob_freshness', 'medium')}\n\n"
+            f"⚠️ Если не исполнится → автоматически Market-ордер",
+            tg_msg_id
+        )
+        
         result = await self.limit_executor.execute(
             config=config,
             execute_market_callback=self._fallback_to_market
@@ -206,6 +223,15 @@ class AutoTrader:
         
         if result.status.value == "filled":
             print(f"✅ [AutoTrader][{symbol}] Limit filled @{result.filled_price:.6f}")
+            # ✅ v5.0: Уведомление об исполнении лимитки (reply)
+            slippage_pct = ((result.filled_price - limit_price) / limit_price * 100) if limit_price else 0
+            await self._tg_reply(
+                f"✅ <b>Лимит-ордер исполнен</b> #{symbol}\n\n"
+                f"💰 Фактическая цена: ${result.filled_price:.6f}\n"
+                f"📊 Slippage: {slippage_pct:+.3f}%\n"
+                f"🎯 Открываю позицию...",
+                tg_msg_id
+            )
             # Обновляем entry_price в сигнале на фактическую цену
             signal["entry_price"] = result.filled_price
             signal["entry_type"] = "LIMIT"  # Phase 3: отмечаем тип входа
@@ -222,6 +248,14 @@ class AutoTrader:
             )
         elif result.status.value == "fallback_to_market":
             print(f"⚡ [AutoTrader][{symbol}] Fallback to market @{result.filled_price:.6f}")
+            # ✅ v5.0: Уведомление о fallback на маркет (reply)
+            await self._tg_reply(
+                f"⚡ <b>Fallback на Market-ордер</b> #{symbol}\n\n"
+                f"❌ Лимит не исполнился за {limit_time_min} мин\n"
+                f"💰 Market цена: ${result.filled_price:.6f}\n"
+                f"🎯 Открываю позицию...",
+                tg_msg_id
+            )
             signal["entry_price"] = result.filled_price
             return await self.open_position(
                 symbol=symbol,
@@ -235,6 +269,13 @@ class AutoTrader:
             )
         else:
             print(f"❌ [AutoTrader][{symbol}] Limit order expired/cancelled")
+            # ✅ v5.0: Уведомление о неисполнении лимитки (reply)
+            await self._tg_reply(
+                f"❌ <b>Лимит-ордер отменён</b> #{symbol}\n\n"
+                f"⏳ Не исполнился за {limit_time_min} мин\n"
+                f"🚫 Позиция не открыта",
+                tg_msg_id
+            )
             return None
     
     async def _fallback_to_market(self, symbol: str, side: str, quantity: float) -> Dict:
@@ -499,11 +540,31 @@ class AutoTrader:
         print(f"✅ {pfx} Position opened [{mode}]! id={order.order_id}")
 
         d_emoji    = "🟢" if direction == "long" else "🔴"
+        
+        # ✅ v5.0: Показываем все TP уровни (TP1-TP6)
+        tp_lines = ""
+        if take_profits and len(take_profits) > 0:
+            tp_parts = []
+            for i, tp_raw in enumerate(take_profits[:6], 1):  # Макс 6 TP
+                if isinstance(tp_raw, (list, tuple)):
+                    tp_price = float(tp_raw[0])
+                    tp_pct = float(tp_raw[1]) if len(tp_raw) > 1 else 20
+                elif isinstance(tp_raw, dict):
+                    tp_price = float(tp_raw.get("price", 0))
+                    tp_pct = float(tp_raw.get("weight", 20))
+                else:
+                    tp_price = float(tp_raw)
+                    tp_pct = 20
+                if tp_price > 0:
+                    tp_parts.append(f"TP{i}: ${tp_price:.6f} ({tp_pct:.0f}%)")
+            if tp_parts:
+                tp_lines = "\n🎯 " + "\n🎯 ".join(tp_parts) + "\n"
+        
         notify_msg = (
             f"🤖 <b>AUTO-TRADE [{mode}]</b>\n\n"
             f"{d_emoji} <code>#{symbol}</code> {direction.upper()}\n"
             f"📍 Entry: <b>{entry_price}</b>\n"
-            f"🛑 SL: <b>{stop_loss}</b>\n"
+            f"🛑 SL: <b>{stop_loss}</b>{tp_lines}"
             f"📊 Size: {order.size} | {leverage}x | {actual_risk*100:.3f}% risk\n"
             f"🎯 Score: {signal_score:.0f}%\n"
             f"🆔 OrderID: {order.order_id}"
