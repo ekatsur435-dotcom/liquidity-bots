@@ -213,6 +213,87 @@ class CoinglassClient:
             return result.get("data", {})
         return None
     
+    async def get_liquidation_clusters(self, symbol: str, range: str = "1d") -> Optional[Dict]:
+        """
+        Получить ликвидационные кластеры (магниты для цены)
+        
+        Returns:
+            {
+                "clusters": [
+                    {"price": float, "long_liq": float, "short_liq": float, "total": float}
+                ],
+                "strongest_cluster": {"price": float, "side": str, "amount": float},
+                "recommendation": str  # 'avoid_long', 'avoid_short', 'safe'
+            }
+        """
+        if not self.api_key:
+            return None
+        
+        result = await self._make_request(
+            "/public/v2/liquidation_heatmap",
+            params={"symbol": symbol, "range": range}
+        )
+        
+        if not result or result.get("code") != "0":
+            return None
+        
+        data = result.get("data", [])
+        if not data:
+            return None
+        
+        try:
+            clusters = []
+            for item in data:
+                price = float(item.get("price", 0))
+                long_liq = float(item.get("longVol", 0))
+                short_liq = float(item.get("shortVol", 0))
+                total = long_liq + short_liq
+                
+                if total > 0:
+                    clusters.append({
+                        "price": price,
+                        "long_liq": long_liq,
+                        "short_liq": short_liq,
+                        "total": total
+                    })
+            
+            if not clusters:
+                return None
+            
+            # Сортируем по объему
+            clusters.sort(key=lambda x: x["total"], reverse=True)
+            
+            # Самый сильный кластер
+            strongest = clusters[0]
+            strongest_side = "long" if strongest["long_liq"] > strongest["short_liq"] else "short"
+            
+            # Рекомендация
+            total_long = sum(c["long_liq"] for c in clusters)
+            total_short = sum(c["short_liq"] for c in clusters)
+            
+            if total_long > total_short * 2:
+                recommendation = "avoid_long"  # Много лонгов ликвидируют
+            elif total_short > total_long * 2:
+                recommendation = "avoid_short"  # Много шортов ликвидируют
+            else:
+                recommendation = "safe"
+            
+            return {
+                "clusters": clusters[:10],  # Топ 10
+                "strongest_cluster": {
+                    "price": strongest["price"],
+                    "side": strongest_side,
+                    "amount": strongest["total"]
+                },
+                "recommendation": recommendation,
+                "total_long_liq": total_long,
+                "total_short_liq": total_short
+            }
+            
+        except Exception as e:
+            print(f"[Coinglass] Error parsing clusters: {e}")
+            return None
+    
     # =========================================================================
     # FUNDING RATE
     # =========================================================================
