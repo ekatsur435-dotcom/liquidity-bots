@@ -297,6 +297,8 @@ class AutoTrader:
 
         # ── 3. Duplicate ──────────────────────────────────────────────────────
         bingx_symbol = self._to_bingx_symbol(symbol)
+        # ✅ DEBUG: Проверяем форматирование символа
+        print(f"🔍 [AutoTrader] _to_bingx_symbol: {symbol} → {bingx_symbol}")
         existing = [p for p in current_positions
                     if p.symbol.replace("-", "") == symbol.replace("-", "")]
         if existing:
@@ -603,8 +605,15 @@ class AutoTrader:
     # =========================================================================
 
     def _to_bingx_symbol(self, symbol: str) -> str:
-        if "-" not in symbol and symbol.endswith("USDT"):
-            return symbol[:-4] + "-USDT"
+        # ✅ FIX: Всегда возвращаем формат с дефисом для USDT пар
+        symbol = str(symbol).strip().upper()
+        if "-" in symbol:
+            return symbol  # Уже с дефисом
+        if symbol.endswith("USDT"):
+            base = symbol[:-4]  # Убираем "USDT"
+            result = f"{base}-USDT"
+            print(f"   🔧 _to_bingx_symbol: {symbol} → {result}")
+            return result
         return symbol
 
     def _calc_leverage(self, score: float) -> int:
