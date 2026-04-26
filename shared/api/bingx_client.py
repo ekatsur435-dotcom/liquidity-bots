@@ -238,6 +238,13 @@ class BingXClient:
             self._symbols_loaded = True
             print(f"📋 [BingX] {len(self._symbol_info_cache)} contracts, "
                   f"{len(self._active_symbols)} active")
+            # ✅ DEBUG: Проверяем наличие проблемных символов
+            for test_sym in ['GALAUSDT', 'ERAUSDT', 'CHRUSDT', 'KAVAUSDT']:
+                if test_sym in self._symbol_info_cache:
+                    s_info = self._symbol_info_cache[test_sym]
+                    print(f"   🔍 {test_sym}: online={s_info.get('online')}")
+                else:
+                    print(f"   ❌ {test_sym}: NOT IN CACHE")
 
     async def get_symbol_info(self, symbol: str) -> Optional[Dict]:
         """Получает информацию о символе (precision, min_qty и т.д.)."""
@@ -257,7 +264,18 @@ class BingXClient:
             print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
             await self._load_contracts(force_refresh=True)
             info = self._symbol_info_cache.get(symbol)
-        return info.get("online", True) if info else False
+        # ✅ DEBUG: Логируем статус символа
+        if info:
+            print(f"🔍 [BingX] {symbol}: online={info.get('online')}, status={'found' if info else 'not found'}")
+            return info.get("online", True)
+        else:
+            print(f"🔍 [BingX] {symbol}: NOT IN CACHE (total cached: {len(self._symbol_info_cache)})")
+            # ✅ FIX: Если символ не найден в кэше API, но он USDT-пара — разрешаем торговлю
+            # API BingX может возвращать неполный список
+            if symbol.endswith('USDT'):
+                print(f"   ⚠️ [BingX] {symbol} не в кэше API, но это USDT пара — разрешаем торговлю")
+                return True
+            return False
 
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
