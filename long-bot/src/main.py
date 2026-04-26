@@ -907,9 +907,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # ✅ FIX: Fallback — если score >= MIN_SCORE + 5, пропускаем с пониженной уверенностью
-                if score_result.total_score >= Config.MIN_SCORE + 5:
-                    print(f"⚠️ [SMART-SCORE-LONG] {symbol}: Нет TBS/OB, но score={score_result.total_score} >= {Config.MIN_SCORE + 5} — пропускаем с LOW confidence")
+                # ✅ FIX: Fallback — если score >= 35 (было MIN_SCORE + 5 = 65, слишком жестко)
+                # Пропускаем с пониженной уверенностью для увеличения количества сделок
+                if score_result.total_score >= 35:
+                    print(f"⚠️ [SMART-SCORE-LONG] {symbol}: Нет TBS/OB, но score={score_result.total_score} >= 35 — пропускаем с LOW confidence")
                     from core.scorer import ScoreResult, Confidence
                     score_result = ScoreResult(
                         total_score=score_result.total_score,
@@ -922,7 +923,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         reasons=score_result.reasons + ["⚠️ Нет TBS/OB — пониженная уверенность"],
                     )
                 else:
-                    print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70, score={score_result.total_score})")
+                    print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB, score={score_result.total_score})")
                     return None
         
         reasons     = list(score_result.reasons)
