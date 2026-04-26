@@ -367,6 +367,28 @@ class UpstashRedisClient:
         except Exception as e:
             print(f"Redis delete error: {e}")
             return 0
+    
+    def execute(self, command: list) -> any:
+        """Execute raw Redis command (for dashboard compatibility)"""
+        try:
+            cmd = command[0].upper()
+            args = command[1:]
+            if cmd == "LRANGE":
+                return self.client.lrange(args[0], int(args[1]), int(args[2]))
+            elif cmd == "KEYS":
+                return self.client.keys(args[0])
+            elif cmd == "GET":
+                return self.client.get(args[0])
+            elif cmd == "SCAN":
+                return self.client.scan(int(args[0]), match=args[1], count=int(args[2]))
+            elif cmd == "EXISTS":
+                return self.client.exists(args[0])
+            else:
+                print(f"Unknown command: {cmd}")
+                return None
+        except Exception as e:
+            print(f"Redis execute error: {e}")
+            return None
 
 
 # ============================================================================
