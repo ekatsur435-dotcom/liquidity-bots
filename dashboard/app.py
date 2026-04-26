@@ -138,6 +138,13 @@ def get_trading_stats(days=7):
     stats["win_rate"] = round(stats["win_count"] / total * 100, 1) if total > 0 else 0
     stats["total_pnl"] = round(stats["total_pnl"], 2)
     
+    # ✅ FIX v5.0: Проверяем аномалии (слишком большой отрицательный P&L)
+    if stats["total_pnl"] < -50 and stats["total_trades"] > 0:
+        avg_pnl = stats["total_pnl"] / stats["total_trades"]
+        if avg_pnl < -5:  # Средний убыток > 5% на сделку — аномалия!
+            print(f"⚠️ [Dashboard] P&L anomaly detected: {stats['total_pnl']}% avg={avg_pnl:.2f}%")
+            stats["_anomaly_warning"] = f"Possible data error: avg loss {avg_pnl:.1f}% per trade"
+    
     # Сохраняем в кэш
     _stats_cache["data"] = stats
     _stats_cache["timestamp"] = datetime.utcnow().timestamp()
