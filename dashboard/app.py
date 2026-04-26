@@ -208,6 +208,51 @@ def api_saved_trades():
         return jsonify([])
 
 
+@app.route("/api/admin/flush", methods=["POST"])
+def admin_flush():
+    """🔥 Очистить все данные из Redis (сброс статистики)"""
+    try:
+        # Получаем Redis клиентов
+        from upstash.redis_client import get_redis_client
+        
+        cleared = {"long": 0, "short": 0, "errors": []}
+        
+        for bot_type in ["long", "short"]:
+            try:
+                redis = get_redis_client(bot_type)
+                # Очищаем позиции
+                for key_pattern in [
+                    f"{bot_type}:positions:*",
+                    f"{bot_type}:history:*",
+                    f"{bot_type}:all_trades",
+                    f"{bot_type}:stats:daily:*",
+                    f"{bot_type}:micro_step:*",
+                    f"{bot_type}:sl_cooldown:*",
+                ]:
+                    try:
+                        keys = redis.keys(key_pattern)
+                        if keys:
+                            for key in keys:
+                                redis.delete(key)
+                                cleared[bot_type] += 1
+                    except Exception as e:
+                        cleared["errors"].append(f"{key_pattern}: {e}")
+            except Exception as e:
+                cleared["errors"].append(f"{bot_type}: {e}")
+        
+        # Сбрасываем кэш
+        global _stats_cache
+        _stats_cache = {"data": None, "timestamp": 0}
+        
+        return jsonify({
+            "success": True,
+            "message": f"Очищено {cleared['long'] + cleared['short']} ключей",
+            "cleared": cleared
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/slippage")
 def api_slippage():
     """API: Статистика проскальзывания"""
