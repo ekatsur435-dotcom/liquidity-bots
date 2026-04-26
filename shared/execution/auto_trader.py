@@ -48,19 +48,20 @@ def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
 
 @dataclass
 class TradeConfig:
-    enabled:             bool  = True
-    demo_mode:           bool  = True
-    max_positions:       int   = 20
-    risk_per_trade:      float = 0.0005     # 0.05%
-    max_daily_risk:      float = 5.0        # 5% (в %, не дробях!)
-    default_leverage:    int   = 20
-    min_leverage:        int   = 5
-    max_leverage:        int   = 50
-    min_score_for_trade: int   = 65
-    max_position_usdt:   float = 5000.0    # глобальный потолок
-    notional_safety_pct: float = 0.92      # 92% от лимита (запас 8%)
-    open_cooldown_sec:   float = 30.0      # антидубль
-    bot_type:            str   = "short"   # "long" или "short" для фильтрации позиций
+    enabled:                  bool  = True
+    demo_mode:                bool  = True
+    max_positions:            int   = 20
+    max_positions_per_sector: int   = 5       # ✅ v5.0: лимит сектора
+    risk_per_trade:           float = 0.0005  # 0.05%
+    max_daily_risk:           float = 5.0      # 5% (в %, не дробях!)
+    default_leverage:         int   = 20
+    min_leverage:             int   = 5
+    max_leverage:             int   = 50
+    min_score_for_trade:      int   = 65
+    max_position_usdt:        float = 5000.0  # глобальный потолок
+    notional_safety_pct:      float = 0.92    # 92% от лимита (запас 8%)
+    open_cooldown_sec:        float = 30.0   # антидубль
+    bot_type:                 str   = "short" # "long" или "short"
 
 
 class AutoTrader:
@@ -310,9 +311,9 @@ class AutoTrader:
             )
             return None
 
-        # ── 3a. Sector limit (max 3 positions per sector) ─────────────────────
+        # ── 3a. Sector limit (max 5 positions per sector) ─────────────────────
         sector = get_sector(symbol)
-        sector_limit = getattr(self.config, 'max_positions_per_sector', 5)
+        sector_limit = self.config.max_positions_per_sector
         sector_count = count_positions_by_sector(
             [{"symbol": p.symbol} for p in current_positions], sector
         )
