@@ -897,7 +897,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
                 from core.scorer import ScoreResult, Confidence
                 score_result = ScoreResult(
-                    total_score=max(70, score_result.total_score + boost),
+                    total_score=max(Config.MIN_SCORE, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
                     direction=score_result.direction,
                     is_valid=True,
@@ -907,8 +907,23 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70)")
-                return None
+                # ✅ FIX: Fallback — если score >= MIN_SCORE + 5, пропускаем с пониженной уверенностью
+                if score_result.total_score >= Config.MIN_SCORE + 5:
+                    print(f"⚠️ [SMART-SCORE-LONG] {symbol}: Нет TBS/OB, но score={score_result.total_score} >= {Config.MIN_SCORE + 5} — пропускаем с LOW confidence")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score,
+                        max_possible=score_result.max_possible,
+                        direction=score_result.direction,
+                        is_valid=True,
+                        confidence=Confidence.LOW,
+                        grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["⚠️ Нет TBS/OB — пониженная уверенность"],
+                    )
+                else:
+                    print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70, score={score_result.total_score})")
+                    return None
         
         reasons     = list(score_result.reasons)
         final_score = min(100, score_result.total_score + base_score_bonus)  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
