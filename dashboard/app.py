@@ -120,7 +120,7 @@ def get_trading_stats(days=7):
             # Active positions - считаем из positions:* ключей
             try:
                 # Используем KEYS для Upstash (SCAN может работать нестабильно)
-                result = redis.execute(["KEYS", f"{prefix}:positions:*"])
+                result = redis.keys(f"{prefix}:positions:*")
                 if result and isinstance(result, list):
                     pos_count = len(result)
                     stats["active_positions"] += pos_count
@@ -154,7 +154,7 @@ def get_micro_trail_stats():
             # Подсчитываем trailing из state (STRING)
             for pfx in ["short", "long"]:
                 try:
-                    state_data = redis.execute(["GET", f"{pfx}:state"])
+                    state_data = redis.get(, f"{pfx}:state"])
                     if state_data:
                         bot_state = json.loads(state_data)
                         total_active += len(bot_state.get("active_positions", []))
@@ -326,40 +326,49 @@ def api_active_positions():
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
-            redis = redis_getter()
+            r = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем активные позиции из positions:*
+            # ✅ FIX: Используем .keys() и .get() (proxy методы UpstashRedisClient)
             try:
-                # Используем KEYS для Upstash
-                result = redis.execute(["KEYS", f"{prefix}:positions:*"])
-                position_keys = result if result and isinstance(result, list) else []
+                position_keys = r.keys(f"{prefix}:positions:*") or []
+                print(f"[Dashboard] {bot_name} positions: {len(position_keys)} keys found")
                 
-                for key in position_keys[:10]:  # Максимум 10
-                    pos_data = redis.execute(["GET", key])
-                    if pos_data:
-                        try:
-                            pos = json.loads(pos_data)
-                            symbol = key.split(":")[-1]
-                            
-                            # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
-                            symbol_normalized = symbol.replace('-', '').upper()
-                            if symbol_normalized in seen_symbols:
-                                continue  # Пропускаем дубликат
-                            seen_symbols.add(symbol_normalized)
-
-                            positions.append({
-                                "symbol": symbol_normalized,  # Возвращаем нормализованный символ
-                                "direction": prefix,
-                                "entry": pos.get("entry_price", 0),
-                                "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
-                                "tp": pos.get("take_profit", pos.get("tp", 0)),
-                                "sl": pos.get("stop_loss", pos.get("sl", 0)),
-                                "duration_min": pos.get("duration_min", 0),
-                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
-                            })
-                        except:
+                for key in position_keys[:20]:  # Максимум 20
+                    try:
+                        pos_data = r.get(key)
+                        if not pos_data:
                             continue
+                        pos = json.loads(pos_data)
+                        symbol = key.split(":")[-1]
+                        symbol_normalized = symbol.replace('-', '').upper()
+                        if symbol_normalized in seen_symbols:
+                            continue
+                        seen_symbols.add(symbol_normalized)
+                        
+                        # ✅ Только активные позиции (не закрытые)
+                        status = pos.get("status", "active")
+                        if status in ("closed", "zombie", "cancelled"):
+                            continue
+                        
+                        entry = float(pos.get("entry_price", pos.get("entry", 0)) or 0)
+                        sl = float(pos.get("stop_loss", pos.get("sl", pos.get("current_sl", 0))) or 0)
+                        tp = float(pos.get("take_profit", pos.get("tp", 0)) or 0)
+                        pnl = float(pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0)
+                        
+                        positions.append({
+                            "symbol": symbol_normalized,
+                            "direction": prefix,
+                            "entry": entry,
+                            "current_pnl": pnl,
+                            "tp": tp,
+                            "sl": sl,
+                            "duration_min": pos.get("duration_min", 0),
+                            "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
+                            "score": pos.get("score", 0),
+                        })
+                    except Exception as e2:
+                        continue
             except Exception as e:
                 print(f"Error scanning positions for {bot_name}: {e}")
         except Exception as e:
