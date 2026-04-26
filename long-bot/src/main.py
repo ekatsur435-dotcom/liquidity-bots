@@ -1,7 +1,7 @@
 """
-🤖 LONG BOT v4.0 — FastAPI Application
+🤖 LONG BOT v5.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v4.0 (критические):
+ИСПРАВЛЕНИЯ v5.0 (критические):
   ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
      Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
   ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
@@ -289,7 +289,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.7...")
+    print("🚀 Starting LONG Bot v5.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -313,26 +313,6 @@ async def lifespan(app: FastAPI):
     redis_ok    = state.redis.health_check()
     telegram_ok = await state.telegram.send_test_message()
     print(f"{'✅' if redis_ok else '❌'} Redis | {'✅' if telegram_ok else '❌'} Telegram")
-
-    state.cmd_handler = TelegramCommandHandler(
-        bot=state.telegram, redis_client=state.redis,
-        bot_state=state, bot_type=Config.BOT_TYPE,
-        scan_callback=scan_market, config=Config,
-    )
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if render_url:
-        wh_url = f"{render_url}/webhook"
-        ok = await state.telegram.setup_webhook(wh_url)
-        print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
-        if not ok:
-            # Retry once
-            await asyncio.sleep(3)
-            ok2 = await state.telegram.setup_webhook(wh_url)
-            print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
-    else:
-        print("⚠️ RENDER_EXTERNAL_URL not set — Telegram commands won't work!")
-        print("   Set RENDER_EXTERNAL_URL=https://YOUR-SERVICE.onrender.com in Render env vars")
 
     # ── BingX AutoTrader ───────────────────────────────────────────────────────
     print(f"🔧 AUTO_TRADING={Config.AUTO_TRADING} | DEMO={Config.BINGX_DEMO}")
@@ -377,11 +357,28 @@ async def lifespan(app: FastAPI):
                 else:
                     print(f"❌ BingX connection failed — AutoTrader disabled (last_error: {bingx.last_error})")
         except Exception as e:
-            print(f"❌ AutoTrader init exception: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ AutoTrader init error: {e}")
+
+    # ✅ FIX: Инициализируем cmd_handler ПОСЛЕ auto_trader, чтобы команды видели auto_trader
+    state.cmd_handler = TelegramCommandHandler(
+        bot=state.telegram, redis_client=state.redis,
+        bot_state=state, bot_type=Config.BOT_TYPE,
+        scan_callback=scan_market, config=Config,
+    )
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if render_url:
+        wh_url = f"{render_url}/webhook"
+        ok = await state.telegram.setup_webhook(wh_url)
+        print(f"{'✅' if ok else '⚠️'} Webhook: {wh_url}")
+        if not ok:
+            # Retry once
+            await asyncio.sleep(3)
+            ok2 = await state.telegram.setup_webhook(wh_url)
+            print(f"{'✅' if ok2 else '❌'} Webhook retry: {ok2}")
     else:
-        print("⚠️ AUTO_TRADING is disabled — AutoTrader not initialized")
+        print("⚠️ RENDER_EXTERNAL_URL not set — Telegram commands won't work!")
+        print("   Set RENDER_EXTERNAL_URL=https://YOUR-SERVICE.onrender.com in Render env vars")
 
     # CoinGlass
     if Config.USE_COINGLASS:
@@ -421,7 +418,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🟢 <b>LONG Bot v2.9 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v5.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -450,7 +447,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v5.0")
 
 
 # ============================================================================
@@ -460,19 +457,19 @@ app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
 # ✅ HEAD + GET для UptimeRobot (405 → 200)
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return JSONResponse({"status": "ok", "bot": "long", "version": "2.9",
+    return JSONResponse({"status": "ok", "bot": "long", "version": "5.0",
                          "watchlist": len(state.watchlist),
                          "active": state.active_signals})
 
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v5.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
     return {
-        "bot_type": Config.BOT_TYPE, "version": "2.9",
+        "bot_type": Config.BOT_TYPE, "version": "5.0",
         "is_running": state.is_running, "is_paused": state.is_paused,
         "watchlist_count": len(state.watchlist), "active_signals": state.active_signals,
         "last_scan": state.last_scan.isoformat() if state.last_scan else None,
