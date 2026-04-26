@@ -804,9 +804,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             base_score_bonus = 0  # При ошибке продолжаем без бонуса
         
         # ✅ v2.9: TBS (Test Before Strike) — ретест Order Block
+        tbs_detected = False  # ✅ Для fallback паттерна
         try:
             tbs = detect_tbs_entry(ohlcv_primary, direction="short")
             if tbs and tbs["found"]:
+                tbs_detected = True  # ✅ FIX: Сохраняем для fallback
                 print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
                 base_score_bonus += 10  # +10 за TBS
         except Exception as e:
@@ -1112,6 +1114,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ── Динамические TP для SHORT ─────────────────────────────────────────
         best_pattern = patterns[0].name if patterns else None
+        # ✅ FIX: Fallback на TBS если именованный паттерн не детектирован
+        if not best_pattern and tbs_detected:
+            best_pattern = "TBS_STRUCTURE"
         tp_levels, tp_weights = get_short_tp_config(
             funding_rate=md.funding_rate,
             pattern_name=best_pattern,
