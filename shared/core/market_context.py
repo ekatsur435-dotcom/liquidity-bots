@@ -51,8 +51,9 @@ class MarketContextFilter:
     # DAILY_LOSS_STOP_PCT=-5       → дневной стоп (%)
     BTC_FILTER_ENABLED        = os.getenv("BTC_CORRELATION_FILTER", "false").lower() == "true"
     BTC_CRASH_THRESHOLD_LONG  = float(os.getenv("BTC_DROP_THRESHOLD", "-3.0"))   # По умолч. -3%
-    BTC_CRASH_THRESHOLD_SHORT =  2.0   # BTC рост 1ч → не блокируем SHORT
+    BTC_CRASH_THRESHOLD_SHORT = float(os.getenv("BTC_RISE_THRESHOLD", "3.0"))    # ✅ v5.0: порог для SHORT (по умолч. +3%)
     BTC_PUMP_THRESHOLD_LONG   =  5.0   # BTC рост 1ч > 5% → осторожно лонг
+    BTC_DUMP_THRESHOLD_SHORT  = -5.0   # ✅ v5.0: BTC падение > 5% → осторожно с шортами
     DAILY_LOSS_STOP_PCT       = float(os.getenv("DAILY_LOSS_STOP_PCT", "-5.0"))
     ASIAN_SESSION_BLOCK       = os.getenv("BLOCK_ASIAN_SESSION", "true").lower() == "true" 
 
@@ -325,6 +326,29 @@ class MarketContextFilter:
             # Фильтр выключен — каждая монета торгуется по своей структуре
             if btc_1h <= -4.0:
                 warnings.append(f"📊 BTC {btc_1h:.1f}%/1ч — проверь структуру {symbol} индивидуально")
+
+        # ✅ v5.0: BTC фильтр для SHORT (симметричный LONG)
+        if direction == "short" and self.BTC_FILTER_ENABLED:
+            if btc_1h >= self.BTC_CRASH_THRESHOLD_SHORT:
+                # Разрешаем если альт явно декоррелирован (растёт независимо от BTC)
+                if allow_decoupled_alts and decoupled:
+                    warnings.append(
+                        f"💡 BTC растёт {btc_1h:.1f}%/1ч но {symbol} падает — торгуем SHORT!"
+                    )
+                else:
+                    return MarketContextResult(
+                        allowed=False,
+                        block_reason=f"🚀 BTC растёт {btc_1h:.1f}%/1ч (порог +{self.BTC_CRASH_THRESHOLD_SHORT}%) — блок SHORT",
+                        regime=MarketRegime.BULL_TREND,
+                        btc_change_1h=btc_1h,
+                        btc_change_4h=btc_4h,
+                        is_asian_session=asian,
+                        daily_pnl_pct=daily_pnl,
+                        altcoin_decoupled=decoupled,
+                        warnings=warnings
+                    )
+            if btc_1h <= self.BTC_DUMP_THRESHOLD_SHORT:
+                warnings.append(f"⚠️ BTC падает {btc_1h:.1f}%/1ч — осторожно с шортами (может быть отскок)")
 
         # 6. Определяем режим рынка
         regime = await self.detect_market_regime()
