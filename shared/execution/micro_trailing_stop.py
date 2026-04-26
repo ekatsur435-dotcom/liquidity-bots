@@ -14,6 +14,7 @@ Phase 3: Добавлена Redis persistence для сохранения сос
 - TRAIL_TP3_LOCK: 1.5 (1.5% в плюс после TP3)
 """
 
+import json
 import os
 import sys
 from dataclasses import dataclass
