@@ -130,6 +130,9 @@ class BingXClient:
             if params: all_p.update(params)
             if body:   all_p.update(body)
             if signed:
+                # ✅ FIX: Синхронизируем время если offset не установлен
+                if getattr(self, "_time_offset", 0) == 0:
+                    await self._sync_server_time()
                 all_p["timestamp"] = self._get_timestamp()
                 all_p["recvWindow"] = 10000   # ✅ FIX: 10s окно (было не задано)
                 raw_qs = self._build_raw_qs(all_p)
@@ -159,9 +162,11 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
-                    # ✅ AUTO-SYNC: при ошибке timestamp сбрасываем offset
+                    # ✅ AUTO-SYNC: при ошибке timestamp пересинхронизируем время
                     if code == 109400:
-                        self._time_offset = 0   # сбросим, пересинхронизируем при следующем вызове
+                        print("🔄 [BingX] Синхронизируем время с сервером...")
+                        await self._sync_server_time()
+                        print(f"🔄 [BingX] Новый offset: {self._time_offset}ms")
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
                 return data
@@ -463,6 +468,8 @@ class BingXClient:
     async def test_connection(self) -> bool:
         """Проверяет соединение с BingX API."""
         try:
+            # ✅ FIX: Синхронизируем время перед первым запросом
+            await self._sync_server_time()
             balance = await self.get_account_balance()
             if balance:
                 print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
