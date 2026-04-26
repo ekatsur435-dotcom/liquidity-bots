@@ -605,6 +605,16 @@ class PositionTracker:
             sl_type_label = "SL"
         signal["tp_level"]    = sl_type_label
         self._save(symbol, signal)
+        
+        # ✅ v5.0: Устанавливаем cooldown после SL (2-4 часа = 7200-14400 сек)
+        try:
+            import random
+            cooldown_ttl = random.randint(7200, 14400)  # 2-4 часа
+            cooldown_key = f"sl_cooldown:{symbol}"
+            self.redis.set(cooldown_key, "1", ex=cooldown_ttl)
+            print(f"⏸️ [COOLDOWN] {symbol}: SL cooldown set for {cooldown_ttl//3600}h")
+        except Exception as e:
+            print(f"⚠️ [COOLDOWN] {symbol}: Failed to set cooldown: {e}")
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
         sl_type  = ("трейлинг-стоп" if was_trailing else
