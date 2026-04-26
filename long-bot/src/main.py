@@ -71,8 +71,8 @@ class Config:
     BOT_TYPE      = "long"
     # ✅ FIX: MIN_LONG_SCORE default = 70
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
-    # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
+    # ✅ FIX v5.0: Повышаем MIN_SCORE 60→65 (качество > количество)
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -80,12 +80,12 @@ class Config:
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
-    # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.0"))  # ✅ FIX: 1.0% — чётче SL → меньше потери
+    # ✅ v5.0: SL 1.5% для R:R≥1.5:1 (было 1.0% — слишком тесно)
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))  # ✅ FIX: 1.5% R:R=1.67:1 при TP1=2.5%
 
-    # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
-    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # ✅ FIX: TP1=1.5% → R:R=1.25:1, чаще берём TP1!
-    TP_WEIGHTS = [30,  25,  20,  15,  7,    3]   # TP1=30% — основной сбор прибыли
+    # TP levels из Config (v5.0: TP1=2.5% для R:R ≥ 1.5:1 при SL=1.5%)
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX: TP1=2.5% → R:R=1.67:1
+    TP_WEIGHTS = [30,  25,  20,  15,   7,    3]   # TP1=30% — основной сбор прибыли
 
     # Trailing — LONG активирует при +2.5% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
@@ -295,6 +295,13 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
+    
+    # ✅ v4.0 FIX: Инициализируем Market Context Filter
+    state.market_ctx = MarketContextFilter(
+        binance_client=state.binance,
+        redis_client=state.redis
+    )
+    print("✅ MarketContextFilter initialized")
     # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
@@ -335,7 +342,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET")
+            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")  # ✅ FIX: fallback
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
@@ -687,6 +694,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     
                     print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
+                    # ✅ FIX: Формат TP с весами для совместимости с position_tracker
+                    tp_weights_sweep = Config.TP_WEIGHTS[:3]  # Берем первые 3 веса
+                    take_profits_formatted = [
+                        (tp1, tp_weights_sweep[0]),
+                        (tp2, tp_weights_sweep[1]),
+                        (tp3, tp_weights_sweep[2])
+                    ]
+                    
                     return {
                         "symbol": symbol,
                         "direction": "long",
@@ -694,7 +709,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "price": entry,  # Alias для совместимости с telegram
                         "entry_price": entry,
                         "stop_loss": sl,
-                        "take_profits": [tp1, tp2, tp3],
+                        "take_profits": take_profits_formatted,  # ✅ FIX: формат [(price, weight), ...]
                         "reasons": reasons[:5],
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
@@ -802,10 +817,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
             # ✅ FIX L2: проверяем что OI данные свежие (не старше 30 мин)
             # Если Bybit геоблокирован и fallback Binance — OI может быть stale
-            if oi_history:
-                latest_ts = oi_history[-1].get("timestamp", 0) if isinstance(oi_history[-1], dict) else 0
+            # ✅ FIX v5.0: Проверяем только если элементы — dict (объекты не проверяем)
+            if oi_history and isinstance(oi_history[0], dict):
+                latest_ts = oi_history[-1].get("timestamp", 0)
                 if latest_ts and (time.time() * 1000 - latest_ts) > 1_800_000:  # >30 мин
                     oi_history = []  # данные устарели — не используем
+                    print(f"⚠️ OI data stale for {symbol}, skipping OI proxy")
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
                 vols = [c.quote_volume for c in ohlcv_30m[-5:]]
@@ -1037,7 +1054,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🌊 [ELLIOTT-ERROR-LONG] {symbol}: {e}")
             elliott_data = {"error": str(e)}
             # 🔥 FIX: При ошибке Elliott Wave — снижаем минимум для TBS+OB сигналов
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = 55  # Очень низкий порог при ошибке
                 print(f"💡 [ELLIOTT-FALLBACK-LONG] {symbol}: Ошибка волн, но TBS+OB_Q{ob_quality} — снижаем мин до 55")
         
@@ -1045,7 +1062,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if 'elliott_min_score' not in locals():
             elliott_min_score = Config.MIN_SCORE
             # Если нет данных Elliott но есть сильный TBS+OB — снижаем порог
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = max(55, Config.MIN_SCORE - 10)
                 print(f"💡 [LONG-FALLBACK] {symbol}: Нет данных Elliott, TBS+OB_Q{ob_quality} — мин={elliott_min_score}")
         
