@@ -87,10 +87,14 @@ def get_trading_stats(days=7):
                     # Берем только последние 50 сделок
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
                     
+                    # ✅ FIX v5.0: Используем pnl_pct как fallback к pnl
+                    def get_pnl(t):
+                        return t.get('pnl', t.get('pnl_pct', 0))
+                    
                     total = len(trades)
-                    wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
-                    losses = sum(1 for t in trades if t.get('pnl', 0) <= 0)
-                    pnl = sum(t.get('pnl', 0) for t in trades)
+                    wins = sum(1 for t in trades if get_pnl(t) > 0)
+                    losses = sum(1 for t in trades if get_pnl(t) <= 0)
+                    pnl = sum(get_pnl(t) for t in trades)
                     
                     stats["total_trades"] += total
                     stats["win_count"] += wins
@@ -522,7 +526,8 @@ def api_summary():
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
-                            pnl = t.get("pnl", 0)
+                            # ✅ FIX v5.0: pnl_pct как fallback
+                            pnl = t.get("pnl", t.get("pnl_pct", 0))
                             is_win = pnl > 0
                             
                             # Week
