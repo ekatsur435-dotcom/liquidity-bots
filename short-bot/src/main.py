@@ -79,13 +79,12 @@ class Config:
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.0"))  # ✅ FIX: 1.0% — чётче SL
+    # ✅ v5.0: SL 1.5% для R:R≥1.5:1 (было 1.0% — слишком тесно)
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX: 1.5% R:R=1.67:1 при TP1=2.5%
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
-    # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
+    # ✅ v5.0: TP1=2.5% для R:R ≥ 1.5:1 при SL=1.5%
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX: TP1=2.5% → R:R=1.67:1
     TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
     # Trailing — SHORT активирует при +3% (после TP1)
@@ -304,6 +303,14 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
+    
+    # ✅ v4.0 FIX: Инициализируем Market Context Filter
+    from core.market_context import MarketContextFilter
+    state.market_ctx = MarketContextFilter(
+        binance_client=state.binance,
+        redis_client=state.redis
+    )
+    print("✅ MarketContextFilter initialized")
     state.telegram = TelegramBot(
         bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID"),
@@ -342,7 +349,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET")
+            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")  # ✅ FIX: fallback
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
