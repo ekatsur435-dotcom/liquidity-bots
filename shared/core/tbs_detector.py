@@ -127,10 +127,10 @@ class TBSDetector:
         if self.n < 15:
             return TBSResult(False, TBSPhase.NONE, "", 0, 0, None, 0, 0, [])
         
-        # Берём последние 10 свечей для анализа (индексы относительно конца)
-        # Находим ключевые уровни - используем _get_price для совместимости с CandleData
-        recent_highs = [self._h(i) for i in range(-10, -3)]  # Без последних 3
-        recent_lows = [self._l(i) for i in range(-10, -3)]
+        # ✅ FIX: Расширен lookback с 10 → 20 свечей для надёжных уровней
+        lookback_start = max(-min(20, self.n - 5), -self.n)
+        recent_highs = [self._h(i) for i in range(lookback_start, -3)]
+        recent_lows = [self._l(i) for i in range(lookback_start, -3)]
         
         if direction == "short":
             resistance = max(recent_highs)
@@ -151,7 +151,7 @@ class TBSDetector:
             pullback_low = min(self._l(i) for i in range(test_candle+1, -2))
             pullback_pct = (resistance - pullback_low) / resistance
             
-            if pullback_pct < 0.005:  # Минимум 0.5% откат
+            if pullback_pct < 0.003:  # ✅ FIX: Минимум 0.3% откат (было 0.5%)
                 return TBSResult(False, TBSPhase.TEST, "resistance", resistance, 
                                self._h(test_candle), None, 0, 40,
                                [f"Тест был, но откат слишком мал ({pullback_pct*100:.1f}%)"])

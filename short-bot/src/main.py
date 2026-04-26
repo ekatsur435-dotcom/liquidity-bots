@@ -1,33 +1,16 @@
 """
-🔴 SHORT BOT v2.9 — FastAPI Application
+🤖 SHORT BOT v4.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v2.9:
-  🎢 Micro-Step Trailing Stop — плавное движение SL микро-шагами
-     TP1: +0.3%, TP2: +0.8%, TP3: +1.5% — не выбивает сделки!
-  
-ИСПРАВЛЕНИЯ v2.8:
-  ✅ Symbol Profiler — индивидуальный анализ каждой монеты
-  ✅ Order Block Detector — институциональные зоны входа
-  ✅ Adaptive Timeframes — авто-выбор ТФ под волатильность
-  ✅ Limit Entry System — лимитные ордера с TTL + fallback
-  
-ИСПРАВЛЕНИЯ v2.7:
-  ✅ Liquidity Sweep Detection (ловля сборов стопов)
-  ✅ TBS — Test Before Strike (ретест Order Block)
-  ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
-  ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 2.7:1)
-  ✅ Уменьшен SL: 1.5% (было 2.0%)
-  ✅ MIN_VOLUME_USDT = 500000
-  
-ИСПРАВЛЕНИЯ v2.3:
-  ✅ MAX_WATCHLIST default = 300 (было 200)
-  ✅ MIN_SHORT_SCORE default = 60 (было 65)
-  ✅ SCAN_INTERVAL default = 200 сек
-  ✅ HEAD /health → 200 OK (UptimeRobot fix)
-  ✅ Watchlist: объединяет Bybit + Binance (нет дублей, до 300 монет)
-  ✅ OI Proxy метрики в scan_symbol
-  ✅ volume_spike_ratio + atr_14_pct → scorer
-  ✅ pattern_detector (один файл, не v2)
+ИСПРАВЛЕНИЯ v4.0 (критические):
+  ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
+     Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
+  ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
+  ✅ Дневной P&L стоп -5% (DAILY_LOSS_STOP_PCT)
+  ✅ Азиатская сессия 03-06 UTC блокировка (BLOCK_ASIAN_SESSION)
+  ✅ Zombie cleanup — удаление мёртвых Redis позиций
+  ✅ SHORT BOT: исправлен "return Nonee" — краш на каждом символе
+  ✅ TP уровни в sweep-пути используют Config.TP_LEVELS (было хардкод 4%)
+  ✅ market_context.py — новый модуль контекста рынка
 """
 
 import os
@@ -77,6 +60,7 @@ from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
+from core.market_context import get_market_context  # ✅ v4.0
 
 
 # ============================================================================
@@ -96,11 +80,11 @@ class Config:
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # was 2.0
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.0"))  # ✅ FIX: 1.0% — чётче SL
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # SHORT: SL=1.5% TP1=4% → R:R=2.7:1
+    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
@@ -144,6 +128,7 @@ class BotState:
         self.auto_trader      = None
         self.tracker: Optional[PositionTracker] = None
         self.coinglass        = None
+        self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
 
@@ -635,6 +620,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
 
+        # ✅ v4.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
+        if hasattr(state, 'market_ctx') and state.market_ctx:
+            ctx = await state.market_ctx.check(
+                direction="short",
+                symbol=symbol,
+                block_asian_session=True,
+                allow_decoupled_alts=True
+            )
+            if not ctx.allowed:
+                print(f"⛔ [CTX-SHORT] {symbol}: {ctx.block_reason}")
+                return None
+            for w in ctx.warnings:
+                print(f"⚠️ [CTX-SHORT] {symbol}: {w}")
+
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
@@ -914,27 +913,46 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
         # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
-        ob_quality_high = ob_result and ob_result.bearish_ob and ob_result.bearish_ob.quality >= 70
+        ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)
+        ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
+        ob_q_high     = ob_quality >= 70   # Высокое качество
         
         if not score_result.is_valid:
-            # Проверяем: TBS есть? OB качество >= 70?
-            if tbs_found and ob_quality_high:
-                # УМНЫЙ ОВЕРРАЙД: Разворот подтверждён технически — заходим!
-                print(f"� [SMART-SCORE] {symbol}: is_valid=False, но TBS+OB_Q{ob_result.bearish_ob.quality} — ОВЕРРАЙД! Скор поднимаем до 75")
-                # Создаём новый результат с принудительным is_valid=True и скором 75
-                from shared.core.scorer import ScoreResult, Confidence
+            override_reason = None
+            boost = 0
+
+            # Уровень 1: TBS + OB >= 70 — сильный оверрайд
+            if tbs_found and ob_q_high:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 15
+            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд
+            elif tbs_found and ob_quality_ok:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 10
+            # Уровень 3: только TBS без OB
+            elif tbs_found and base_score_bonus >= 5:
+                override_reason = f"TBS+confirmation"
+                boost = 8
+            # Уровень 4: OB >= 70 без TBS
+            elif ob_q_high and base_score_bonus >= 3:
+                override_reason = f"OB_Q{ob_quality}+confirmation"
+                boost = 5
+
+            if override_reason:
+                print(f"💡 [SMART-SCORE] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
+                from core.scorer import ScoreResult, Confidence
                 score_result = ScoreResult(
-                    total_score=max(75, score_result.total_score + 15),  # +15 бонус за TBS+OB
+                    total_score=max(70, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
                     direction=score_result.direction,
-                    is_valid=True,  # Принудительно валидный
-                    confidence=Confidence.HIGH,
-                    grade="A",
+                    is_valid=True,
+                    confidence=Confidence.MEDIUM if boost < 12 else Confidence.HIGH,
+                    grade="B" if boost < 12 else "A",
                     components=score_result.components,
-                    reasons=score_result.reasons + [f"🎯 TBS+ОБ_Q{ob_result.bearish_ob.quality} — умный вход"]
+                    reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"�🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS+OB70)")
+                print(f"🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB)")
                 return None
 
         price       = md.price
@@ -1009,7 +1027,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🌊 [ELLIOTT-SHORT] {symbol}: Детали: {details_reason}")
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
-            if wave_result.is_trap:
+            # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.5:
                 print(f"🚫 [ELLIOTT-BLOCK-SHORT] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа

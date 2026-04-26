@@ -130,8 +130,8 @@ class OrderBlockDetector:
     """
     
     def __init__(self, 
-                 min_volume_ratio: float = 1.5,      # Мин отношение объема
-                 min_impulse_body_pct: float = 60.0,  # Мин % тела свечи
+                 min_volume_ratio: float = 1.2,      # ✅ FIX: Снижен с 1.5 → 1.2
+                 min_impulse_body_pct: float = 50.0,  # ✅ FIX: Снижен с 60 → 50%
                  max_ob_age_candles: int = 20,        # Макс "возраст" OB
                  use_sweep_confirmation: bool = True): # Требовать sweep?
         self.min_volume_ratio = min_volume_ratio

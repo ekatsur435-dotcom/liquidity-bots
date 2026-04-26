@@ -101,6 +101,14 @@ class PositionTracker:
             return
         if not signals:
             return
+
+        # ✅ v4.0: Zombie cleanup — раз в 10 итераций чистим «мёртвые» Redis позиции
+        if not hasattr(self, '_scan_count'):
+            self._scan_count = 0
+        self._scan_count += 1
+        if self._scan_count % 10 == 0:
+            await self._cleanup_zombie_positions(signals)
+
         for sig in signals:
             if sig.get("status") != "active":
                 continue
@@ -109,6 +117,65 @@ class PositionTracker:
             except Exception as e:
                 print(f"[PositionTracker] {sig.get('symbol')} error: {e}")
             await asyncio.sleep(0.3)
+
+    async def _cleanup_zombie_positions(self, signals: list):
+        """
+        ✅ v4.0: Удаляет из Redis позиции которых нет на бирже.
+        Zombie = сигнал в Redis со status=active, но BingX не знает о позиции.
+        Без этого — SL никогда не срабатывает → бесконечный убыток.
+        """
+        if not self.auto_trader or not hasattr(self.auto_trader, 'bingx'):
+            return
+        
+        bingx = self.auto_trader.bingx
+        if not bingx:
+            return
+
+        for sig in signals:
+            symbol = sig.get('symbol', '')
+            direction = sig.get('direction', 'long')
+            if not symbol:
+                continue
+            try:
+                pos_side = 'LONG' if direction == 'long' else 'SHORT'
+                positions = await bingx.get_positions(symbol)
+                has_real_position = any(
+                    abs(p.size) > 0 and p.position_side == pos_side
+                    for p in positions
+                )
+                if not has_real_position:
+                    # Позиция есть в Redis, нет на бирже — это zombie
+                    entry = sig.get('entry_price', 0)
+                    current_price = sig.get('last_price', entry)
+                    
+                    # Вычисляем P&L на момент закрытия
+                    if entry and entry > 0:
+                        from shared.core.position_tracker import _pnl
+                        pnl = _pnl(direction, float(entry), float(current_price))
+                    else:
+                        pnl = 0.0
+                    
+                    sig['status'] = 'closed_zombie'
+                    sig['close_price'] = current_price
+                    sig['close_time'] = datetime.utcnow().isoformat()
+                    sig['pnl_pct'] = round(pnl, 4)
+                    sig['tp_level'] = 'ZOMBIE'
+                    self._save(symbol, sig)
+                    self.micro_trailing.remove(symbol)
+                    
+                    print(f"🧟 [ZOMBIE-CLEANUP] {symbol} {direction}: позиция в Redis но не на бирже → закрываем. P&L={pnl:.2f}%")
+                    
+                    # Уведомление в Telegram
+                    d_emoji = '🟢' if direction == 'long' else '🔴'
+                    await self._notify(sig, (
+                        f"🧟 <b>Zombie позиция закрыта</b>\n\n"
+                        f"{d_emoji} <b>#{symbol}</b> {direction.upper()}\n"
+                        f"📍 Вход: <b>${float(entry):,.6f}</b>\n"
+                        f"📊 P&L: <b>{pnl:+.2f}%</b>\n"
+                        f"<i>Позиция не найдена на бирже — очищаем Redis</i>"
+                    ))
+            except Exception as e:
+                print(f"⚠️ [ZOMBIE-CLEANUP] {symbol}: {e}")
 
     async def _check_one(self, signal: Dict):
         symbol    = signal.get("symbol", "")
@@ -380,6 +447,8 @@ class PositionTracker:
         total     = len(signal.get("take_profits", []))
         tp_num    = tp_idx + 1
         tp_label  = f"TP{tp_num}"
+        # ✅ FIX: define d_emoji early (was used before definition → crash)
+        d_emoji   = "🟢" if direction == "long" else "🔴"
 
         pnl_pct  = _pnl(direction, entry, tp_price)
         time_str = _time_in_trade(signal)
