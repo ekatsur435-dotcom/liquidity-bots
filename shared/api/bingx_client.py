@@ -408,8 +408,10 @@ class BingXClient:
           5. takeProfit: {"type":"TAKE_PROFIT_MARKET", "stopPrice": float, ...}
           6. Все значения — числа, не строки (fix float64 mismatch)
         """
-        # Нормализуем символ для API (убираем дефисы)
-        symbol = self._normalize_symbol(symbol)
+        # ✅ FIX: НЕ нормализуем символ — API требует формат С ДЕФИСОМ (AT-USDT)
+        # symbol = self._normalize_symbol(symbol)  ← Убрано!
+        api_symbol = symbol  # Используем как есть (с дефисом)
+        # Для проверки активности используем нормализованный
         if not await self.is_symbol_active(symbol):
             self.last_error = f"{symbol} offline on BingX"
             print(f"⏭ SKIP — {self.last_error}")
@@ -420,11 +422,11 @@ class BingXClient:
         rounded_tp   = await self._round_price(symbol, take_profit)  if take_profit else None
         rounded_px   = await self._round_price(symbol, price)        if price       else None
 
-        print(f"📤 Order: {symbol} {side} {position_side} {order_type} | "
+        print(f"📤 Order: {api_symbol} {side} {position_side} {order_type} | "
               f"qty={rounded_size} | SL={rounded_sl} | TP={rounded_tp}")
 
         body: Dict[str, Any] = {
-            "symbol":       symbol,
+            "symbol":       api_symbol,  # ✅ С дефисом для API
             "side":         side,
             "positionSide": position_side,
             "type":         order_type,
@@ -450,16 +452,16 @@ class BingXClient:
             d        = result.get("data", {})
             order    = d.get("order", d)
             order_id = str(order.get("orderId", ""))
-            print(f"✅ Order placed: {symbol} {side} qty={rounded_size} id={order_id}")
+            print(f"✅ Order placed: {api_symbol} {side} qty={rounded_size} id={order_id}")
             return BingXOrder(
-                order_id=order_id, symbol=symbol, side=side,
+                order_id=order_id, symbol=api_symbol, side=side,
                 position_side=position_side, type=order_type,
                 size=rounded_size, price=rounded_px, status="PENDING",
             )
 
         code = (result or {}).get("code")
         hint = self.ERROR_CODES.get(code, "") if code else ""
-        print(f"❌ Order REJECTED: {symbol} | code={code} | {self.last_error}"
+        print(f"❌ Order REJECTED: {api_symbol} | code={code} | {self.last_error}"
               + (f"\n   💡 {hint}" if hint else ""))
         return None
 
