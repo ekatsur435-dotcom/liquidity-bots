@@ -347,6 +347,7 @@ async def lifespan(app: FastAPI):
                 ok = await bingx.test_connection()
                 print(f"🔄 BingX test_connection result: {ok}")
                 if ok:
+                    print(f"🔄 Creating TradeConfig with max_positions_per_sector={Config.MAX_POSITIONS_PER_SECTOR}")
                     trade_cfg = TradeConfig(
                         enabled=True,
                         demo_mode=Config.BINGX_DEMO,
@@ -356,6 +357,7 @@ async def lifespan(app: FastAPI):
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
                     )
+                    print(f"🔄 TradeConfig created, creating AutoTrader...")
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
                         bot_type=Config.BOT_TYPE
@@ -365,7 +367,9 @@ async def lifespan(app: FastAPI):
                 else:
                     print(f"❌ BingX connection failed — AutoTrader disabled (last_error: {bingx.last_error})")
         except Exception as e:
+            import traceback
             print(f"❌ AutoTrader init error: {e}")
+            traceback.print_exc()
 
     # FIX: Инициализируем cmd_handler ПОСЛЕ auto_trader, чтобы команды видели auto_trader
     state.cmd_handler = TelegramCommandHandler(
