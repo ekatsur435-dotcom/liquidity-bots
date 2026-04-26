@@ -15,9 +15,14 @@ Phase 3: Добавлена Redis persistence для сохранения сос
 """
 
 import os
+import sys
 from dataclasses import dataclass
 from typing import Dict, Optional, List
 from datetime import datetime
+
+# ✅ FIX: Добавляем путь к shared и импортируем Redis
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from upstash.redis_client import get_redis_client
 
 
 @dataclass
