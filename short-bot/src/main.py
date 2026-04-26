@@ -92,7 +92,7 @@ class Config:
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
-    SIGNAL_TTL_HOURS = 24
+    SIGNAL_TTL_HOURS = 2  # ✅ FIX: 24h → 2h - иначе бот молчит после первого скана
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
@@ -994,9 +994,17 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
         sf   = get_short_filter()
+        # ✅ FIX v5.0: Получаем BTC change из market_ctx (было None)
+        btc_change_1h = 0.0
+        if hasattr(state, 'market_ctx') and state.market_ctx:
+            try:
+                btc_change_1h, _ = await state.market_ctx._get_btc_changes()
+            except Exception:
+                btc_change_1h = 0.0
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
+            btc_price_1h_change=btc_change_1h,
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
