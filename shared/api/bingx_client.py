@@ -82,7 +82,7 @@ class BingXClient:
         self.session: Optional[aiohttp.ClientSession] = None
         self._symbol_info_cache: Dict[str, Dict] = {}
         self._active_symbols: Set[str] = set()
-        self._offline_symbols: Set[str] = set()  # ✅ FIX: кэш делистированных монет
+        # Note: Не кэшируем офлайн символы — статус может измениться
         self._symbols_loaded = False
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
@@ -259,10 +259,6 @@ class BingXClient:
 
     async def is_symbol_active(self, symbol: str) -> bool:
         symbol = self._normalize_symbol(symbol)
-        # ✅ FIX: Проверяем кэш офлайн символов
-        if symbol in self._offline_symbols:
-            print(f"🔴 [BingX] {symbol}: OFFLINE (cached delisted)")
-            return False
         await self._load_contracts()
         info = self._symbol_info_cache.get(symbol)
         if info is None:
@@ -273,14 +269,10 @@ class BingXClient:
         # ✅ DEBUG: Логируем статус символа
         if info:
             is_online = info.get("online", False)
-            if not is_online:
-                self._offline_symbols.add(symbol)  # ✅ FIX: кэшируем офлайн символ
             print(f"🔍 [BingX] {symbol}: online={is_online}, status={'found' if info else 'not found'}")
             return is_online
         else:
             print(f"🔍 [BingX] {symbol}: NOT IN CACHE (total cached: {len(self._symbol_info_cache)})")
-            # ✅ FIX: Символа нет на бирже — добавляем в кэш офлайн
-            self._offline_symbols.add(symbol)
             return False
 
     async def _round_price(self, symbol: str, price: float) -> float:
