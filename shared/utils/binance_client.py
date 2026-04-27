@@ -815,10 +815,20 @@ class BinanceFuturesClient:
 
             price, funding, oi, ratio, ticker, klines_1h, klines_15m = results
 
-            if isinstance(price, Exception) or not price:
+            # 🆕 DEBUG: Логируем что именно падает
+            if isinstance(price, Exception):
+                print(f"🔴 [API-DEBUG] {symbol}: get_price ERROR: {price}")
                 return None
-            if isinstance(klines_1h, Exception) or not klines_1h or len(klines_1h) < 20:
+            if not price:
+                print(f"🔴 [API-DEBUG] {symbol}: get_price returned None")
                 return None
+            if isinstance(klines_1h, Exception):
+                print(f"🔴 [API-DEBUG] {symbol}: get_klines(1h) ERROR: {klines_1h}")
+                return None
+            if not klines_1h or len(klines_1h) < 20:
+                print(f"🔴 [API-DEBUG] {symbol}: get_klines(1h) returned {len(klines_1h) if klines_1h else 0} candles")
+                return None
+            print(f"✅ [API-DEBUG] {symbol}: data OK price={price}, klines={len(klines_1h)}")  # DEBUG
 
             funding   = None if isinstance(funding,   Exception) else funding
             oi        = None if isinstance(oi,        Exception) else oi
