@@ -84,9 +84,17 @@ def get_trading_stats(days=7):
                     trades_data = []
                 
                 if trades_data:
-                    # Берем только последние 50 сделок
-                    trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
-                    
+                    # ✅ FIX v7: Считаем только ЗАКРЫТЫЕ сделки (status=closed_*)
+                    # Активные позиции имеют pnl=0 (unrealized) и искажают статистику
+                    all_t = trades_data[-100:] if len(trades_data) > 100 else trades_data
+                    closed_statuses = {'closed_tp', 'closed_sl', 'closed_manual', 'closed'}
+                    trades = [t for t in all_t
+                              if t.get('status', 'active') in closed_statuses
+                              or t.get('close_price') is not None]
+                    # Fallback: если нет закрытых — берём все (старые данные без status)
+                    if not trades:
+                        trades = all_t[-50:]
+
                     total = len(trades)
                     wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
                     losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
@@ -296,7 +304,7 @@ def api_chart_data():
 
 @app.route("/api/trades")
 def api_trades():
-    """API: Последние 5 сделок SHORT и LONG с деталями"""
+    """API: Последние 20 сделок SHORT и LONG с деталями"""
     trades = {"short": [], "long": []}
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
@@ -304,12 +312,12 @@ def api_trades():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как LIST
+            # Читаем all_trades как LIST (последние 20)
             try:
-                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "4"])
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "19"])
                 if trades_json:
                     all_trades = [json.loads(t) for t in trades_json]
-                    trades[prefix] = all_trades[:5]
+                    trades[prefix] = all_trades[:20]
             except:
                 pass
         except Exception as e:
@@ -506,6 +514,32 @@ def api_summary():
         summary[period]["winrate"] = round(wins / total * 100, 1) if total > 0 else 0
     
     return jsonify(summary)
+
+
+@app.route("/api/reset_stats", methods=["POST"])
+def reset_stats():
+    """
+    ✅ FIX v7: Сброс статистики Redis (старые данные до фиксов).
+    POST /api/reset_stats   — очищает all_trades, stats:daily ключи.
+    """
+    try:
+        for redis_getter, prefix in [(get_redis_short, "short"), (get_redis_long, "long")]:
+            try:
+                r = redis_getter()
+                r.execute(["DEL", f"{prefix}:all_trades"])
+                r.execute(["DEL", f"{prefix}:stats:daily"])
+                # Также удаляем кэшированные ключи daily по датам
+                result = r.execute(["KEYS", f"{prefix}:stats:daily:*"])
+                if result:
+                    for key in result:
+                        r.execute(["DEL", key])
+                print(f"[Dashboard] Stats reset for {prefix}")
+            except Exception as e:
+                print(f"[Dashboard] Reset error {prefix}: {e}")
+        return json.dumps({"status": "ok", "message": "Статистика сброшена. Данные накопятся заново."})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
 
 
 # Health check для Render

@@ -377,7 +377,7 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
@@ -885,6 +885,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
+        # ✅ FIX v7: Детальные логи score breakdown
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
         if not score_result.is_valid:
             override_reason = None
             boost = 0
@@ -920,8 +925,21 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70)")
-                return None
+                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
+                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                if score_result.total_score >= bear_threshold:
+                    print(f"\U0001f7e1 [FILTER0-LONG] {symbol}: score={score_result.total_score} BEAR PASS")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score, max_possible=score_result.max_possible,
+                        direction=score_result.direction, is_valid=True,
+                        confidence=Confidence.LOW, grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["Bear market pass"],
+                    )
+                else:
+                    print(f"\U0001f534 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
+                    return None
         
         reasons     = list(score_result.reasons)
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
@@ -1133,7 +1151,31 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ]
 
         sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
-        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} — сигнал создан!")
+        
+        # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
+        has_smc_pattern = (
+            patterns or  # Есть паттерн от pattern_detector
+            (ob_quality >= 60) or  # Есть качественный Order Block
+            tbs_found or  # Есть TBS (Test Before Strike)
+            (pool_data.get("active_sweeps", 0) > 0)  # Есть активный sweep ликвидности
+        )
+        
+        if not has_smc_pattern:
+            print(f"🔴 [FILTER-SMC-LONG] {symbol}: Нет SMC паттерна — сигнал отменён!")
+            return None
+        
+        # Определяем лучший паттерн для отображения
+        if not best_pattern:
+            if ob_quality >= 60:
+                best_pattern = f"OB_Q{ob_quality}"
+            elif tbs_found:
+                best_pattern = "TBS"
+            elif pool_data.get("active_sweeps", 0) > 0:
+                best_pattern = "LIQUIDITY_SWEEP"
+            else:
+                best_pattern = "SMC_STRUCTURE"
+        
+        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
@@ -1142,7 +1184,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "stop_loss": round(stop_loss, 8), "sl_pct": sl_pct,
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
-            "best_pattern": patterns[0].name if patterns else None,
+            "best_pattern": best_pattern,
             "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",

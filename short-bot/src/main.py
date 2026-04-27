@@ -71,7 +71,7 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "63"))  # ✅ FIX v7: 67→63
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -90,6 +90,10 @@ class Config:
 
     # Trailing — SHORT активирует при +3% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
+    # ✅ FIX v7: BTC correlation — управляется через ENV
+    BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
+    # При BTC_BLOCK_SHORT_THRESHOLD=99 → SHORT не блокируется даже при сильном памп BTC
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
     SIGNAL_TTL_HOURS = 24
@@ -384,7 +388,7 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
@@ -611,7 +615,7 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def scan_symbol(symbol: str) -> Optional[Dict]:
+async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict]:
     """
     SHORT scan_symbol v2.7 (NO BTC CORR):
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
@@ -925,6 +929,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
+        # ✅ FIX v7: Детальные логи score breakdown для диагностики
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
         if not score_result.is_valid:
             override_reason = None
             boost = 0
@@ -960,8 +969,21 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB)")
-                return None
+                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
+                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                if score_result.total_score >= bear_threshold:
+                    print(f"\U0001f7e1 [FILTER0-SCORE] {symbol}: score={score_result.total_score} BEAR PASS")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score, max_possible=score_result.max_possible,
+                        direction=score_result.direction, is_valid=True,
+                        confidence=Confidence.LOW, grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["Bear market pass"],
+                    )
+                else:
+                    print(f"\U0001f534 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
+                    return None
 
         price       = md.price
         final_score = score_result.total_score + oi_score_adj + base_score_bonus
@@ -978,6 +1000,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
+            btc_change=btc_1h,   # ✅ FIX v7: теперь ShortFilter получает реальный BTC 1h
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
@@ -1170,7 +1193,33 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ]
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
-        print(f"🟢 [SIGNAL] {symbol}: score={final_score} — сигнал создан!")
+        
+        # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
+        has_smc_pattern = (
+            patterns or  # Есть паттерн от pattern_detector
+            (ob_quality >= 60) or  # Есть качественный Order Block (bearish)
+            tbs_found or  # Есть TBS (Test Before Strike)
+            (smc_data.get("has_ob", False) or smc_data.get("has_fvg", False))  # SMC детектор
+        )
+        
+        if not has_smc_pattern:
+            print(f"� [FILTER-SMC-SHORT] {symbol}: Нет SMC паттерна — сигнал отменён!")
+            return None
+        
+        # Определяем лучший паттерн для отображения
+        if not best_pattern:
+            if ob_quality >= 60:
+                best_pattern = f"OB_Q{ob_quality}"
+            elif tbs_found:
+                best_pattern = "TBS"
+            elif smc_data.get("has_ob", False):
+                best_pattern = "SMC_OB"
+            elif smc_data.get("has_fvg", False):
+                best_pattern = "SMC_FVG"
+            else:
+                best_pattern = "SMC_STRUCTURE"
+        
+        print(f"�🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
@@ -1180,7 +1229,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
-            "best_pattern": patterns[0].name if patterns else None,
+            "best_pattern": best_pattern,  # ✅ Используем определённый выше паттерн
             "primary_tf": primary_tf,  # ✅ ТФ сигнала (2h/4h для исполнения)
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
@@ -1239,6 +1288,21 @@ async def scan_market():
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
+    # ✅ FIX v7: Получаем BTC 1h изменение для ShortFilter (было None всегда!)
+    _btc_1h_change: float | None = None
+    try:
+        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
+        if _btc_md:
+            _btc_1h_change = getattr(_btc_md, "price_change_1h", None)
+            btc_status = f"+{_btc_1h_change:.2f}%" if _btc_1h_change and _btc_1h_change > 0 else f"{_btc_1h_change:.2f}%" if _btc_1h_change else "N/A"
+            # Автоблокировка SHORT при BTC > BTC_BLOCK_THRESHOLD%
+            if _btc_1h_change and _btc_1h_change >= Config.BTC_BLOCK_THRESHOLD:
+                print(f"🚫 [BTC-BLOCK] BTC {btc_status} ≥ {Config.BTC_BLOCK_THRESHOLD}% — SHORT заблокирован на этом скане!")
+                _btc_1h_change = _btc_1h_change  # Позволяем ShortFilter принять решение
+            print(f"📡 BTC 1h: {btc_status}")
+    except Exception as e:
+        print(f"⚠️ BTC price fetch error: {e}")
+
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
     exchange_full = active_count >= Config.MAX_POSITIONS
@@ -1254,7 +1318,17 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol)
+            # ✅ FIX v7: SL Cooldown — пропускаем символ если недавно был стоп
+            sl_cd_key = f"sl_cooldown:{Config.BOT_TYPE}:{symbol}"
+            try:
+                cd_val = state.redis.get(sl_cd_key)
+                if cd_val:
+                    print(f"⏸ [COOLDOWN] {symbol}: недавний SL, пропускаем (cooldown активен)")
+                    continue
+            except Exception:
+                pass
+
+            signal = await scan_symbol(symbol, btc_1h=_btc_1h_change)  # ✅ FIX v7
             if not signal:
                 continue
 

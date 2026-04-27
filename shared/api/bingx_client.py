@@ -523,15 +523,20 @@ class BingXClient:
             sl_side = "SELL" if direction == "long" else "BUY"
             print(f"🔍 [BingX] sl_side={sl_side}")
 
-            # Получаем текущий размер позиции (нужен для SL ордера)
-            print(f"🔍 [BingX] Getting positions for {symbol}...")
-            positions = await self.get_positions(symbol)
-            print(f"🔍 [BingX] Found {len(positions)} positions")
+            # ✅ FIX v7: Получаем ВСЕ позиции без фильтра и ищем по символу client-side.
+            # get_positions(symbol) → BingX error 109425 "not exist" для редких пар.
+            # Причина: BingX требует точный формат (LIGHT-USDT, MON-USDT) который часто
+            # отличается от нашего. Решение: get_positions() без аргумента → все позиции.
+            print(f"🔍 [BingX] Getting ALL positions (no filter) to match {symbol}...")
+            positions = await self.get_positions()   # ← Без аргумента = все позиции
+            print(f"🔍 [BingX] Total exchange positions: {len(positions)}")
             for p in positions:
                 print(f"   - {p.symbol}: size={p.size}, side={p.side}, pos_side={p.position_side}")
 
+            # Matching: убираем дефисы и сравниваем чистые тикеры
+            clean_target = symbol.replace("-", "").replace("_", "").upper()
             pos = next((p for p in positions
-                        if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
+                        if p.symbol.replace("-", "").replace("_", "").upper() == clean_target), None)
             if not pos:
                 print(f"⚠️  [BingX] update_stop_loss: позиция {symbol} не найдена")
                 return False
