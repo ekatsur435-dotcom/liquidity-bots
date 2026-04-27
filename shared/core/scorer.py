@@ -343,17 +343,14 @@ class LongScorer(BaseScorer):
         super().__init__(min_score, Direction.LONG)
 
     def calculate_rsi_component(self, rsi_1h: float) -> ScoreComponent:
-        # ✅ v3.0: Увеличены очки для медвежьего рынка (RSI 35-55)
-        if rsi_1h <= 20:   score, desc = 20, f"RSI {rsi_1h:.1f} — Экстремальная перепроданность"
-        elif rsi_1h <= 25: score, desc = 18, f"RSI {rsi_1h:.1f} — Сильная перепроданность"
-        elif rsi_1h <= 30: score, desc = 15, f"RSI {rsi_1h:.1f} — Перепроданность"
-        elif rsi_1h <= 35: score, desc = 11, f"RSI {rsi_1h:.1f} — Начало перепроданности (bearish)"
-        elif rsi_1h <= 40: score, desc = 9,  f"RSI {rsi_1h:.1f} — Близко к перепроданности (bearish)"
-        elif rsi_1h <= 45: score, desc = 7,  f"RSI {rsi_1h:.1f} — Нейтрально-bearish"
-        elif rsi_1h <= 55: score, desc = 5,  f"RSI {rsi_1h:.1f} — Нейтральная зона"
-        elif rsi_1h > 70:  score, desc = 0,  f"RSI {rsi_1h:.1f} — Перекупленность (плохо для лонга)"
-        else:              score, desc = 2,  f"RSI {rsi_1h:.1f} — Умеренно бычий"
-        return ScoreComponent("RSI", score, 20, desc, rsi_1h)
+        # ✅ v3.0: RSI макс 5 очков - не является основанием для входа
+        if rsi_1h <= 20:   score, desc = 5, f"RSI {rsi_1h:.1f} — Экстремально перепродан (инфо)"
+        elif rsi_1h <= 30: score, desc = 4, f"RSI {rsi_1h:.1f} — Перепродан (инфо)"
+        elif rsi_1h <= 40: score, desc = 3, f"RSI {rsi_1h:.1f} — Ниже 40 (инфо)"
+        elif rsi_1h <= 50: score, desc = 2, f"RSI {rsi_1h:.1f} — Нейтрально (инфо)"
+        elif rsi_1h > 70:  score, desc = 0, f"RSI {rsi_1h:.1f} — Перекуплен (плохо для лонга)"
+        else:              score, desc = 1, f"RSI {rsi_1h:.1f} — Нейтрально (инфо)"
+        return ScoreComponent("RSI", score, 5, desc, rsi_1h)
 
     def calculate_funding_component(self, current_funding: float,
                                     accumulated_4d: float) -> ScoreComponent:
