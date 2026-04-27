@@ -629,9 +629,12 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
       - Multi-TF priority: 2h/4h для исполнения, 15m/30m/1h → watch only
     """
     try:
+        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
         md = await state.binance.get_complete_market_data(symbol)
         if not md:
+            print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: NO market data")
             return None
+        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: got market data, price={md.price}")  # DEBUG
 
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
@@ -1236,15 +1239,20 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         sl_pct = round((stop_loss - price) / price * 100, 2)
         
         # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
+        # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
         has_smc_pattern = (
             patterns or  # Есть паттерн от pattern_detector
             (ob_quality >= 60) or  # Есть качественный Order Block (bearish)
             tbs_found or  # Есть TBS (Test Before Strike)
-            (smc_data.get("has_ob", False) or smc_data.get("has_fvg", False))  # SMC детектор
+            (smc_data.get("has_ob", False) or smc_data.get("has_fvg", False)) or  # SMC детектор
+            # 🆕 Aegis: Сильный Z-Score сигнал тоже паттерн!
+            (pump_result.detected if 'pump_result' in locals() else False) or
+            # 🆕 Aegis: Сильная дивергенция CVD тоже паттерн!
+            (delta_result.score >= 40 if 'delta_result' in locals() else False)
         )
         
         if not has_smc_pattern:
-            print(f"� [FILTER-SMC-SHORT] {symbol}: Нет SMC паттерна — сигнал отменён!")
+            print(f"🔴 [FILTER-SMC-SHORT] {symbol}: Нет SMC паттерна — сигнал отменён!")
             return None
         
         # Определяем лучший паттерн для отображения
@@ -1257,10 +1265,16 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 best_pattern = "SMC_OB"
             elif smc_data.get("has_fvg", False):
                 best_pattern = "SMC_FVG"
+            # 🆕 Aegis: Z-Score паттерны
+            elif 'pump_result' in locals() and pump_result.detected:
+                best_pattern = f"Z-SCORE_{pump_result.signal_type.upper()}"
+            # 🆕 Aegis: Delta/CVD паттерны
+            elif 'delta_result' in locals() and delta_result.score >= 40:
+                best_pattern = f"CVD_{delta_result.divergence.upper()}"
             else:
                 best_pattern = "SMC_STRUCTURE"
         
-        print(f"�🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
+        print(f"🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
@@ -1311,7 +1325,9 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             "status": "active", "taken_tps": [],
         }
     except Exception as e:
-        print(f"Error scanning {symbol}: {e}")
+        import traceback
+        print(f"🔴 [SCAN-SHORT-ERROR] {symbol}: {e}")
+        print(f"🔴 [SCAN-SHORT-ERROR] {symbol}: {traceback.format_exc()[:500]}")
         return None
 
 
@@ -1323,7 +1339,9 @@ async def scan_market():
     - Биржевое исполнение: только если active_short < MAX и не /pause
     - Единственный блокер: команда /pause
     """
+    print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
+        print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
         return
 
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
@@ -1369,9 +1387,12 @@ async def scan_market():
             except Exception:
                 pass
 
+            print(f"🔍 [DEBUG-SHORT] {symbol}: calling scan_symbol...")  # DEBUG
             signal = await scan_symbol(symbol, btc_1h=_btc_1h_change)  # ✅ FIX v7
             if not signal:
+                print(f"🔍 [DEBUG-SHORT] {symbol}: scan_symbol returned None")  # DEBUG
                 continue
+            print(f"🔍 [DEBUG-SHORT] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
             # ✅ ВСЕГДА: Telegram сигнал
             tg_msg_id = await state.telegram.send_signal(

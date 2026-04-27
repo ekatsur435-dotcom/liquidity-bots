@@ -108,6 +108,8 @@ class Config:
     # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
+    # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
+    MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
 
 
 # ============================================================================
@@ -593,9 +595,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
         md = await state.binance.get_complete_market_data(symbol)
         if not md:
+            print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: NO market data")
             return None
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: got market data, price={md.price}")  # DEBUG
         
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
@@ -1194,11 +1199,16 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
         
         # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
+        # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
         has_smc_pattern = (
             patterns or  # Есть паттерн от pattern_detector
             (ob_quality >= 60) or  # Есть качественный Order Block
             tbs_found or  # Есть TBS (Test Before Strike)
-            (pool_data.get("active_sweeps", 0) > 0)  # Есть активный sweep ликвидности
+            (pool_data.get("active_sweeps", 0) > 0) or  # Есть активный sweep ликвидности
+            # 🆕 Aegis: Сильный Z-Score дамп тоже паттерн!
+            (pump_result.detected if 'pump_result' in locals() else False) or
+            # 🆕 Aegis: Сильная дивергенция CVD тоже паттерн!
+            (delta_result.score >= 40 if 'delta_result' in locals() else False)
         )
         
         if not has_smc_pattern:
@@ -1213,6 +1223,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 best_pattern = "TBS"
             elif pool_data.get("active_sweeps", 0) > 0:
                 best_pattern = "LIQUIDITY_SWEEP"
+            # 🆕 Aegis: Z-Score паттерны
+            elif 'pump_result' in locals() and pump_result.detected:
+                best_pattern = f"Z-SCORE_{pump_result.signal_type.upper()}"
+            # 🆕 Aegis: Delta/CVD паттерны
+            elif 'delta_result' in locals() and delta_result.score >= 40:
+                best_pattern = f"CVD_{delta_result.divergence.upper()}"
             else:
                 best_pattern = "SMC_STRUCTURE"
         
@@ -1266,7 +1282,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "status": "active", "taken_tps": [],
         }
     except Exception as e:
-        print(f"Error scanning {symbol}: {e}")
+        import traceback
+        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {e}")
+        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {traceback.format_exc()[:500]}")
         return None
 
 
@@ -1301,7 +1319,9 @@ async def scan_market():
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - Единственный блокер: команда /pause
     """
+    print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
+        print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
         return
 
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
@@ -1330,9 +1350,12 @@ async def scan_market():
             except Exception:
                 pass
 
+            print(f"🔍 [DEBUG-LONG] {symbol}: calling scan_symbol...")  # DEBUG
             signal = await scan_symbol(symbol)
             if not signal:
+                print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned None")  # DEBUG
                 continue
+            print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
             # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
             tg_msg_id = await state.telegram.send_signal(
