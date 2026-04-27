@@ -596,7 +596,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
     try:
         print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: get_complete_market_data returned: {type(md)}")  # DEBUG
         if not md:
             print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: NO market data")
             return None
@@ -604,6 +606,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
+
+        # 🆕 Aegis: Фильтр минимальной капитализации ($900k)
+        market_cap = getattr(md, 'market_cap', 0) or 0
+        if market_cap and market_cap < Config.MIN_MARKET_CAP:
+            print(f"🔴 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} < ${Config.MIN_MARKET_CAP:,.0f} — skip")
+            return None
+        elif market_cap:
+            print(f"💰 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} ✅")
 
         # ✅ v4.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
