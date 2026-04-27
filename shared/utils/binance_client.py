@@ -200,13 +200,21 @@ class BinanceFuturesClient:
         self.last_request_time = time.time()
 
     async def close(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+        # 🆕 FIX: Не закрываем сессию если это singleton и другие боты могут использовать
+        # Сбрасываем флаг чтобы следующий бот переинициализировал прокси при необходимости
+        if hasattr(self, '_source_ready'):
+            self._source_ready = False
+        # Сессия остаётся открытой для других ботов (singleton)
+        # await self.session.close()  # ← Отключено: shared между ботами
 
     async def _init_source(self):
-        if hasattr(self, '_source_ready'):
-            return
-        self._source_ready = True
+        # 🆕 FIX: Проверяем что сессия живая, иначе переинициализируем
+        if hasattr(self, '_source_ready') and self._source_ready:
+            if self.session and not self.session.closed:
+                return  # Всё ок, сессия жива
+            # Сессия закрыта — нужно переинициализировать
+            print("⚠️ [BINANCE] Session closed, reinitializing...")
+            self._source_ready = False
 
         if not self._try_binance:
             self._use_binance = False
