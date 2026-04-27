@@ -307,6 +307,31 @@ class AutoTrader:
             )
             return None
 
+        # ── 3.5 Sector Limit (5 positions per sector per bot) ───────────────────
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+            from utils.sector_mapper import get_sector, count_positions_by_sector
+            
+            sector = get_sector(symbol)
+            sector_count = count_positions_by_sector(
+                [{"symbol": p.symbol} for p in bot_positions], 
+                sector
+            )
+            MAX_PER_SECTOR = int(os.getenv("MAX_POSITIONS_PER_SECTOR", "5"))
+            
+            if sector_count >= MAX_PER_SECTOR:
+                print(f"{pfx} ⏸ SKIP — sector {sector} limit ({sector_count}/{MAX_PER_SECTOR})")
+                await self._tg_reply(
+                    f"⏸ <b>Лимит сектора {sector}</b> ({sector_count}/{MAX_PER_SECTOR})\n"
+                    f"<b>#{symbol}</b> — пропущен", tg_msg_id
+                )
+                return None
+            else:
+                print(f"{pfx} ✅ Sector {sector}: {sector_count}/{MAX_PER_SECTOR}")
+        except Exception as e:
+            print(f"{pfx} ⚠️ Sector check error: {e}")
+            # Не блокируем если ошибка проверки сектора
+
         # ── 4. Symbol online? ─────────────────────────────────────────────────
         if not await self.bingx.is_symbol_active(bingx_symbol):
             print(f"{pfx} ⏭ SKIP — {bingx_symbol} offline/delisted")
