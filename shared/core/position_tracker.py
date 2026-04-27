@@ -48,7 +48,7 @@ class PositionTracker:
 
     # ── Безубыток: переносим SL после этого тейка ────────────────────────────
     # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
-    BREAKEVEN_AFTER_TP = 2   # ✅ FIX v5: BE после TP2 — позиции живут дольше
+    BREAKEVEN_AFTER_TP = 1   # ✅ FIX: BE после TP1 (было 2) — сокращает SL rate
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -150,7 +150,7 @@ class PositionTracker:
                     
                     # Вычисляем P&L на момент закрытия
                     if entry and entry > 0:
-                        # ✅ FIX v5: _pnl уже определена в этом модуле — убрал circular import
+                        from shared.core.position_tracker import _pnl
                         pnl = _pnl(direction, float(entry), float(current_price))
                     else:
                         pnl = 0.0
@@ -165,15 +165,20 @@ class PositionTracker:
                     
                     print(f"🧟 [ZOMBIE-CLEANUP] {symbol} {direction}: позиция в Redis но не на бирже → закрываем. P&L={pnl:.2f}%")
                     
-                    # Уведомление в Telegram
+                    # ✅ v4.0: Задержка между zombie уведомлениями (избегаем 429)
+                    import asyncio as _aio
+                    await _aio.sleep(1.5)
                     d_emoji = '🟢' if direction == 'long' else '🔴'
-                    await self._notify(sig, (
-                        f"🧟 <b>Zombie позиция закрыта</b>\n\n"
-                        f"{d_emoji} <b>#{symbol}</b> {direction.upper()}\n"
-                        f"📍 Вход: <b>${float(entry):,.6f}</b>\n"
-                        f"📊 P&L: <b>{pnl:+.2f}%</b>\n"
-                        f"<i>Позиция не найдена на бирже — очищаем Redis</i>"
-                    ))
+                    try:
+                        await self._notify(sig, (
+                            f"🧟 <b>Zombie позиция закрыта</b>\n\n"
+                            f"{d_emoji} <b>#{symbol}</b> {direction.upper()}\n"
+                            f"📍 Вход: <b>${float(entry):,.6f}</b>\n"
+                            f"📊 P&L: <b>{pnl:+.2f}%</b>\n"
+                            f"<i>Позиция не найдена на бирже — очищаем Redis</i>"
+                        ))
+                    except Exception:
+                        pass  # TG rate limit — не критично
             except Exception as e:
                 print(f"⚠️ [ZOMBIE-CLEANUP] {symbol}: {e}")
 
@@ -412,13 +417,6 @@ class PositionTracker:
 
         d_emoji = "🟢" if direction == "long" else "🔴"
         icon    = "🔒" if move_type == "безубыток" else "🔄"
-        # ✅ FIX v5: Запись SL cooldown при срабатывании стопа
-        try:
-            sl_cd_hours = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-            sl_cd_key = f"sl_cooldown:{self.bot_type}:{symbol}"
-            self.redis.set(sl_cd_key, "1", ex=int(sl_cd_hours * 3600))
-        except Exception:
-            pass
         sl_pnl  = _pnl(direction, entry, new_sl)
         old_pnl = _pnl(direction, entry, old_sl)
         taken   = len(signal.get("taken_tps", []))
@@ -470,7 +468,6 @@ class PositionTracker:
             signal["close_price"] = current_price
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
-            signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
             
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
@@ -596,7 +593,6 @@ class PositionTracker:
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = total_pnl
-        signal["pnl"]         = total_pnl  # ✅ FIX v6: dashboard compat
         # ✅ v2.5: Показываем "SL(после TP1)" если был взят TP
         max_tp_hit = signal.get("max_tp_reached", "")
         if max_tp_hit:
@@ -715,8 +711,7 @@ class PositionTracker:
                     "entry_price":  entry,
                     "close_price":  close_p,
                     "stop_loss":    sl_price,
-                    "pnl":          round(pnl_pct, 4),  # ✅ both fields
-                    "pnl_pct":      round(pnl_pct, 4),
+                    "pnl":          round(pnl_pct, 4),
                     "tp_level":     tp_level,
                     "close_type":   close_type,
                     "opened_at":    opened_at,

@@ -15,19 +15,9 @@ Phase 3: Добавлена Redis persistence для сохранения сос
 """
 
 import os
-import sys
-import json
 from dataclasses import dataclass
 from typing import Dict, Optional, List
 from datetime import datetime
-
-# ✅ FIX: импорт redis клиента (был не импортирован — NameError)
-try:
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-    from upstash.redis_client import get_redis_client
-except ImportError:
-    def get_redis_client():
-        raise ImportError("upstash.redis_client not found")
 
 
 @dataclass

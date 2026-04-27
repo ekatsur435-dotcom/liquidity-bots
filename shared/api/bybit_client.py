@@ -61,12 +61,7 @@ class BybitClient:
         self.base_url = self.TESTNET_URL if testnet else self.MAINNET_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        # ✅ Прокси для обхода geo-block
-        self.proxy = os.getenv("BYBIT_PROXY", "")  # http://user:pass@host:port
-        
         print(f"🚀 Bybit Client initialized ({'TESTNET' if testnet else 'MAINNET'})")
-        if self.proxy:
-            print(f"   🌐 Proxy enabled: {self.proxy.split('@')[-1]}")  # Логируем только host:port
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
@@ -122,13 +117,8 @@ class BybitClient:
             
             session = await self._get_session()
             
-            # ✅ Прокси для обхода geo-block
-            proxy_kwargs = {}
-            if self.proxy:
-                proxy_kwargs["proxy"] = self.proxy
-            
             if method == "GET":
-                async with session.get(url, params=params, headers=headers, timeout=30, **proxy_kwargs) as resp:
+                async with session.get(url, params=params, headers=headers, timeout=30) as resp:
                     if resp.status == 200:
                         return await resp.json()
                     else:
@@ -137,7 +127,7 @@ class BybitClient:
                         return None
             
             elif method == "POST":
-                async with session.post(url, json=params, headers=headers, timeout=30, **proxy_kwargs) as resp:
+                async with session.post(url, json=params, headers=headers, timeout=30) as resp:
                     if resp.status == 200:
                         return await resp.json()
                     else:

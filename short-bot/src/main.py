@@ -60,11 +60,7 @@ from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
-from core.market_context import get_market_context, MarketContextFilter  # ✅ FIX v6  # ✅ v4.0
-# 🆕 Aegis components
-from core.pump_detector import detect_pump, PumpDetectionResult  # ✅ NEW: Z-Score detector
-from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality  # ✅ NEW: Kelly sizing
-from core.delta_analyzer import analyze_delta  # ✅ NEW: CVD/Order Flow analyzer
+from core.market_context import get_market_context  # ✅ v4.0
 
 
 # ============================================================================
@@ -75,7 +71,7 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "63"))  # ✅ FIX v7: 67→63
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -84,20 +80,16 @@ class Config:
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX: 1.0% — чётче SL
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.0"))  # ✅ FIX: 1.0% — чётче SL
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
+    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
     # Trailing — SHORT активирует при +3% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
-    # ✅ FIX v7: BTC correlation — управляется через ENV
-    BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
-    # При BTC_BLOCK_SHORT_THRESHOLD=99 → SHORT не блокируется даже при сильном памп BTC
-    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
     SIGNAL_TTL_HOURS = 24
@@ -113,8 +105,6 @@ class Config:
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
-    # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
-    MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
 
 
 # ============================================================================
@@ -307,7 +297,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v6.0...")
+    print("🚀 Starting SHORT Bot v2.7...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -394,20 +384,12 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
+            from utils.coinglass_client import CoinglassClient
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
             print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
-
-
-    # ✅ FIX v6: Инициализируем Market Context Filter
-    state.market_ctx = MarketContextFilter(
-        binance_client=state.binance,
-        redis_client=state.redis
-    )
-    print("✅ MarketContextFilter initialized")
 
     # ── Watchlist: Bybit + Binance ─────────────────────────────────────────────
     # Инициализируем источник данных
@@ -437,7 +419,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🤖 <b>SHORT Bot v6.0 запущен</b>\n\n"
+        f"🤖 <b>SHORT Bot v2.9 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -466,7 +448,7 @@ async def lifespan(app: FastAPI):
     print("👋 SHORT Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v6.0")
+app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.9")
 
 
 # ============================================================================
@@ -483,7 +465,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v6.0", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "SHORT Bot v2.9", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -621,7 +603,7 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict]:
+async def scan_symbol(symbol: str) -> Optional[Dict]:
     """
     SHORT scan_symbol v2.7 (NO BTC CORR):
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
@@ -631,32 +613,19 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
       - Multi-TF priority: 2h/4h для исполнения, 15m/30m/1h → watch only
     """
     try:
-        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
-        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
-        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: get_complete_market_data returned: {type(md)}")  # DEBUG
         if not md:
-            print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: NO market data")
             return None
-        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: got market data, price={md.price}")  # DEBUG
 
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
-
-        # 🆕 Aegis: Фильтр минимальной капитализации ($900k)
-        market_cap = getattr(md, 'market_cap', 0) or 0
-        if market_cap and market_cap < Config.MIN_MARKET_CAP:
-            print(f"🔴 [MARKET-CAP-SHORT] {symbol}: cap=${market_cap:,.0f} < ${Config.MIN_MARKET_CAP:,.0f} — skip")
-            return None
-        elif market_cap:
-            print(f"💰 [MARKET-CAP-SHORT] {symbol}: cap=${market_cap:,.0f} ✅")
 
         # ✅ v4.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
             ctx = await state.market_ctx.check(
                 direction="short",
                 symbol=symbol,
-                block_asian_session=False,  # ✅ FIX: Asian session OFF
+                block_asian_session=True,
                 allow_decoupled_alts=True
             )
             if not ctx.allowed:
@@ -948,11 +917,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
-        # ✅ FIX v7: Детальные логи score breakdown для диагностики
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
-
         if not score_result.is_valid:
             override_reason = None
             boost = 0
@@ -973,14 +937,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             elif ob_q_high and base_score_bonus >= 3:
                 override_reason = f"OB_Q{ob_quality}+confirmation"
                 boost = 5
-            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
-            elif ob_q_high:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 12  # Сильный буст для институционального OB
-            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
-            elif ob_quality_ok:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 8
 
             if override_reason:
                 print(f"💡 [SMART-SCORE] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
@@ -996,21 +952,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
-                bear_threshold = max(45, Config.MIN_SCORE - 15)
-                if score_result.total_score >= bear_threshold:
-                    print(f"\U0001f7e1 [FILTER0-SCORE] {symbol}: score={score_result.total_score} BEAR PASS")
-                    from core.scorer import ScoreResult, Confidence
-                    score_result = ScoreResult(
-                        total_score=score_result.total_score, max_possible=score_result.max_possible,
-                        direction=score_result.direction, is_valid=True,
-                        confidence=Confidence.LOW, grade="C",
-                        components=score_result.components,
-                        reasons=score_result.reasons + ["Bear market pass"],
-                    )
-                else:
-                    print(f"\U0001f534 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
-                    return None
+                print(f"🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB)")
+                return None
 
         price       = md.price
         final_score = score_result.total_score + oi_score_adj + base_score_bonus
@@ -1027,7 +970,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
-            btc_change=btc_1h,   # ✅ FIX v7: теперь ShortFilter получает реальный BTC 1h
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
@@ -1086,7 +1028,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
             # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
-            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.5:
                 print(f"🚫 [ELLIOTT-BLOCK-SHORT] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа
@@ -1204,35 +1146,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
 
-        # 🆕 Aegis: Z-Score Pump Detector (критично для SHORT!)
-        try:
-            pump_result = detect_pump(_ohlcv(ohlcv_15m), direction="short")
-            if pump_result.detected and pump_result.signal_type == "pump":
-                # Для SHORT: памп (Z > 2) = хороший вход
-                z_bonus = min(20, int(pump_result.z_score * 5))  # Z=3 → +15
-                final_score = min(100, final_score + z_bonus)
-                reasons.append(f"📈 Z-Score PUMP: {pump_result.z_score:.1f}σ (RSI {pump_result.rsi:.0f}) +{z_bonus}")
-                print(f"🎯 [AEGIS-Z] {symbol}: PUMP detected Z={pump_result.z_score:.2f}, +{z_bonus} to score")
-            elif pump_result.z_score < -2.0:
-                # Для SHORT: дамп (Z < -2) = плохой вход, штраф
-                z_penalty = min(15, int(abs(pump_result.z_score) * 3))
-                final_score = max(0, final_score - z_penalty)
-                reasons.append(f"⚠️ Z-Score Dump: {pump_result.z_score:.1f}σ — штраф -{z_penalty}")
-        except Exception as e:
-            print(f"[AEGIS-Z] {symbol} error: {e}")
-
-        # 🆕 Aegis: Delta Analyzer (CVD + Order Flow)
-        try:
-            delta_result = analyze_delta(_ohlcv(ohlcv_15m), direction="short")
-            if delta_result.score >= 30:
-                # Для SHORT: bearish divergence или sell imbalance
-                delta_bonus = min(15, int(delta_result.score * 0.25))  # max +15
-                final_score = min(100, final_score + delta_bonus)
-                reasons.append(f"🌊 Delta/CVD: {delta_result.reasons[0][:50]}... +{delta_bonus}")
-                print(f"🎯 [AEGIS-Δ] {symbol}: CVD score={delta_result.score:.0f}, +{delta_bonus}")
-        except Exception as e:
-            print(f"[AEGIS-Δ] {symbol} error: {e}")
-
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
@@ -1249,44 +1162,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ]
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
-        
-        # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
-        # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
-        has_smc_pattern = (
-            patterns or  # Есть паттерн от pattern_detector
-            (ob_quality >= 60) or  # Есть качественный Order Block (bearish)
-            tbs_found or  # Есть TBS (Test Before Strike)
-            (smc_data.get("has_ob", False) or smc_data.get("has_fvg", False)) or  # SMC детектор
-            # 🆕 Aegis: Сильный Z-Score сигнал тоже паттерн!
-            (pump_result.detected if 'pump_result' in locals() else False) or
-            # 🆕 Aegis: Сильная дивергенция CVD тоже паттерн!
-            (delta_result.score >= 40 if 'delta_result' in locals() else False)
-        )
-        
-        if not has_smc_pattern:
-            print(f"🔴 [FILTER-SMC-SHORT] {symbol}: Нет SMC паттерна — сигнал отменён!")
-            return None
-        
-        # Определяем лучший паттерн для отображения
-        if not best_pattern:
-            if ob_quality >= 60:
-                best_pattern = f"OB_Q{ob_quality}"
-            elif tbs_found:
-                best_pattern = "TBS"
-            elif smc_data.get("has_ob", False):
-                best_pattern = "SMC_OB"
-            elif smc_data.get("has_fvg", False):
-                best_pattern = "SMC_FVG"
-            # 🆕 Aegis: Z-Score паттерны
-            elif 'pump_result' in locals() and pump_result.detected:
-                best_pattern = f"Z-SCORE_{pump_result.signal_type.upper()}"
-            # 🆕 Aegis: Delta/CVD паттерны
-            elif 'delta_result' in locals() and delta_result.score >= 40:
-                best_pattern = f"CVD_{delta_result.divergence.upper()}"
-            else:
-                best_pattern = "SMC_STRUCTURE"
-        
-        print(f"🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
+        print(f"🟢 [SIGNAL] {symbol}: score={final_score} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
@@ -1296,7 +1172,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
-            "best_pattern": best_pattern,  # ✅ Используем определённый выше паттерн
+            "best_pattern": patterns[0].name if patterns else None,
             "primary_tf": primary_tf,  # ✅ ТФ сигнала (2h/4h для исполнения)
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
@@ -1337,9 +1213,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             "status": "active", "taken_tps": [],
         }
     except Exception as e:
-        import traceback
-        print(f"🔴 [SCAN-SHORT-ERROR] {symbol}: {e}")
-        print(f"🔴 [SCAN-SHORT-ERROR] {symbol}: {traceback.format_exc()[:500]}")
+        print(f"Error scanning {symbol}: {e}")
         return None
 
 
@@ -1351,28 +1225,11 @@ async def scan_market():
     - Биржевое исполнение: только если active_short < MAX и не /pause
     - Единственный блокер: команда /pause
     """
-    print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
-        print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
         return
 
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
-
-    # ✅ FIX v7: Получаем BTC 1h изменение для ShortFilter (было None всегда!)
-    _btc_1h_change: float | None = None
-    try:
-        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
-        if _btc_md:
-            _btc_1h_change = getattr(_btc_md, "price_change_1h", None)
-            btc_status = f"+{_btc_1h_change:.2f}%" if _btc_1h_change and _btc_1h_change > 0 else f"{_btc_1h_change:.2f}%" if _btc_1h_change else "N/A"
-            # Автоблокировка SHORT при BTC > BTC_BLOCK_THRESHOLD%
-            if _btc_1h_change and _btc_1h_change >= Config.BTC_BLOCK_THRESHOLD:
-                print(f"🚫 [BTC-BLOCK] BTC {btc_status} ≥ {Config.BTC_BLOCK_THRESHOLD}% — SHORT заблокирован на этом скане!")
-                _btc_1h_change = _btc_1h_change  # Позволяем ShortFilter принять решение
-            print(f"📡 BTC 1h: {btc_status}")
-    except Exception as e:
-        print(f"⚠️ BTC price fetch error: {e}")
 
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
@@ -1389,22 +1246,9 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            # ✅ FIX v7: SL Cooldown — пропускаем символ если недавно был стоп
-            sl_cd_key = f"sl_cooldown:{Config.BOT_TYPE}:{symbol}"
-            try:
-                cd_val = state.redis.get(sl_cd_key)
-                if cd_val:
-                    print(f"⏸ [COOLDOWN] {symbol}: недавний SL, пропускаем (cooldown активен)")
-                    continue
-            except Exception:
-                pass
-
-            print(f"🔍 [DEBUG-SHORT] {symbol}: calling scan_symbol...")  # DEBUG
-            signal = await scan_symbol(symbol, btc_1h=_btc_1h_change)  # ✅ FIX v7
+            signal = await scan_symbol(symbol)
             if not signal:
-                print(f"🔍 [DEBUG-SHORT] {symbol}: scan_symbol returned None")  # DEBUG
                 continue
-            print(f"🔍 [DEBUG-SHORT] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
             # ✅ ВСЕГДА: Telegram сигнал
             tg_msg_id = await state.telegram.send_signal(

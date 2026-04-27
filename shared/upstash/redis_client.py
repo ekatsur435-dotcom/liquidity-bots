@@ -332,42 +332,90 @@ class UpstashRedisClient:
 
 
 # ============================================================================
-    # =========================================================================
-    # PROXY METHODS — совместимость с MicroTrailingStop (redis-py interface)
-    # =========================================================================
+# SINGLETON INSTANCE
+# ============================================================================
 
-    def set(self, key: str, value: str, ex=None) -> bool:
+
+    # ✅ v4.0: Proxy методы для совместимости с redis-py интерфейсом
+    # MicroTrailingStop и market_context используют .keys(), .set(), .get(), .delete()
+
+    def set(self, key: str, value, ex: int = None) -> bool:
+        """redis-py совместимый SET"""
         try:
+            cmd = ["SET", key, str(value)]
             if ex:
-                return bool(self.client.set(key, value, ex=ex))
-            return bool(self.client.set(key, value))
+                cmd += ["EX", str(ex)]
+            result = self.execute(cmd)
+            return result in ("OK", True, b"OK")
         except Exception as e:
-            print(f'[Redis] set error: {e}')
+            print(f"⚠️ [Redis.set] {key}: {e}")
             return False
 
     def get(self, key: str):
+        """redis-py совместимый GET"""
         try:
-            return self.client.get(key)
+            return self.execute(["GET", key])
         except Exception as e:
-            print(f'[Redis] get error: {e}')
+            print(f"⚠️ [Redis.get] {key}: {e}")
             return None
 
-    def keys(self, pattern: str = '*'):
+    def keys(self, pattern: str = "*"):
+        """redis-py совместимый KEYS"""
         try:
-            return self.client.keys(pattern)
+            result = self.execute(["KEYS", pattern])
+            return result if isinstance(result, list) else []
         except Exception as e:
-            print(f'[Redis] keys error: {e}')
+            print(f"⚠️ [Redis.keys] {pattern}: {e}")
             return []
 
-    def delete(self, *keys: str) -> int:
+    def delete(self, *keys) -> int:
+        """redis-py совместимый DEL"""
         try:
-            return self.client.delete(*keys)
+            if not keys:
+                return 0
+            return self.execute(["DEL"] + list(keys)) or 0
         except Exception as e:
-            print(f'[Redis] delete error: {e}')
+            print(f"⚠️ [Redis.delete] {keys}: {e}")
             return 0
 
-# SINGLETON INSTANCE
-# ============================================================================
+    def hset(self, name: str, mapping: dict) -> int:
+        """redis-py совместимый HSET"""
+        try:
+            args = []
+            for k, v in mapping.items():
+                args += [str(k), str(v)]
+            return self.execute(["HSET", name] + args) or 0
+        except Exception as e:
+            print(f"⚠️ [Redis.hset] {name}: {e}")
+            return 0
+
+    def hgetall(self, name: str) -> dict:
+        """redis-py совместимый HGETALL"""
+        try:
+            result = self.execute(["HGETALL", name])
+            if isinstance(result, list) and len(result) % 2 == 0:
+                return {result[i]: result[i+1] for i in range(0, len(result), 2)}
+            return {}
+        except Exception as e:
+            print(f"⚠️ [Redis.hgetall] {name}: {e}")
+            return {}
+
+    def lrange(self, name: str, start: int, end: int) -> list:
+        """redis-py совместимый LRANGE"""
+        try:
+            result = self.execute(["LRANGE", name, str(start), str(end)])
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            print(f"⚠️ [Redis.lrange] {name}: {e}")
+            return []
+
+    def expire(self, name: str, seconds: int) -> bool:
+        """redis-py совместимый EXPIRE"""
+        try:
+            return bool(self.execute(["EXPIRE", name, str(seconds)]))
+        except Exception as e:
+            return False
+
 
 _redis_client = None
 
