@@ -276,30 +276,73 @@ class BinanceFuturesClient:
             return None
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        """
+        ✅ v3.0 Отказоустойчивость: пробуем все прокси по очереди
+        Если все прокси упали → возвращаем None (вызывающий код попробует Bybit)
+        """
         await self._rate_limit()
-        proxy = self._active_proxy or self._next_proxy()
-        try:
-            session = await self._get_session()
-            async with session.get(
-                f"{self.BINANCE_URL}{endpoint}",
-                params=params or {},
-                proxy=proxy,
-                timeout=aiohttp.ClientTimeout(total=10),
-                ssl=False
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                return None
-        except Exception:
-            return None
+        
+        errors = []
+        # 🆕 FIX: Пробуем все прокси по очереди
+        for idx, proxy in enumerate(self._proxies):
+            try:
+                session = await self._get_session()
+                async with session.get(
+                    f"{self.BINANCE_URL}{endpoint}",
+                    params=params or {},
+                    proxy=proxy,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    ssl=False
+                ) as resp:
+                    if resp.status == 200:
+                        # ✅ Успех! Запоминаем рабочий прокси
+                        if self._active_proxy != proxy:
+                            self._active_proxy = proxy
+                            host = proxy.split('@')[-1] if '@' in proxy else proxy
+                            print(f"🔄 [BINANCE] Switched to working proxy ({host})")
+                        return await resp.json()
+                    else:
+                        # HTTP ошибка (403, 429, etc)
+                        errors.append(f"proxy{idx+1}:{resp.status}")
+                        
+            except Exception as e:
+                errors.append(f"proxy{idx+1}:{type(e).__name__}")
+                continue
+        
+        # ❌ Все прокси упали
+        error_summary = ", ".join(errors[:3])  # Первые 3 ошибки
+        print(f"🔴 [BINANCE] All proxies failed for {endpoint}. Errors: {error_summary}")
+        return None
 
     async def _req(self, binance_ep: str, bybit_ep: str,
                    binance_params: Dict = None,
                    bybit_params: Dict = None) -> Optional[Any]:
+        """
+        ✅ v3.1 Отказоустойчивость: авто-переключение Binance ↔ Bybit
+        """
         await self._init_source()
+        
+        # Пробуем основной источник
         if self._use_binance:
-            return await self._binance(binance_ep, binance_params)
-        return await self._bybit(bybit_ep, bybit_params)
+            result = await self._binance(binance_ep, binance_params)
+            if result is not None:
+                return result
+            # ❌ Binance упал → пробуем Bybit
+            print(f"⚠️ [FALLBACK] Binance failed for {binance_ep}, trying Bybit...")
+            result = await self._bybit(bybit_ep, bybit_params)
+            if result is not None:
+                print(f"✅ [FALLBACK] Bybit success for {bybit_ep}")
+            return result
+        else:
+            result = await self._bybit(bybit_ep, bybit_params)
+            if result is not None:
+                return result
+            # ❌ Bybit упал → пробуем Binance
+            print(f"⚠️ [FALLBACK] Bybit failed for {bybit_ep}, trying Binance...")
+            result = await self._binance(binance_ep, binance_params)
+            if result is not None:
+                print(f"✅ [FALLBACK] Binance success for {binance_ep}")
+            return result
 
     # =========================================================================
     # SYMBOLS
@@ -909,39 +952,14 @@ class BinanceFuturesClient:
                 rsi_1h=rsi,
                 funding_rate=round(float(funding) * 100, 4) if funding else 0.0,
                 funding_accumulated=funding_acc,
-                open_interest=float(oi) if oi else 0.0,
-                oi_change_4d=oi_change,
-                # ✅ FIX L/S: санитарная проверка — если ratio вне 25-75% → 50 (API баг)
-                long_short_ratio=float(ratio) if ratio and 10 <= float(ratio) <= 90 else 50.0,
-                volume_24h=float(ticker.get("quoteVolume", 0)) if isinstance(ticker, dict) else 0.0,
-                volume_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
-                price_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
-                hourly_deltas=hourly_vols,
-                last_updated=datetime.utcnow(),
-                # ── Breakout поля ────────────────────────────────────────────
-                volume_spike_ratio=round(vol_spike, 2),
-                price_change_1h=round(price_chg_1h, 3),
-                atr_14_pct=round(atr_pct, 3),
-                candle_body_pct=round(body_pct, 3),
-                volume_15m_candles=vol_15m_list,
-                high_24h=high_24h,
-                low_24h=low_24h,
-                pct_from_high_24h=round(pct_from_high, 3),
-                pct_from_low_24h=round(pct_from_low, 3),
-                # ── Realtime метрики ───────────────────────────────────────
-                taker_buy_sell_ratio=taker_buy_sell_ratio,
-                recent_liquidations_usd=recent_liquidations_usd,
-                liq_side=liq_side,
-                top_trader_long_short_ratio=top_trader_long_short_ratio,
             )
         except Exception as e:
-            print(f"Market data error {symbol}: {e}")
+            import traceback
+            err_msg = str(e)[:100]
+            print(f"🔴 [API-CRASH] {symbol}: MarketData failed: {err_msg}")
+            print(f"🔴 [API-CRASH] {symbol}: {traceback.format_exc()[:200]}")
             return None
-
-    # =========================================================================
-    # RSI
-    # =========================================================================
-
+    
     def _calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
         if len(prices) < period + 1:
             return None
