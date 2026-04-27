@@ -304,7 +304,7 @@ def api_chart_data():
 
 @app.route("/api/trades")
 def api_trades():
-    """API: Последние 5 сделок SHORT и LONG с деталями"""
+    """API: Последние 20 сделок SHORT и LONG с деталями"""
     trades = {"short": [], "long": []}
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
@@ -312,12 +312,12 @@ def api_trades():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как LIST
+            # Читаем all_trades как LIST (последние 20)
             try:
-                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "4"])
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "19"])
                 if trades_json:
                     all_trades = [json.loads(t) for t in trades_json]
-                    trades[prefix] = all_trades[:5]
+                    trades[prefix] = all_trades[:20]
             except:
                 pass
         except Exception as e:
