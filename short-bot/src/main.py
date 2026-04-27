@@ -113,6 +113,8 @@ class Config:
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
+    # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
+    MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
 
 
 # ============================================================================
@@ -630,7 +632,9 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
     """
     try:
         print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
+        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
+        print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: get_complete_market_data returned: {type(md)}")  # DEBUG
         if not md:
             print(f"🔬 [SCAN-SHORT-ENTRY] {symbol}: NO market data")
             return None
@@ -638,6 +642,14 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
 
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
+
+        # 🆕 Aegis: Фильтр минимальной капитализации ($900k)
+        market_cap = getattr(md, 'market_cap', 0) or 0
+        if market_cap and market_cap < Config.MIN_MARKET_CAP:
+            print(f"🔴 [MARKET-CAP-SHORT] {symbol}: cap=${market_cap:,.0f} < ${Config.MIN_MARKET_CAP:,.0f} — skip")
+            return None
+        elif market_cap:
+            print(f"💰 [MARKET-CAP-SHORT] {symbol}: cap=${market_cap:,.0f} ✅")
 
         # ✅ v4.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
