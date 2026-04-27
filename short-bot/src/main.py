@@ -60,7 +60,7 @@ from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
-from core.market_context import get_market_context, MarketContextFilter  # ✅ FIX v5
+from core.market_context import get_market_context, MarketContextFilter  # ✅ FIX v6  # ✅ v4.0
 
 
 # ============================================================================
@@ -71,7 +71,7 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))  # ✅ FIX v5: шорт требует выше уверенности
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -80,11 +80,11 @@ class Config:
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX v5: 1.5% — меньше ложных стопов
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX: 1.0% — чётче SL
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX v5: TP1=2.5% → R:R=1.67:1
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
@@ -92,7 +92,7 @@ class Config:
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
-    SIGNAL_TTL_HOURS = 2   # ✅ v5.0 FIX: было 24h — блокировало все символы на сутки!
+    SIGNAL_TTL_HOURS = 24
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
@@ -297,7 +297,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v5.0...")
+    print("🚀 Starting SHORT Bot v6.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -392,7 +392,7 @@ async def lifespan(app: FastAPI):
             Config.USE_COINGLASS = False
 
 
-    # ✅ FIX v5: Инициализируем Market Context Filter
+    # ✅ FIX v6: Инициализируем Market Context Filter
     state.market_ctx = MarketContextFilter(
         binance_client=state.binance,
         redis_client=state.redis
@@ -427,7 +427,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🤖 <b>SHORT Bot v2.9 запущен</b>\n\n"
+        f"🤖 <b>SHORT Bot v6.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -456,7 +456,7 @@ async def lifespan(app: FastAPI):
     print("👋 SHORT Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="SHORT Bot v6.0")
 
 
 # ============================================================================
@@ -473,7 +473,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "SHORT Bot v6.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -974,18 +974,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         reasons     = list(score_result.reasons)
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
-        # ✅ v5.0 FIX: передаём BTC change в ShortFilter
-        btc_chg_for_sf = 0.0
-        try:
-            if hasattr(state, 'market_ctx') and state.market_ctx and state.market_ctx._btc_cache:
-                btc_chg_for_sf = state.market_ctx._btc_cache.get('change_1h', 0.0)
-        except Exception:
-            pass
         sf   = get_short_filter()
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
-            btc_price_1h_change=btc_chg_for_sf,
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
@@ -1044,7 +1036,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
             # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
-            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:  # ✅ FIX v5: 0.5→0.7
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:
                 print(f"🚫 [ELLIOTT-BLOCK-SHORT] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа

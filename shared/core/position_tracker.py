@@ -470,6 +470,7 @@ class PositionTracker:
             signal["close_price"] = current_price
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
+            signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
             
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
@@ -595,6 +596,7 @@ class PositionTracker:
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = total_pnl
+        signal["pnl"]         = total_pnl  # ✅ FIX v6: dashboard compat
         # ✅ v2.5: Показываем "SL(после TP1)" если был взят TP
         max_tp_hit = signal.get("max_tp_reached", "")
         if max_tp_hit:
@@ -713,7 +715,8 @@ class PositionTracker:
                     "entry_price":  entry,
                     "close_price":  close_p,
                     "stop_loss":    sl_price,
-                    "pnl":          round(pnl_pct, 4),
+                    "pnl":          round(pnl_pct, 4),  # ✅ both fields
+                    "pnl_pct":      round(pnl_pct, 4),
                     "tp_level":     tp_level,
                     "close_type":   close_type,
                     "opened_at":    opened_at,

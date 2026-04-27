@@ -91,7 +91,7 @@ class Config:
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
     LONG_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
-    SIGNAL_TTL_HOURS = 2   # ✅ v5.0 FIX: было 24h — блокировало все символы на сутки!
+    SIGNAL_TTL_HOURS = 24
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
@@ -288,7 +288,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v5.0...")
+    print("🚀 Starting LONG Bot v6.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -466,7 +466,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v6.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():

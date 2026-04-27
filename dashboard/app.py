@@ -88,9 +88,9 @@ def get_trading_stats(days=7):
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
                     
                     total = len(trades)
-                    wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
-                    losses = sum(1 for t in trades if t.get('pnl', 0) <= 0)
-                    pnl = sum(t.get('pnl', 0) for t in trades)
+                    wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
+                    losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
+                    pnl = sum((t.get('pnl_pct') or t.get('pnl') or 0) for t in trades)
                     
                     stats["total_trades"] += total
                     stats["win_count"] += wins
@@ -394,7 +394,7 @@ def api_feed():
                                     "message": f"{t.get('exit_reason', 'Closed')} @ {t.get('exit_price', t.get('close_price', 0))}",
                                     "timestamp": t.get("exit_time", t.get("closed_at", "")),
                                     "price": t.get("exit_price", t.get("close_price", 0)),
-                                    "pnl": t.get("pnl", t.get("pnl_pct", 0))
+                                    "pnl": (t.get("pnl_pct") or t.get("pnl") or 0)
                                 })
                         except:
                             continue
@@ -470,7 +470,7 @@ def api_summary():
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
-                            pnl = t.get("pnl", 0)
+                            pnl = (t.get("pnl_pct") or t.get("pnl") or 0)
                             is_win = pnl > 0
                             
                             # Week
