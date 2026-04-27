@@ -69,7 +69,7 @@ class ShortFilter:
     FUNDING_MODERATE = 0.02   # > 0.02%
 
     # Минимальный RSI для SHORT входа
-    RSI_MIN_FOR_SHORT = 30    # ✅ FIX v5.0: было 35 → 30 (ещё больше шорт-сетапов)
+    RSI_MIN_FOR_SHORT = 35    # ✅ FIX #2: было 50 — блокировало RSI 35-49 (лучшие шорт сетапы)
 
     def check(
         self,
@@ -103,33 +103,12 @@ class ShortFilter:
                 score_delta += 8
                 reasons.append(f"BTC падает {btc_price_1h_change:.1f}%/1ч → +8 к скору")
 
-        # ── 2. RSI анализ (НЕ блокирующий!) ───────────────────────────────
+        # ── 2. RSI анализ (ОТКЛЮЧЕН - не используем для входа) ─────────────
+        # RSI не является основанием для входа в сделку (по требованию)
+        # Оставляем только логирование для информации
         rsi = getattr(market_data, "rsi_1h", None)
-        if rsi is not None:
-            if rsi >= 70:
-                # Перекупленность — отличный сигнал для шорта
-                score_delta += 8
-                reasons.append(f"🔥 RSI {rsi:.1f} перекуплен — сильный шорт сигнал +8")
-            elif rsi >= 60:
-                # Верхняя зона — хорошо для шорта
-                score_delta += 5
-                reasons.append(f"RSI {rsi:.1f} в верхней зоне — шорт фаворит +5")
-            elif rsi >= 50:
-                # Нейтрально
-                score_delta += 2
-                reasons.append(f"RSI {rsi:.1f} выше 50 — небольшой бонус +2")
-            elif rsi >= 40:
-                # Ниже 50 — даунтренд подтверждается
-                score_delta += 3
-                reasons.append(f"RSI {rsi:.1f} в зоне даунтренда — подтверждение +3")
-            elif rsi >= 30:
-                # Низкий RSI при падении — моментум продолжается
-                score_delta += 5
-                reasons.append(f"RSI {rsi:.1f} низкий при падении — моментум +5")
-            else:
-                # Очень низкий RSI (<30) — возможен отскок, но не блокируем!
-                score_delta -= 3
-                reasons.append(f"RSI {rsi:.1f} очень низкий — риск отскока -3")
+        if rsi is not None and rsi >= 70:
+            reasons.append(f"RSI {rsi:.1f} (инфо, не влияет на скор)")
 
         # ── 3. Фандинг-спайк (главный SHORT фактор) ──────────────────────
         funding = getattr(market_data, "funding_rate", 0) / 100  # уже в долях
