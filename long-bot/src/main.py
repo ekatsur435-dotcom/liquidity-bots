@@ -288,7 +288,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v6.0...")
+    print("🚀 Starting LONG Bot v5.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -335,7 +335,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET")
+            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
@@ -377,7 +377,7 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
+            from utils.coinglass_client import CoinglassClient
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
@@ -412,6 +412,23 @@ async def lifespan(app: FastAPI):
             state.watchlist = []
 
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
+    
+    # ✅ FIX v5.1: Фильтруем watchlist — оставляем только символы доступные на BingX
+    # Это устраняет постоянные ошибки 109425 (LIGHT-USDT, MON-USDT не листингованы)
+    if state.auto_trader and state.auto_trader.bingx:
+        try:
+            await state.auto_trader.bingx._load_contracts()
+            bingx_symbols = set(state.auto_trader.bingx._symbol_info_cache.keys())
+            before = len(state.watchlist)
+            state.watchlist = [
+                s for s in state.watchlist
+                if state.auto_trader.bingx._normalize_symbol(s) in bingx_symbols
+                   or state.auto_trader.bingx._normalize_symbol(s.replace('-USDT','') + 'USDT') in bingx_symbols
+            ]
+            removed = before - len(state.watchlist)
+            print(f"📋 BingX whitelist filter: {before} → {len(state.watchlist)} symbols ({removed} not on BingX removed)")
+        except Exception as e:
+            print(f"⚠️ BingX whitelist filter error: {e} — using full watchlist")
 
     state.is_running = True
     state.last_scan  = datetime.utcnow()
@@ -466,7 +483,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v6.0", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -885,11 +902,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
-        # ✅ FIX v7: Детальные логи score breakdown
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
-
         if not score_result.is_valid:
             override_reason = None
             boost = 0
@@ -925,21 +937,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
-                bear_threshold = max(45, Config.MIN_SCORE - 15)
-                if score_result.total_score >= bear_threshold:
-                    print(f"\U0001f7e1 [FILTER0-LONG] {symbol}: score={score_result.total_score} BEAR PASS")
-                    from core.scorer import ScoreResult, Confidence
-                    score_result = ScoreResult(
-                        total_score=score_result.total_score, max_possible=score_result.max_possible,
-                        direction=score_result.direction, is_valid=True,
-                        confidence=Confidence.LOW, grade="C",
-                        components=score_result.components,
-                        reasons=score_result.reasons + ["Bear market pass"],
-                    )
-                else:
-                    print(f"\U0001f534 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
-                    return None
+                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70)")
+                return None
         
         reasons     = list(score_result.reasons)
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS

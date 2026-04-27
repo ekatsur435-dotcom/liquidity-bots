@@ -16,7 +16,6 @@ Phase 3: Добавлена Redis persistence для сохранения сос
 
 import os
 import sys
-import json
 from dataclasses import dataclass
 from typing import Dict, Optional, List
 from datetime import datetime

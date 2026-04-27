@@ -54,7 +54,7 @@ class MarketContextFilter:
     BTC_CRASH_THRESHOLD_SHORT =  2.0   # BTC рост 1ч → не блокируем SHORT
     BTC_PUMP_THRESHOLD_LONG   =  5.0   # BTC рост 1ч > 5% → осторожно лонг
     DAILY_LOSS_STOP_PCT       = float(os.getenv("DAILY_LOSS_STOP_PCT", "-5.0"))
-    ASIAN_SESSION_BLOCK       = os.getenv("BLOCK_ASIAN_SESSION", "false").lower() == "true"  # ✅ Отключено по умолчанию 
+    ASIAN_SESSION_BLOCK       = os.getenv("BLOCK_ASIAN_SESSION", "true").lower() == "true" 
 
     # UTC часы азиатской сессии (низкая ликвидность, много ложных пробоев)
     ASIAN_SESSION_START = 3   # 03:00 UTC
@@ -125,27 +125,27 @@ class MarketContextFilter:
 
     # ── Дневной P&L ───────────────────────────────────────────────────────────
 
-    def _get_daily_pnl(self, bot_type: str = "long") -> float:
-        """Получает дневной P&L из Redis (с префиксом бота)"""
+    def _get_daily_pnl(self) -> float:
+        """Получает дневной P&L из Redis"""
         if not self._redis:
             return 0.0
         try:
-            key = f"{bot_type}:daily_pnl:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            key = f"daily_pnl:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
             val = self._redis.get(key)
             return float(val) if val else 0.0
         except Exception:
             return 0.0
 
-    def update_daily_pnl(self, pnl_delta: float, bot_type: str = "long"):
-        """Обновляет дневной P&L после закрытия сделки (с префиксом бота)"""
+    def update_daily_pnl(self, pnl_delta: float, direction: str = "long"):
+        """Обновляет дневной P&L после закрытия сделки"""
         if not self._redis:
             return
         try:
-            key = f"{bot_type}:daily_pnl:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-            current = self._get_daily_pnl(bot_type)
+            key = f"daily_pnl:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            current = self._get_daily_pnl()
             new_val = current + pnl_delta
             self._redis.set(key, str(new_val), ex=86400)  # TTL 24h
-            print(f"📊 [MarketContext][{bot_type.upper()}] Daily PnL updated: {current:.2f}% → {new_val:.2f}%")
+            print(f"📊 [MarketContext] Daily PnL updated: {current:.2f}% → {new_val:.2f}%")
         except Exception as e:
             print(f"⚠️ [MarketContext] Daily PnL update error: {e}")
 
@@ -260,8 +260,8 @@ class MarketContextFilter:
         warnings = []
         block_reason = ""
 
-        # 1. Дневной P&L стоп (с префиксом бота)
-        daily_pnl = self._get_daily_pnl(direction)
+        # 1. Дневной P&L стоп
+        daily_pnl = self._get_daily_pnl()
         if daily_pnl <= self.DAILY_LOSS_STOP_PCT:
             return MarketContextResult(
                 allowed=False,
