@@ -117,8 +117,8 @@ SHORT_PATTERN_STRENGTHS = {
 
 class BaseScorer:
     COMPONENT_WEIGHTS = {
-        "rsi": 20, "funding": 15, "long_short_ratio": 15,
-        "open_interest": 15, "delta": 20, "pattern": 30
+        "rsi": 5, "funding": 20, "long_short_ratio": 20,
+        "open_interest": 20, "delta": 25, "pattern": 30
     }
 
     def __init__(self, min_score: int = 65, direction: Direction = Direction.SHORT):
@@ -211,20 +211,18 @@ class BaseScorer:
 
 class ShortScorer(BaseScorer):
 
-    def __init__(self, min_score: int = 60):  # ✅ FIX: 60 (было 65)
+    def __init__(self, min_score: int = 65):
         super().__init__(min_score, Direction.SHORT)
 
     def calculate_rsi_component(self, rsi_1h: float) -> ScoreComponent:
-        if rsi_1h >= 80:   score, desc = 20, f"RSI {rsi_1h:.1f} — Экстремальная перекупленность"
-        elif rsi_1h >= 75: score, desc = 18, f"RSI {rsi_1h:.1f} — Сильная перекупленность"
-        elif rsi_1h >= 70: score, desc = 15, f"RSI {rsi_1h:.1f} — Перекупленность"
-        elif rsi_1h >= 65: score, desc = 12, f"RSI {rsi_1h:.1f} — Начало перекупленности"
-        elif rsi_1h >= 60: score, desc = 8,  f"RSI {rsi_1h:.1f} — Близко к перекупленности"
-        elif rsi_1h >= 55: score, desc = 4,  f"RSI {rsi_1h:.1f} — Нейтрально-bullish"
-        elif rsi_1h >= 50: score, desc = 3,  f"RSI {rsi_1h:.1f} — Нейтраль 50-55"  # ✅ FIX
-        elif rsi_1h < 30:  score, desc = 0,  f"RSI {rsi_1h:.1f} — Перепроданность (плохо для шорта)"
-        else:              score, desc = 2,  f"RSI {rsi_1h:.1f} — Нейтральная зона"
-        return ScoreComponent("RSI", score, 20, desc, rsi_1h)
+        # ✅ v3.0: RSI макс 5 очков - не является основанием для входа
+        if rsi_1h >= 80:   score, desc = 5, f"RSI {rsi_1h:.1f} — Экстремально перекуплен"
+        elif rsi_1h >= 70: score, desc = 4, f"RSI {rsi_1h:.1f} — Перекуплен (инфо)"
+        elif rsi_1h >= 60: score, desc = 3, f"RSI {rsi_1h:.1f} — Верхняя зона (инфо)"
+        elif rsi_1h >= 50: score, desc = 2, f"RSI {rsi_1h:.1f} — Выше 50 (инфо)"
+        elif rsi_1h < 30:  score, desc = 0, f"RSI {rsi_1h:.1f} — Перепродан (плохо для шорта)"
+        else:              score, desc = 1, f"RSI {rsi_1h:.1f} — Нейтрально (инфо)"
+        return ScoreComponent("RSI", score, 5, desc, rsi_1h)
 
     def calculate_funding_component(self, current_funding: float,
                                     accumulated_4d: float) -> ScoreComponent:
@@ -341,19 +339,18 @@ class ShortScorer(BaseScorer):
 
 class LongScorer(BaseScorer):
 
-    def __init__(self, min_score: int = 55):  # ✅ FIX: 55 (было 65) — больше сигналов
+    def __init__(self, min_score: int = 65):
         super().__init__(min_score, Direction.LONG)
 
     def calculate_rsi_component(self, rsi_1h: float) -> ScoreComponent:
-        # ✅ FIX v3.1: Расширен диапазон RSI для медвежьего рынка (RSI редко < 35)
+        # ✅ v3.0: Увеличены очки для медвежьего рынка (RSI 35-55)
         if rsi_1h <= 20:   score, desc = 20, f"RSI {rsi_1h:.1f} — Экстремальная перепроданность"
         elif rsi_1h <= 25: score, desc = 18, f"RSI {rsi_1h:.1f} — Сильная перепроданность"
         elif rsi_1h <= 30: score, desc = 15, f"RSI {rsi_1h:.1f} — Перепроданность"
-        elif rsi_1h <= 35: score, desc = 13, f"RSI {rsi_1h:.1f} — Начало перепроданности"
-        elif rsi_1h <= 40: score, desc = 11, f"RSI {rsi_1h:.1f} — Близко к перепроданности"
-        elif rsi_1h <= 45: score, desc = 9,  f"RSI {rsi_1h:.1f} — Нейтрально-bearish (разворот возможен)"
-        elif rsi_1h <= 50: score, desc = 7,  f"RSI {rsi_1h:.1f} — Нейтральная зона"
-        elif rsi_1h <= 55: score, desc = 5,  f"RSI {rsi_1h:.1f} — Умеренно бычий"
+        elif rsi_1h <= 35: score, desc = 11, f"RSI {rsi_1h:.1f} — Начало перепроданности (bearish)"
+        elif rsi_1h <= 40: score, desc = 9,  f"RSI {rsi_1h:.1f} — Близко к перепроданности (bearish)"
+        elif rsi_1h <= 45: score, desc = 7,  f"RSI {rsi_1h:.1f} — Нейтрально-bearish"
+        elif rsi_1h <= 55: score, desc = 5,  f"RSI {rsi_1h:.1f} — Нейтральная зона"
         elif rsi_1h > 70:  score, desc = 0,  f"RSI {rsi_1h:.1f} — Перекупленность (плохо для лонга)"
         else:              score, desc = 2,  f"RSI {rsi_1h:.1f} — Умеренно бычий"
         return ScoreComponent("RSI", score, 20, desc, rsi_1h)
@@ -433,16 +430,7 @@ class LongScorer(BaseScorer):
                         long_ratio, oi_change_4d, price_change_4d,
                         hourly_deltas, price_trend, patterns,
                         volume_spike_ratio: float = 1.0,
-                        atr_14_pct: float = 0.5,
-                        symbol_change_1h: float = 0.0,
-                        btc_change_1h: float = 0.0) -> ScoreResult:
-        """
-        Расчёт скора для LONG входа.
-        
-        symbol_change_1h: изменение самого альта за 1ч (%)
-        btc_change_1h: изменение BTC за 1ч (%)
-        Если альт растёт когда BTC падает — бонус за независимость.
-        """
+                        atr_14_pct: float = 0.5) -> ScoreResult:
         components = []
         components.append(self.calculate_rsi_component(rsi_1h))
         components.append(self.calculate_funding_component(funding_current, funding_accumulated))
@@ -460,20 +448,6 @@ class LongScorer(BaseScorer):
         total += vs_bonus
         atr_pen, atr_reason = self._atr_penalty(atr_14_pct)
         total += atr_pen
-
-        # ✅ v4.0: Бонус за независимое движение альта от BTC
-        # Альткоин с собственным нарративом = лучший сигнал
-        decoupling_reason = ""
-        if btc_change_1h <= -1.0 and symbol_change_1h >= 0.3:
-            # BTC падает, альт держится или растёт — сильный бонус
-            decoupling_bonus = min(12, int(abs(btc_change_1h) * 2 + symbol_change_1h * 2))
-            total += decoupling_bonus
-            decoupling_reason = f"💪 Альт независим от BTC (BTC {btc_change_1h:.1f}% alt {symbol_change_1h:.1f}%) +{decoupling_bonus}"
-        elif btc_change_1h >= 1.0 and symbol_change_1h >= btc_change_1h * 1.5:
-            # BTC растёт, альт обгоняет — momentum бонус
-            total += 5
-            decoupling_reason = f"🚀 Альт обгоняет BTC ({symbol_change_1h:.1f}% vs {btc_change_1h:.1f}%) +5"
-
         total = min(max(total, 0), 100)
         reasons = []
         if components[0].score >= 15: reasons.append(f"RSI перепродан ({rsi_1h:.1f})")
@@ -484,7 +458,6 @@ class LongScorer(BaseScorer):
         if components[5].score >= 20: reasons.append(f"Сильный паттерн: {pat_names[0] if pat_names else 'N/A'}")
         if vs_reason: reasons.append(vs_reason)
         if atr_reason: reasons.append(atr_reason)
-        if decoupling_reason: reasons.append(decoupling_reason)
         return ScoreResult(
             total_score=total, max_possible=max_p, direction=Direction.LONG,
             is_valid=total >= self.min_score,
