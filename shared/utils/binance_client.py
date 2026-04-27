@@ -807,8 +807,10 @@ class BinanceFuturesClient:
         Полные рыночные данные.
         v2.1: добавлены breakout поля из 15м свечей.
         """
+        print(f"🔍 [API-CALL] get_complete_market_data({symbol}) called")  # DEBUG ENTRY
         try:
             await self._init_source()
+            print(f"🔍 [API-CALL] {symbol}: _init_source passed")  # DEBUG
 
             results = await asyncio.gather(
                 self.get_price(symbol),
