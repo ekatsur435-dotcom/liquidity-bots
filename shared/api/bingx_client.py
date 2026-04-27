@@ -237,46 +237,23 @@ class BingXClient:
         })
 
     async def is_symbol_active(self, symbol: str) -> bool:
-        """✅ v5.1: Check if symbol is listed on BingX.
-        Error 109425 = symbol не существует на BingX (есть на Binance но не на BingX).
-        Решение: проверять кэш контрактов перед любым API вызовом.
-        """
-        norm = self._normalize_symbol(symbol)
+        symbol = self._normalize_symbol(symbol)
         await self._load_contracts()
-        info = self._symbol_info_cache.get(norm)
+        info = self._symbol_info_cache.get(symbol)
         if info is None:
-            # Пробуем с -USDT форматом
-            dash = self._format_for_order(symbol).replace('-', '')
-            info = self._symbol_info_cache.get(dash)
-        if info is None:
-            # Обновляем кэш один раз
+            # ✅ FIX: символ не найден в кэше — пробуем обновить список контрактов
+            print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
             await self._load_contracts(force_refresh=True)
-            info = self._symbol_info_cache.get(norm) or self._symbol_info_cache.get(dash if 'dash' in dir() else norm)
-        if info is None:
-            # Символ реально не существует на BingX → тихо возвращаем False (нет лишних логов)
-            return False
-        return info.get("online", True)
+            info = self._symbol_info_cache.get(symbol)
+        return info.get("online", True) if info else False
 
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
         return round(price, info.get("price_precision", 4))
 
     def _normalize_symbol(self, symbol: str) -> str:
-        """Нормализует символ (без дефисов — для кэша/индексов)."""
-        return symbol.replace('-', '').replace('_', '').upper()
-
-    def _format_for_order(self, symbol: str) -> str:
-        """✅ FIX v5.1: BingX ORDER API требует ATOM-USDT (с дефисом).
-        Ошибка 109400 'must end with -USDT' = неверный формат символа.
-        """
-        clean = symbol.replace('-', '').replace('_', '').upper()
-        if clean.endswith('USDT'):
-            return clean[:-4] + '-USDT'
-        if clean.endswith('USDC'):
-            return clean[:-4] + '-USDC'
-        if clean.endswith('BTC'):
-            return clean[:-3] + '-BTC'
-        return clean + '-USDT'  # fallback
+        """Нормализует символ для BingX API (убирает дефисы)."""
+        return symbol.replace('-', '').replace('_', '')
 
     def _format_symbol_for_positions(self, symbol: str) -> str:
         """

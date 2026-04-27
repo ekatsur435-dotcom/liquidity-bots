@@ -366,111 +366,85 @@ class UpstashRedisClient:
             print(f'[Redis] delete error: {e}')
             return 0
 
+    # ── redis-py proxy methods ─────────────────────────────────────────────────
+
+    def set(self, key: str, value, ex: int = None) -> bool:
+        try:
+            cmd = ["SET", key, str(value)]
+            if ex: cmd += ["EX", str(ex)]
+            return self.execute(cmd) in ("OK", True, b"OK")
+        except Exception: return False
+
+    def get(self, key: str):
+        try: return self.execute(["GET", key])
+        except Exception: return None
+
+    def keys(self, pattern: str = "*"):
+        try:
+            r = self.execute(["KEYS", pattern])
+            return r if isinstance(r, list) else []
+        except Exception: return []
+
+    def delete(self, *keys) -> int:
+        try:
+            return self.execute(["DEL"] + list(keys)) or 0 if keys else 0
+        except Exception: return 0
+
+    def lpush(self, name: str, *values) -> int:
+        try: return self.execute(["LPUSH", name] + [str(v) for v in values]) or 0
+        except Exception: return 0
+
+    def lrange(self, name: str, start: int, end: int) -> list:
+        try:
+            r = self.execute(["LRANGE", name, str(start), str(end)])
+            return r if isinstance(r, list) else []
+        except Exception: return []
+
+    def ltrim(self, name: str, start: int, end: int) -> bool:
+        try: self.execute(["LTRIM", name, str(start), str(end)]); return True
+        except Exception: return False
+
+    def expire(self, name: str, seconds: int) -> bool:
+        try: return bool(self.execute(["EXPIRE", name, str(seconds)]))
+        except Exception: return False
+
+    def incr(self, name: str) -> int:
+        try: return self.execute(["INCR", name]) or 0
+        except Exception: return 0
+
+    def incrby(self, name: str, amount: int) -> int:
+        try: return self.execute(["INCRBY", name, str(amount)]) or 0
+        except Exception: return 0
+
+    def hset(self, name: str, mapping: dict = None, **kwargs) -> int:
+        try:
+            m = {**(mapping or {}), **kwargs}
+            args = [a for kv in m.items() for a in (str(kv[0]), str(kv[1]))]
+            return self.execute(["HSET", name] + args) or 0
+        except Exception: return 0
+
+    def hgetall(self, name: str) -> dict:
+        try:
+            r = self.execute(["HGETALL", name])
+            if isinstance(r, list) and len(r) % 2 == 0:
+                return {r[i]: r[i+1] for i in range(0, len(r), 2)}
+            return {}
+        except Exception: return {}
+
+    def hget(self, name: str, key: str):
+        try: return self.execute(["HGET", name, key])
+        except Exception: return None
+
+    @property
+    def client(self):
+        """✅ self.redis.client.lpush(...) → self.redis.lpush(...)"""
+        return self
+
+
 # SINGLETON INSTANCE
 # ============================================================================
 
 _redis_client = None
-
-
-    # =========================================================================
-    # ✅ PROXY METHODS — совместимость с redis-py API и dashboard.execute() calls
-    # =========================================================================
-
-    def execute(self, cmd: list) -> any:
-        """Выполняет команду Redis по имени: execute(["LRANGE", key, 0, 9])"""
-        try:
-            command = cmd[0].upper() if cmd else ""
-            if command == "LRANGE":
-                key, start, end = cmd[1], int(cmd[2]), int(cmd[3])
-                return self.client.lrange(key, start, end) or []
-            elif command == "KEYS":
-                return self.client.keys(cmd[1]) or []
-            elif command == "GET":
-                return self.client.get(cmd[1])
-            elif command == "SET":
-                return self.client.set(cmd[1], cmd[2])
-            elif command == "DEL":
-                return self.client.delete(*cmd[1:])
-            elif command == "LPUSH":
-                return self.client.lpush(cmd[1], *cmd[2:])
-            elif command == "SCAN":
-                # Upstash scan: return [cursor, keys]
-                cursor = int(cmd[1]) if len(cmd) > 1 else 0
-                pattern = cmd[3] if len(cmd) > 3 else "*"
-                keys = self.client.keys(pattern) or []
-                return [0, keys]  # cursor=0 means done
-            elif command == "EXISTS":
-                return self.client.exists(cmd[1])
-            elif command == "EXPIRE":
-                return self.client.expire(cmd[1], int(cmd[2]))
-            else:
-                print(f"[Redis] Unknown execute command: {command}")
-                return None
-        except Exception as e:
-            print(f"[Redis] execute({cmd[0] if cmd else '?'}) error: {e}")
-            return None
-
-    def lrange(self, key: str, start: int, end: int) -> list:
-        """Direct lrange proxy"""
-        try:
-            return self.client.lrange(key, start, end) or []
-        except Exception as e:
-            print(f"[Redis] lrange error: {e}")
-            return []
-
-    def lpush(self, key: str, *values) -> int:
-        """Direct lpush proxy"""
-        try:
-            return self.client.lpush(key, *values) or 0
-        except Exception as e:
-            print(f"[Redis] lpush error: {e}")
-            return 0
-
-    def set(self, key: str, value: str, ex: int = None) -> bool:
-        """Direct set proxy"""
-        try:
-            if ex:
-                return bool(self.client.setex(key, ex, value))
-            return bool(self.client.set(key, value))
-        except Exception as e:
-            return False
-
-    def get(self, key: str):
-        """Direct get proxy"""
-        try:
-            return self.client.get(key)
-        except Exception as e:
-            return None
-
-    def keys(self, pattern: str = "*") -> list:
-        """Direct keys proxy"""
-        try:
-            return self.client.keys(pattern) or []
-        except Exception as e:
-            return []
-
-    def delete(self, *keys) -> int:
-        """Direct delete proxy"""
-        try:
-            return self.client.delete(*keys) if keys else 0
-        except Exception as e:
-            return 0
-
-    def exists(self, key: str) -> bool:
-        """Direct exists proxy"""
-        try:
-            return bool(self.client.exists(key))
-        except Exception:
-            return False
-
-    def expire(self, key: str, seconds: int) -> bool:
-        """Direct expire proxy"""
-        try:
-            return bool(self.client.expire(key, seconds))
-        except Exception:
-            return False
-
-
 
 def get_redis_client() -> UpstashRedisClient:
     global _redis_client

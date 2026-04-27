@@ -69,7 +69,7 @@ class ShortFilter:
     FUNDING_MODERATE = 0.02   # > 0.02%
 
     # Минимальный RSI для SHORT входа
-    RSI_MIN_FOR_SHORT = 35    # ✅ FIX #2: было 50 — блокировало RSI 35-49 (лучшие шорт сетапы)
+    RSI_MIN_FOR_SHORT = 30    # ✅ v5.0: RSI 30+ = достаточно для шорта (альты часто шортятся при RSI 35-50) (лучшие шорт сетапы)
 
     def check(
         self,

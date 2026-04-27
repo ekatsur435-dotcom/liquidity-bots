@@ -91,7 +91,7 @@ class Config:
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
     LONG_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
-    SIGNAL_TTL_HOURS = 24
+    SIGNAL_TTL_HOURS = 2   # ✅ v5.0 FIX: было 24h — блокировало все символы на сутки!
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
@@ -335,7 +335,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")
+            api_secret = os.getenv("BINGX_API_SECRET")
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
@@ -412,23 +412,6 @@ async def lifespan(app: FastAPI):
             state.watchlist = []
 
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
-    
-    # ✅ FIX v5.1: Фильтруем watchlist — оставляем только символы доступные на BingX
-    # Это устраняет постоянные ошибки 109425 (LIGHT-USDT, MON-USDT не листингованы)
-    if state.auto_trader and state.auto_trader.bingx:
-        try:
-            await state.auto_trader.bingx._load_contracts()
-            bingx_symbols = set(state.auto_trader.bingx._symbol_info_cache.keys())
-            before = len(state.watchlist)
-            state.watchlist = [
-                s for s in state.watchlist
-                if state.auto_trader.bingx._normalize_symbol(s) in bingx_symbols
-                   or state.auto_trader.bingx._normalize_symbol(s.replace('-USDT','') + 'USDT') in bingx_symbols
-            ]
-            removed = before - len(state.watchlist)
-            print(f"📋 BingX whitelist filter: {before} → {len(state.watchlist)} symbols ({removed} not on BingX removed)")
-        except Exception as e:
-            print(f"⚠️ BingX whitelist filter error: {e} — using full watchlist")
 
     state.is_running = True
     state.last_scan  = datetime.utcnow()

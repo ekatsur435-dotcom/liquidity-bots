@@ -78,13 +78,7 @@ def get_trading_stats(days=7):
                 # Боты сохраняют через LPUSH в redis_client.py
                 try:
                     trades_json = redis.execute(["LRANGE", all_trades_key, "0", "49"])
-                    # ✅ FIX: handle both str and bytes from Redis
-                    trades_data = []
-                    for t in (trades_json or []):
-                        try:
-                            if isinstance(t, bytes): t = t.decode('utf-8')
-                            trades_data.append(json.loads(t))
-                        except: pass
+                    trades_data = [json.loads(t) for t in trades_json] if trades_json else []
                 except Exception as e:
                     print(f"Error reading list for {bot_name}: {e}")
                     trades_data = []
@@ -94,14 +88,9 @@ def get_trading_stats(days=7):
                     trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
                     
                     total = len(trades)
-                    def get_pnl(t):
-                        # ✅ FIX: trade может хранить pnl в разных полях
-                        v = t.get('pnl_pct', t.get('pnl', t.get('total_pnl', 0)))
-                        try: return float(v)
-                        except: return 0.0
-                    wins = sum(1 for t in trades if get_pnl(t) > 0)
-                    losses = sum(1 for t in trades if get_pnl(t) <= 0)
-                    pnl = sum(get_pnl(t) for t in trades)
+                    wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
+                    losses = sum(1 for t in trades if t.get('pnl', 0) <= 0)
+                    pnl = sum(t.get('pnl', 0) for t in trades)
                     
                     stats["total_trades"] += total
                     stats["win_count"] += wins
@@ -363,7 +352,7 @@ def api_active_positions():
                                 "symbol": symbol_normalized,  # Возвращаем нормализованный символ
                                 "direction": prefix,
                                 "entry": pos.get("entry_price", 0),
-                                "current_pnl": float(pos.get("unrealized_pnl", pos.get("pnl_pct", pos.get("pnl", 0))) or 0),
+                                "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
                                 "tp": pos.get("take_profit", pos.get("tp", 0)),
                                 "sl": pos.get("stop_loss", pos.get("sl", 0)),
                                 "duration_min": pos.get("duration_min", 0),
@@ -405,7 +394,7 @@ def api_feed():
                                     "message": f"{t.get('exit_reason', 'Closed')} @ {t.get('exit_price', t.get('close_price', 0))}",
                                     "timestamp": t.get("exit_time", t.get("closed_at", "")),
                                     "price": t.get("exit_price", t.get("close_price", 0)),
-                                    "pnl": t.get("pnl", 0)
+                                    "pnl": t.get("pnl", t.get("pnl_pct", 0))
                                 })
                         except:
                             continue
@@ -455,24 +444,6 @@ def api_feed():
     events.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
     return jsonify({"events": events[:15]})
 
-
-
-@app.route("/api/reset_stats", methods=["POST"])
-def reset_stats():
-    """Reset dashboard stats cache (clears old bad data from view)"""
-    try:
-        for redis_getter in [get_redis_short, get_redis_long]:
-            try:
-                r = redis_getter()
-                # Only clear the all_trades key (keeps positions/signals)
-                for prefix in ["short", "long"]:
-                    r.execute(["DEL", f"{prefix}:all_trades"])
-                    r.execute(["DEL", f"{prefix}:micro_step:saved_trades"])
-            except:
-                pass
-        return jsonify({"ok": True, "message": "Stats reset. History cleared."})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/api/summary")
 def api_summary():

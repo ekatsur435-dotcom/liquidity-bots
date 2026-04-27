@@ -1,135 +1,80 @@
-# Render.com Deploy — Liquidity Bots v5.1
-# ✅ All env var names verified against code
+# Render.com — Auto-deploy configuration for all 3 services
+# GitHub → Render auto-deploy on push to main
 
 services:
-
-  # ═══════════════════════════ LONG BOT ═══════════════════════════
   - type: web
     name: liq-longbot
     runtime: python
-    plan: starter
     rootDir: long-bot
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
-      # 🔑 API Keys
       - key: BINGX_API_KEY
         sync: false
       - key: BINGX_API_SECRET
         sync: false
-      - key: BINANCE_API_KEY
+      - key: BINGX_SECRET_KEY
         sync: false
-      # 📱 Telegram
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: TELEGRAM_TOPIC_ID
-        sync: false
-      # 🗄️ Redis (rediss:// URL для TCP подключения)
-      - key: REDIS_URL
-        sync: false
-      # ⚙️ Trading
       - key: BINGX_DEMO_MODE
         value: "true"
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: MIN_LONG_SCORE
         value: "65"
-      - key: MAX_LONG_POSITIONS
-        value: "15"
       - key: LONG_SL_BUFFER
         value: "1.5"
-      - key: RISK_PER_TRADE
-        value: "0.005"
+      - key: MAX_LONG_POSITIONS
+        value: "20"
       - key: SCAN_INTERVAL
         value: "120"
-      - key: MAX_WATCHLIST
-        value: "500"
-      - key: MIN_VOLUME_USDT
-        value: "300000"
-      - key: USE_SMC
-        value: "true"
+      - key: DAILY_LOSS_STOP_PCT
+        value: "-5.0"
       - key: BLOCK_ASIAN_SESSION
+        value: "true"
+      - key: BTC_CORRELATION_FILTER
         value: "false"
-    healthCheckPath: /health
-    autoDeploy: true
 
-  # ═══════════════════════════ SHORT BOT ═══════════════════════════
   - type: web
     name: liq-shortbot
     runtime: python
-    plan: starter
     rootDir: short-bot
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
-      # 🔑 API Keys
       - key: BINGX_API_KEY
         sync: false
       - key: BINGX_API_SECRET
         sync: false
-      - key: BINANCE_API_KEY
+      - key: BINGX_SECRET_KEY
         sync: false
-      # 📱 Telegram (можно тот же бот что и LONG, или отдельный)
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: TELEGRAM_TOPIC_ID
-        sync: false
-      # 📱 Telegram SHORT (отдельный бот/чат для SHORT сигналов — опционально)
-      - key: SHORT_TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: SHORT_TELEGRAM_CHAT_ID
-        sync: false
-      # 🗄️ Redis
-      - key: REDIS_URL
-        sync: false
-      # ⚙️ Trading
       - key: BINGX_DEMO_MODE
         value: "true"
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: MIN_SHORT_SCORE
-        value: "65"
-      - key: MAX_SHORT_POSITIONS
-        value: "15"
+        value: "67"
       - key: SHORT_SL_BUFFER
         value: "1.5"
-      - key: RISK_PER_TRADE
-        value: "0.005"
+      - key: MAX_SHORT_POSITIONS
+        value: "20"
       - key: SCAN_INTERVAL
         value: "120"
-      - key: MAX_WATCHLIST
-        value: "500"
-      - key: MIN_VOLUME_USDT
-        value: "300000"
-      - key: USE_SMC
-        value: "true"
+      - key: DAILY_LOSS_STOP_PCT
+        value: "-5.0"
       - key: BLOCK_ASIAN_SESSION
-        value: "false"
-    healthCheckPath: /health
-    autoDeploy: true
+        value: "true"
 
-  # ═══════════════════════════ DASHBOARD ═══════════════════════════
   - type: web
     name: trading-dashboard
     runtime: python
-    plan: free
     rootDir: dashboard
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -b 0.0.0.0:$PORT app:app
+    healthCheckPath: /health
     envVars:
-      # Dashboard использует HTTPS REST API Upstash (НЕ rediss://)
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      # Если LONG и SHORT на разных Redis:
-      - key: UPSTASH_REDIS_LONG_URL
-        sync: false
-      - key: UPSTASH_REDIS_LONG_TOKEN
-        sync: false
-    healthCheckPath: /health
-    autoDeploy: true

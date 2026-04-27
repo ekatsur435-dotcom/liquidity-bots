@@ -71,7 +71,7 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "62"))  # ✅ FIX v5.1: was 67, too strict  # ✅ FIX v5: шорт требует выше уверенности
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "67"))  # ✅ FIX v5: шорт требует выше уверенности
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -92,7 +92,7 @@ class Config:
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
-    SIGNAL_TTL_HOURS = 24
+    SIGNAL_TTL_HOURS = 2   # ✅ v5.0 FIX: было 24h — блокировало все символы на сутки!
 
     AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
     BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
@@ -304,11 +304,10 @@ async def lifespan(app: FastAPI):
     state.binance          = get_binance_client()
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
-    # ✅ FIX v5.1: Fallback на общий токен если SHORT_TELEGRAM_* не задан
     state.telegram = TelegramBot(
-        bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
-        chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID"),
-        topic_id=os.getenv("SHORT_TELEGRAM_TOPIC_ID") or os.getenv("TELEGRAM_TOPIC_ID"),
+        bot_token=os.getenv("SHORT_TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("SHORT_TELEGRAM_CHAT_ID"),
+        topic_id=os.getenv("SHORT_TELEGRAM_TOPIC_ID"),
     )
 
     redis_ok    = state.redis.health_check()
@@ -343,7 +342,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")
+            api_secret = os.getenv("BINGX_API_SECRET")
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
@@ -420,23 +419,6 @@ async def lifespan(app: FastAPI):
             state.watchlist = []
 
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
-    
-    # ✅ FIX v5.1: Фильтруем watchlist — оставляем только символы доступные на BingX
-    # Это устраняет постоянные ошибки 109425 (LIGHT-USDT, MON-USDT не листингованы)
-    if state.auto_trader and state.auto_trader.bingx:
-        try:
-            await state.auto_trader.bingx._load_contracts()
-            bingx_symbols = set(state.auto_trader.bingx._symbol_info_cache.keys())
-            before = len(state.watchlist)
-            state.watchlist = [
-                s for s in state.watchlist
-                if state.auto_trader.bingx._normalize_symbol(s) in bingx_symbols
-                   or state.auto_trader.bingx._normalize_symbol(s.replace('-USDT','') + 'USDT') in bingx_symbols
-            ]
-            removed = before - len(state.watchlist)
-            print(f"📋 BingX whitelist filter: {before} → {len(state.watchlist)} symbols ({removed} not on BingX removed)")
-        except Exception as e:
-            print(f"⚠️ BingX whitelist filter error: {e} — using full watchlist")
 
     state.is_running = True
     state.last_scan  = datetime.utcnow()
@@ -992,10 +974,18 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         reasons     = list(score_result.reasons)
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
+        # ✅ v5.0 FIX: передаём BTC change в ShortFilter
+        btc_chg_for_sf = 0.0
+        try:
+            if hasattr(state, 'market_ctx') and state.market_ctx and state.market_ctx._btc_cache:
+                btc_chg_for_sf = state.market_ctx._btc_cache.get('change_1h', 0.0)
+        except Exception:
+            pass
         sf   = get_short_filter()
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
+            btc_price_1h_change=btc_chg_for_sf,
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
