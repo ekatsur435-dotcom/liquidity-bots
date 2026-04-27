@@ -1,7 +1,7 @@
 """
-Telegram Bot Integration  v5.0
+Telegram Bot Integration  v2.7
 
-НОВОЕ v5.0:
+НОВОЕ v2.7:
   ✅ send_message() возвращает Optional[int] (message_id) — для thread replies
   ✅ send_reply(text, reply_to_msg_id) — ответ на исходное сообщение сигнала
   ✅ send_signal() возвращает Optional[int] — main.py сохраняет msg_id в Redis
@@ -47,7 +47,7 @@ class TelegramBot:
                  chat_id: Optional[str] = None,
                  topic_id: Optional[str] = None,
                  bot_type: str = ""):
-        # ✅ v5.0 FIX: поддержка LONG_/SHORT_ префиксов + обычных имён
+        # ✅ v2.7 FIX: поддержка LONG_/SHORT_ префиксов + обычных имён
         # Порядок: явный аргумент → {PREFIX}_TELEGRAM_ → TELEGRAM_ (общий)
         prefix = (bot_type.upper() + "_") if bot_type else ""
         self.bot_token = (bot_token
@@ -179,16 +179,6 @@ class TelegramBot:
                     data = await resp.json()
                     msg_id = data.get("result", {}).get("message_id")
                     return msg_id  # ← возвращаем message_id!
-                # ✅ FIX: Обработка 429 rate limit
-                if resp.status == 429:
-                    try:
-                        data = await resp.json()
-                        retry_after = data.get("parameters", {}).get("retry_after", 5)
-                        print(f"⚠️ Telegram 429 — ждём {retry_after}s...")
-                        await asyncio.sleep(retry_after)
-                    except Exception:
-                        await asyncio.sleep(5)
-                    return None  # Пусть вызывающий решит retry
                 error_text = await resp.text()
                 print(f"Telegram API error: {resp.status} — {error_text[:120]}")
                 return None
@@ -628,7 +618,7 @@ class TelegramCommandHandler:
         bot_emoji = "🔴" if self.bot_type == "short" else "🟢"
         bot_name  = "SHORT" if self.bot_type == "short" else "LONG"
         await self._reply(reply_chat_id,
-            f"{bot_emoji} <b>Liquidity {bot_name} Bot v5.0</b>\n\n"
+            f"{bot_emoji} <b>Liquidity {bot_name} Bot v2.7</b>\n\n"
             "<b>📋 Команды:</b>\n"
             "📊 /status — Статус бота\n"
             "🎯 /signals — Активные сигналы\n"

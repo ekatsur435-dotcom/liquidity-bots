@@ -84,17 +84,21 @@ def get_trading_stats(days=7):
                     trades_data = []
                 
                 if trades_data:
-                    # Берем только последние 50 сделок
-                    trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
-                    
-                    # ✅ FIX v5.0: Используем pnl_pct как fallback к pnl
-                    def get_pnl(t):
-                        return t.get('pnl', t.get('pnl_pct', 0))
-                    
+                    # ✅ FIX v7: Считаем только ЗАКРЫТЫЕ сделки (status=closed_*)
+                    # Активные позиции имеют pnl=0 (unrealized) и искажают статистику
+                    all_t = trades_data[-100:] if len(trades_data) > 100 else trades_data
+                    closed_statuses = {'closed_tp', 'closed_sl', 'closed_manual', 'closed'}
+                    trades = [t for t in all_t
+                              if t.get('status', 'active') in closed_statuses
+                              or t.get('close_price') is not None]
+                    # Fallback: если нет закрытых — берём все (старые данные без status)
+                    if not trades:
+                        trades = all_t[-50:]
+
                     total = len(trades)
-                    wins = sum(1 for t in trades if get_pnl(t) > 0)
-                    losses = sum(1 for t in trades if get_pnl(t) <= 0)
-                    pnl = sum(get_pnl(t) for t in trades)
+                    wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
+                    losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
+                    pnl = sum((t.get('pnl_pct') or t.get('pnl') or 0) for t in trades)
                     
                     stats["total_trades"] += total
                     stats["win_count"] += wins
@@ -141,13 +145,6 @@ def get_trading_stats(days=7):
     total = stats["win_count"] + stats["loss_count"]
     stats["win_rate"] = round(stats["win_count"] / total * 100, 1) if total > 0 else 0
     stats["total_pnl"] = round(stats["total_pnl"], 2)
-    
-    # ✅ FIX v5.0: Проверяем аномалии (слишком большой отрицательный P&L)
-    if stats["total_pnl"] < -50 and stats["total_trades"] > 0:
-        avg_pnl = stats["total_pnl"] / stats["total_trades"]
-        if avg_pnl < -5:  # Средний убыток > 5% на сделку — аномалия!
-            print(f"⚠️ [Dashboard] P&L anomaly detected: {stats['total_pnl']}% avg={avg_pnl:.2f}%")
-            stats["_anomaly_warning"] = f"Possible data error: avg loss {avg_pnl:.1f}% per trade"
     
     # Сохраняем в кэш
     _stats_cache["data"] = stats
@@ -210,51 +207,6 @@ def api_saved_trades():
             return jsonify(data.get("saved_trades", []))
     except:
         return jsonify([])
-
-
-@app.route("/api/admin/flush", methods=["POST"])
-def admin_flush():
-    """🔥 Очистить все данные из Redis (сброс статистики)"""
-    try:
-        # Получаем Redis клиентов
-        from upstash.redis_client import get_redis_client
-        
-        cleared = {"long": 0, "short": 0, "errors": []}
-        
-        for bot_type in ["long", "short"]:
-            try:
-                redis = get_redis_client(bot_type)
-                # Очищаем позиции
-                for key_pattern in [
-                    f"{bot_type}:positions:*",
-                    f"{bot_type}:history:*",
-                    f"{bot_type}:all_trades",
-                    f"{bot_type}:stats:daily:*",
-                    f"{bot_type}:micro_step:*",
-                    f"{bot_type}:sl_cooldown:*",
-                ]:
-                    try:
-                        keys = redis.keys(key_pattern)
-                        if keys:
-                            for key in keys:
-                                redis.delete(key)
-                                cleared[bot_type] += 1
-                    except Exception as e:
-                        cleared["errors"].append(f"{key_pattern}: {e}")
-            except Exception as e:
-                cleared["errors"].append(f"{bot_type}: {e}")
-        
-        # Сбрасываем кэш
-        global _stats_cache
-        _stats_cache = {"data": None, "timestamp": 0}
-        
-        return jsonify({
-            "success": True,
-            "message": f"Очищено {cleared['long'] + cleared['short']} ключей",
-            "cleared": cleared
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/slippage")
@@ -450,7 +402,7 @@ def api_feed():
                                     "message": f"{t.get('exit_reason', 'Closed')} @ {t.get('exit_price', t.get('close_price', 0))}",
                                     "timestamp": t.get("exit_time", t.get("closed_at", "")),
                                     "price": t.get("exit_price", t.get("close_price", 0)),
-                                    "pnl": t.get("pnl", 0)
+                                    "pnl": (t.get("pnl_pct") or t.get("pnl") or 0)
                                 })
                         except:
                             continue
@@ -526,8 +478,7 @@ def api_summary():
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
-                            # ✅ FIX v5.0: pnl_pct как fallback
-                            pnl = t.get("pnl", t.get("pnl_pct", 0))
+                            pnl = (t.get("pnl_pct") or t.get("pnl") or 0)
                             is_win = pnl > 0
                             
                             # Week
@@ -563,6 +514,32 @@ def api_summary():
         summary[period]["winrate"] = round(wins / total * 100, 1) if total > 0 else 0
     
     return jsonify(summary)
+
+
+@app.route("/api/reset_stats", methods=["POST"])
+def reset_stats():
+    """
+    ✅ FIX v7: Сброс статистики Redis (старые данные до фиксов).
+    POST /api/reset_stats   — очищает all_trades, stats:daily ключи.
+    """
+    try:
+        for redis_getter, prefix in [(get_redis_short, "short"), (get_redis_long, "long")]:
+            try:
+                r = redis_getter()
+                r.execute(["DEL", f"{prefix}:all_trades"])
+                r.execute(["DEL", f"{prefix}:stats:daily"])
+                # Также удаляем кэшированные ключи daily по датам
+                result = r.execute(["KEYS", f"{prefix}:stats:daily:*"])
+                if result:
+                    for key in result:
+                        r.execute(["DEL", key])
+                print(f"[Dashboard] Stats reset for {prefix}")
+            except Exception as e:
+                print(f"[Dashboard] Reset error {prefix}: {e}")
+        return json.dumps({"status": "ok", "message": "Статистика сброшена. Данные накопятся заново."})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
 
 
 # Health check для Render

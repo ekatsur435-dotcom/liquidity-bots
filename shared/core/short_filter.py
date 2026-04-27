@@ -1,3 +1,4 @@
+import os
 """
 Short Filter — shared/core/short_filter.py
 
@@ -60,7 +61,9 @@ class ShortFilter:
 
     # Режим рынка: блокируем шорт если BTC растёт
     # ✅ ADJUSTED: 2% → 3% (модерато настройка, меньше пропусков хороших шортов)
-    BTC_STRONG_UP_THRESHOLD = 4.0    # ✅ FIX: было 3.0 — слишком часто блокировало
+    # ✅ FIX v7: BTC_STRONG_UP теперь читается из ENV, дефолт 4.0%
+    # Установите BTC_BLOCK_SHORT_THRESHOLD=99 чтобы полностью отключить блокировку
+    BTC_STRONG_UP_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
     BTC_MODERATE_UP         = 2.0    # ✅ FIX: было 1.5 — штрафовало при любом росте BTC
 
     # Фандинг-спайк (самый мощный SHORT сигнал)
@@ -103,12 +106,33 @@ class ShortFilter:
                 score_delta += 8
                 reasons.append(f"BTC падает {btc_price_1h_change:.1f}%/1ч → +8 к скору")
 
-        # ── 2. RSI анализ (ОТКЛЮЧЕН - не используем для входа) ─────────────
-        # RSI не является основанием для входа в сделку (по требованию)
-        # Оставляем только логирование для информации
+        # ── 2. RSI анализ (НЕ блокирующий!) ───────────────────────────────
         rsi = getattr(market_data, "rsi_1h", None)
-        if rsi is not None and rsi >= 70:
-            reasons.append(f"RSI {rsi:.1f} (инфо, не влияет на скор)")
+        if rsi is not None:
+            if rsi >= 70:
+                # Перекупленность — отличный сигнал для шорта
+                score_delta += 8
+                reasons.append(f"🔥 RSI {rsi:.1f} перекуплен — сильный шорт сигнал +8")
+            elif rsi >= 60:
+                # Верхняя зона — хорошо для шорта
+                score_delta += 5
+                reasons.append(f"RSI {rsi:.1f} в верхней зоне — шорт фаворит +5")
+            elif rsi >= 50:
+                # Нейтрально
+                score_delta += 2
+                reasons.append(f"RSI {rsi:.1f} выше 50 — небольшой бонус +2")
+            elif rsi >= 40:
+                # Ниже 50 — даунтренд подтверждается
+                score_delta += 3
+                reasons.append(f"RSI {rsi:.1f} в зоне даунтренда — подтверждение +3")
+            elif rsi >= 30:
+                # Низкий RSI при падении — моментум продолжается
+                score_delta += 5
+                reasons.append(f"RSI {rsi:.1f} низкий при падении — моментум +5")
+            else:
+                # Очень низкий RSI (<30) — возможен отскок, но не блокируем!
+                score_delta -= 3
+                reasons.append(f"RSI {rsi:.1f} очень низкий — риск отскока -3")
 
         # ── 3. Фандинг-спайк (главный SHORT фактор) ──────────────────────
         funding = getattr(market_data, "funding_rate", 0) / 100  # уже в долях

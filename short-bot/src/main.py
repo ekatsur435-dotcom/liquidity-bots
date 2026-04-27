@@ -1,33 +1,16 @@
 """
-🔴 SHORT BOT v2.9 — FastAPI Application
+🤖 SHORT BOT v4.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v2.9:
-  🎢 Micro-Step Trailing Stop — плавное движение SL микро-шагами
-     TP1: +0.3%, TP2: +0.8%, TP3: +1.5% — не выбивает сделки!
-  
-ИСПРАВЛЕНИЯ v2.8:
-  ✅ Symbol Profiler — индивидуальный анализ каждой монеты
-  ✅ Order Block Detector — институциональные зоны входа
-  ✅ Adaptive Timeframes — авто-выбор ТФ под волатильность
-  ✅ Limit Entry System — лимитные ордера с TTL + fallback
-  
-ИСПРАВЛЕНИЯ v2.7:
-  ✅ Liquidity Sweep Detection (ловля сборов стопов)
-  ✅ TBS — Test Before Strike (ретест Order Block)
-  ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
-  ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 2.7:1)
-  ✅ Уменьшен SL: 1.5% (было 2.0%)
-  ✅ MIN_VOLUME_USDT = 500000
-  
-ИСПРАВЛЕНИЯ v2.3:
-  ✅ MAX_WATCHLIST default = 300 (было 200)
-  ✅ MIN_SHORT_SCORE default = 60 (было 65)
-  ✅ SCAN_INTERVAL default = 200 сек
-  ✅ HEAD /health → 200 OK (UptimeRobot fix)
-  ✅ Watchlist: объединяет Bybit + Binance (нет дублей, до 300 монет)
-  ✅ OI Proxy метрики в scan_symbol
-  ✅ volume_spike_ratio + atr_14_pct → scorer
-  ✅ pattern_detector (один файл, не v2)
+ИСПРАВЛЕНИЯ v4.0 (критические):
+  ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
+     Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
+  ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
+  ✅ Дневной P&L стоп -5% (DAILY_LOSS_STOP_PCT)
+  ✅ Азиатская сессия 03-06 UTC блокировка (BLOCK_ASIAN_SESSION)
+  ✅ Zombie cleanup — удаление мёртвых Redis позиций
+  ✅ SHORT BOT: исправлен "return Nonee" — краш на каждом символе
+  ✅ TP уровни в sweep-пути используют Config.TP_LEVELS (было хардкод 4%)
+  ✅ market_context.py — новый модуль контекста рынка
 """
 
 import os
@@ -77,6 +60,7 @@ from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
 from bot.telegram import TelegramBot, TelegramCommandHandler
+from core.market_context import get_market_context, MarketContextFilter  # ✅ FIX v6  # ✅ v4.0
 
 
 # ============================================================================
@@ -87,7 +71,7 @@ class Config:
     BOT_TYPE      = "short"
     # ✅ FIX: MIN_SHORT_SCORE default = 65
     # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "65"))
+    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "63"))  # ✅ FIX v7: 67→63
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -96,16 +80,20 @@ class Config:
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # was 2.0
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX: 1.0% — чётче SL
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [4.0, 8.0, 12.0, 20.0, 30.0, 40.0]  # SHORT: SL=1.5% TP1=4% → R:R=2.7:1
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
     # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
     TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
     # Trailing — SHORT активирует при +3% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
+    # ✅ FIX v7: BTC correlation — управляется через ENV
+    BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
+    # При BTC_BLOCK_SHORT_THRESHOLD=99 → SHORT не блокируется даже при сильном памп BTC
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
 
     SIGNAL_TTL_HOURS = 24
@@ -144,6 +132,7 @@ class BotState:
         self.auto_trader      = None
         self.tracker: Optional[PositionTracker] = None
         self.coinglass        = None
+        self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
 
@@ -312,7 +301,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting SHORT Bot v2.7...")
+    print("🚀 Starting SHORT Bot v6.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -399,12 +388,20 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
             print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
+
+
+    # ✅ FIX v6: Инициализируем Market Context Filter
+    state.market_ctx = MarketContextFilter(
+        binance_client=state.binance,
+        redis_client=state.redis
+    )
+    print("✅ MarketContextFilter initialized")
 
     # ── Watchlist: Bybit + Binance ─────────────────────────────────────────────
     # Инициализируем источник данных
@@ -434,7 +431,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🤖 <b>SHORT Bot v2.9 запущен</b>\n\n"
+        f"🤖 <b>SHORT Bot v6.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -463,7 +460,7 @@ async def lifespan(app: FastAPI):
     print("👋 SHORT Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="SHORT Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="SHORT Bot v6.0")
 
 
 # ============================================================================
@@ -480,7 +477,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "SHORT Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "SHORT Bot v6.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -618,7 +615,7 @@ async def _count_real_positions() -> int:
         return 0
 
 
-async def scan_symbol(symbol: str) -> Optional[Dict]:
+async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict]:
     """
     SHORT scan_symbol v2.7 (NO BTC CORR):
       - SL ВЫШЕ входа (short: stop loss = цена * (1 + SL_BUFFER%))
@@ -634,6 +631,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
+
+        # ✅ v4.0: MARKET CONTEXT FILTER — для SHORT блокируем азиатскую сессию и дневной стоп
+        if hasattr(state, 'market_ctx') and state.market_ctx:
+            ctx = await state.market_ctx.check(
+                direction="short",
+                symbol=symbol,
+                block_asian_session=True,
+                allow_decoupled_alts=True
+            )
+            if not ctx.allowed:
+                print(f"⛔ [CTX-SHORT] {symbol}: {ctx.block_reason}")
+                return None
+            for w in ctx.warnings:
+                print(f"⚠️ [CTX-SHORT] {symbol}: {w}")
 
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
@@ -813,9 +824,50 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # ✅ RSI ОТКЛЮЧЕН — не используем для входа (только для логирования)
-        # По требованию: RSI, EMA, MACD — не являются основанием для входа
-        # Оставляем только базовый скор от паттернов, фандинга, OI, дельты
+        # ✅ RSI 30m — информационный контекст (НЕ блокер!)
+        # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
+        rsi_30m = 50.0  # дефолт
+        rsi_30m_score_adj = 0
+        try:
+            if ohlcv_30m and len(ohlcv_30m) >= 14:
+                closes_30m = [c.close for c in ohlcv_30m[-14:]]
+                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
+                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+                rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
+                # RSI 30m < 30 при падении = подтверждение медвежьего моментума
+                if rsi_30m < 20:
+                    rsi_30m_score_adj = +3   # очень перепродан — моментум сильный
+                elif rsi_30m < 30:
+                    rsi_30m_score_adj = +5   # перепродан — даунтренд подтверждён
+                elif rsi_30m > 70:
+                    rsi_30m_score_adj = -5   # перекуплен — откат вероятен, против шорта
+        except Exception:
+            pass
+
+        # ✅ Multi-TF RSI 4h — контекст высшего порядка (НЕ блокер!)
+        # RSI 4h < 30 = глубокий даунтренд = ЛУЧШИЙ SHORT (не блокируем!)
+        rsi_4h = 50.0  # дефолт
+        rsi_4h_score_adj = 0
+        try:
+            # ohlcv_4h уже загружен выше
+            if ohlcv_4h and len(ohlcv_4h) >= 14:
+                closes_4h = [c.close for c in ohlcv_4h[-14:]]
+                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
+                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
+                ag = sum(gains)/13; al = sum(losses)/13
+                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
+                # RSI 4h < 30 = сильный медвежий тренд = +10 к шорту
+                if rsi_4h < 20:
+                    rsi_4h_score_adj = +12
+                elif rsi_4h < 30:
+                    rsi_4h_score_adj = +8   # глубокий даунтренд = хороший SHORT
+                elif rsi_4h < 40:
+                    rsi_4h_score_adj = +5   # даунтренд подтверждён
+                elif rsi_4h > 70:
+                    rsi_4h_score_adj = -8   # перекуплен на 4h — риск разворота против шорта
+        except Exception:
+            pass
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_primary)
@@ -873,32 +925,74 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
         # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
-        ob_quality_high = ob_result and ob_result.bearish_ob and ob_result.bearish_ob.quality >= 70
+        ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)
+        ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
+        ob_q_high     = ob_quality >= 70   # Высокое качество
         
+        # ✅ FIX v7: Детальные логи score breakdown для диагностики
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
         if not score_result.is_valid:
-            # Проверяем: TBS есть? OB качество >= 70?
-            if tbs_found and ob_quality_high:
-                # УМНЫЙ ОВЕРРАЙД: Разворот подтверждён технически — заходим!
-                print(f"� [SMART-SCORE] {symbol}: is_valid=False, но TBS+OB_Q{ob_result.bearish_ob.quality} — ОВЕРРАЙД! Скор поднимаем до 75")
-                # Создаём новый результат с принудительным is_valid=True и скором 75
-                from shared.core.scorer import ScoreResult, Confidence
+            override_reason = None
+            boost = 0
+
+            # Уровень 1: TBS + OB >= 70 — сильный оверрайд
+            if tbs_found and ob_q_high:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 15
+            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд
+            elif tbs_found and ob_quality_ok:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 10
+            # Уровень 3: только TBS без OB
+            elif tbs_found and base_score_bonus >= 5:
+                override_reason = f"TBS+confirmation"
+                boost = 8
+            # Уровень 4: OB >= 70 без TBS
+            elif ob_q_high and base_score_bonus >= 3:
+                override_reason = f"OB_Q{ob_quality}+confirmation"
+                boost = 5
+
+            if override_reason:
+                print(f"💡 [SMART-SCORE] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
+                from core.scorer import ScoreResult, Confidence
                 score_result = ScoreResult(
-                    total_score=max(75, score_result.total_score + 15),  # +15 бонус за TBS+OB
+                    total_score=max(70, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
                     direction=score_result.direction,
-                    is_valid=True,  # Принудительно валидный
-                    confidence=Confidence.HIGH,
-                    grade="A",
+                    is_valid=True,
+                    confidence=Confidence.MEDIUM if boost < 12 else Confidence.HIGH,
+                    grade="B" if boost < 12 else "A",
                     components=score_result.components,
-                    reasons=score_result.reasons + [f"🎯 TBS+ОБ_Q{ob_result.bearish_ob.quality} — умный вход"]
+                    reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"�🔴 [FILTER0-SCORE] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS+OB70)")
-                return None
+                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
+                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                if score_result.total_score >= bear_threshold:
+                    print(f"\U0001f7e1 [FILTER0-SCORE] {symbol}: score={score_result.total_score} BEAR PASS")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score, max_possible=score_result.max_possible,
+                        direction=score_result.direction, is_valid=True,
+                        confidence=Confidence.LOW, grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["Bear market pass"],
+                    )
+                else:
+                    print(f"\U0001f534 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
+                    return None
 
         price       = md.price
         final_score = score_result.total_score + oi_score_adj + base_score_bonus
-        # ✅ RSI ОТКЛЮЧЕН - не используем для входа
+        # ✅ FIX: добавляем RSI multi-TF бонусы
+        final_score += rsi_30m_score_adj + rsi_4h_score_adj
+        if rsi_30m_score_adj != 0:
+            print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
+        if rsi_4h_score_adj != 0:
+            print(f"[MTF] {symbol}: RSI4h={rsi_4h:.0f} adj={rsi_4h_score_adj:+d}")
         reasons     = list(score_result.reasons)
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
@@ -906,6 +1000,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         filt = sf.check(
             market_data=md, ohlcv_15m=ohlcv_15m,
             hourly_deltas=hourly_deltas,
+            btc_change=btc_1h,   # ✅ FIX v7: теперь ShortFilter получает реальный BTC 1h
         )
         if filt.blocked:
             print(f"🔴 [FILTER-BLOCKED] {symbol}: blocked=True, reasons={filt.reasons[:2]} — отфильтрован!")
@@ -963,7 +1058,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🌊 [ELLIOTT-SHORT] {symbol}: Детали: {details_reason}")
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
-            if wave_result.is_trap:
+            # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:
                 print(f"🚫 [ELLIOTT-BLOCK-SHORT] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа
@@ -1166,6 +1262,21 @@ async def scan_market():
     print(f"\n🔍 SHORT scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
     print(f"📊 {len(state.watchlist)} symbols | SL={Config.SL_BUFFER}% | Score≥{Config.MIN_SCORE}")
 
+    # ✅ FIX v7: Получаем BTC 1h изменение для ShortFilter (было None всегда!)
+    _btc_1h_change: float | None = None
+    try:
+        _btc_md = await state.binance.get_complete_market_data("BTCUSDT")
+        if _btc_md:
+            _btc_1h_change = getattr(_btc_md, "price_change_1h", None)
+            btc_status = f"+{_btc_1h_change:.2f}%" if _btc_1h_change and _btc_1h_change > 0 else f"{_btc_1h_change:.2f}%" if _btc_1h_change else "N/A"
+            # Автоблокировка SHORT при BTC > BTC_BLOCK_THRESHOLD%
+            if _btc_1h_change and _btc_1h_change >= Config.BTC_BLOCK_THRESHOLD:
+                print(f"🚫 [BTC-BLOCK] BTC {btc_status} ≥ {Config.BTC_BLOCK_THRESHOLD}% — SHORT заблокирован на этом скане!")
+                _btc_1h_change = _btc_1h_change  # Позволяем ShortFilter принять решение
+            print(f"📡 BTC 1h: {btc_status}")
+    except Exception as e:
+        print(f"⚠️ BTC price fetch error: {e}")
+
     # Считаем только SHORT позиции этого бота
     active_count  = await _count_real_positions()
     exchange_full = active_count >= Config.MAX_POSITIONS
@@ -1181,7 +1292,17 @@ async def scan_market():
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
-            signal = await scan_symbol(symbol)
+            # ✅ FIX v7: SL Cooldown — пропускаем символ если недавно был стоп
+            sl_cd_key = f"sl_cooldown:{Config.BOT_TYPE}:{symbol}"
+            try:
+                cd_val = state.redis.get(sl_cd_key)
+                if cd_val:
+                    print(f"⏸ [COOLDOWN] {symbol}: недавний SL, пропускаем (cooldown активен)")
+                    continue
+            except Exception:
+                pass
+
+            signal = await scan_symbol(symbol, btc_1h=_btc_1h_change)  # ✅ FIX v7
             if not signal:
                 continue
 

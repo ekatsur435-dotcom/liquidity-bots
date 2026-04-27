@@ -66,8 +66,6 @@ class BingXClient:
                 "Уменьши размер или снизи плечо. AutoTrader авто-уменьшит в следующий раз.",
         109201: "Leverage exceeds max allowed",
         109400: "Timestamp invalid — разница времени между сервером и клиентом > 1000ms",
-        109418: "Symbol offline/delisted — монета не торгуется на BingX",
-        109425: "Symbol does not exist — пара не существует на BingX",
     }
 
     def __init__(self, api_key=None, api_secret=None, demo=True):
@@ -83,7 +81,6 @@ class BingXClient:
         self.session: Optional[aiohttp.ClientSession] = None
         self._symbol_info_cache: Dict[str, Dict] = {}
         self._active_symbols: Set[str] = set()
-        # Note: Не кэшируем офлайн символы — статус может измениться
         self._symbols_loaded = False
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
@@ -126,16 +123,13 @@ class BingXClient:
         offset = getattr(self, "_time_offset", 0)
         return int(time.time() * 1000) + offset
 
-    async def _make_request(self, method, endpoint, params=None, body=None, signed=True, _retry=0):
+    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
         try:
             session  = await self._get_session()
             all_p    = {}
             if params: all_p.update(params)
             if body:   all_p.update(body)
             if signed:
-                # ✅ FIX: Синхронизируем время если offset не установлен
-                if getattr(self, "_time_offset", 0) == 0:
-                    await self._sync_server_time()
                 all_p["timestamp"] = self._get_timestamp()
                 all_p["recvWindow"] = 10000   # ✅ FIX: 10s окно (было не задано)
                 raw_qs = self._build_raw_qs(all_p)
@@ -146,18 +140,7 @@ class BingXClient:
             timeout = aiohttp.ClientTimeout(total=30)
             fn = {"GET": session.get, "POST": session.post, "DELETE": session.delete}[method]
             async with fn(full_url, timeout=timeout) as r:
-                result = await self._parse_response(r, endpoint)
-                # ✅ FIX: Retry при ошибке 109400 (timestamp invalid)
-                if result and result.get("code") == 109400 and _retry < 1:
-                    print(f"🔄 [BingX] Повторная попытка после синхронизации... (attempt {_retry+1}/2)")
-                    self._time_offset = 0  # сбросим для пересинхронизации
-                    retry_result = await self._make_request(method, endpoint, params, body, signed, _retry=_retry+1)
-                    if retry_result and retry_result.get("code") == 0:
-                        print(f"✅ [BingX] Retry successful! {endpoint}")
-                    elif retry_result:
-                        print(f"❌ [BingX] Retry failed: code={retry_result.get('code')} | {retry_result.get('msg', 'unknown')}")
-                    return retry_result
-                return result
+                return await self._parse_response(r, endpoint)
         except Exception as e:
             self.last_error = str(e)
             print(f"❌ [BingX] {method} {endpoint}: {e}")
@@ -176,6 +159,10 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
+                    # ✅ AUTO-SYNC: при ошибке timestamp сбрасываем offset
+                    if code == 109400:
+                        # ✅ FIX v5: sync immediately
+                        await self._sync_server_time()
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
                 return data
@@ -226,28 +213,19 @@ class BingXClient:
                 except Exception:
                     pass
 
-                # ✅ FIX: Нормализуем символ для ключа кэша
-                sym_normalized = self._normalize_symbol(sym)
-                self._symbol_info_cache[sym_normalized] = {
+                self._symbol_info_cache[sym] = {
                     "price_precision": int(c.get("pricePrecision", 4)),
                     "qty_precision":   int(c.get("quantityPrecision", 3)),
                     "min_qty":         float(c.get("tradeMinQuantity", 0.001)),
                     "max_leverage":    int(c.get("maxLeverage", 50)),
                     "online":          (status != 0),
-                    "max_notional":    max_notional,
+                    "max_notional":    max_notional,   # ← НОВОЕ: лимит позиции
                 }
                 if status != 0:
-                    self._active_symbols.add(sym_normalized)
+                    self._active_symbols.add(sym)
             self._symbols_loaded = True
             print(f"📋 [BingX] {len(self._symbol_info_cache)} contracts, "
                   f"{len(self._active_symbols)} active")
-            # ✅ DEBUG: Проверяем наличие проблемных символов
-            for test_sym in ['GALAUSDT', 'ERAUSDT', 'CHRUSDT', 'KAVAUSDT']:
-                if test_sym in self._symbol_info_cache:
-                    s_info = self._symbol_info_cache[test_sym]
-                    print(f"   🔍 {test_sym}: online={s_info.get('online')}")
-                else:
-                    print(f"   ❌ {test_sym}: NOT IN CACHE")
 
     async def get_symbol_info(self, symbol: str) -> Optional[Dict]:
         """Получает информацию о символе (precision, min_qty и т.д.)."""
@@ -267,14 +245,7 @@ class BingXClient:
             print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
             await self._load_contracts(force_refresh=True)
             info = self._symbol_info_cache.get(symbol)
-        # ✅ DEBUG: Логируем статус символа
-        if info:
-            is_online = info.get("online", False)
-            print(f"🔍 [BingX] {symbol}: online={is_online}, status={'found' if info else 'not found'}")
-            return is_online
-        else:
-            print(f"🔍 [BingX] {symbol}: NOT IN CACHE (total cached: {len(self._symbol_info_cache)})")
-            return False
+        return info.get("online", True) if info else False
 
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
@@ -407,10 +378,8 @@ class BingXClient:
           5. takeProfit: {"type":"TAKE_PROFIT_MARKET", "stopPrice": float, ...}
           6. Все значения — числа, не строки (fix float64 mismatch)
         """
-        # ✅ FIX: НЕ нормализуем символ — API требует формат С ДЕФИСОМ (AT-USDT)
-        # symbol = self._normalize_symbol(symbol)  ← Убрано!
-        api_symbol = symbol  # Используем как есть (с дефисом)
-        # Для проверки активности используем нормализованный
+        # Нормализуем символ для API (убираем дефисы)
+        symbol = self._normalize_symbol(symbol)
         if not await self.is_symbol_active(symbol):
             self.last_error = f"{symbol} offline on BingX"
             print(f"⏭ SKIP — {self.last_error}")
@@ -421,11 +390,11 @@ class BingXClient:
         rounded_tp   = await self._round_price(symbol, take_profit)  if take_profit else None
         rounded_px   = await self._round_price(symbol, price)        if price       else None
 
-        print(f"📤 Order: {api_symbol} {side} {position_side} {order_type} | "
+        print(f"📤 Order: {symbol} {side} {position_side} {order_type} | "
               f"qty={rounded_size} | SL={rounded_sl} | TP={rounded_tp}")
 
         body: Dict[str, Any] = {
-            "symbol":       api_symbol,  # ✅ С дефисом для API
+            "symbol":       symbol,
             "side":         side,
             "positionSide": position_side,
             "type":         order_type,
@@ -451,16 +420,16 @@ class BingXClient:
             d        = result.get("data", {})
             order    = d.get("order", d)
             order_id = str(order.get("orderId", ""))
-            print(f"✅ Order placed: {api_symbol} {side} qty={rounded_size} id={order_id}")
+            print(f"✅ Order placed: {symbol} {side} qty={rounded_size} id={order_id}")
             return BingXOrder(
-                order_id=order_id, symbol=api_symbol, side=side,
+                order_id=order_id, symbol=symbol, side=side,
                 position_side=position_side, type=order_type,
                 size=rounded_size, price=rounded_px, status="PENDING",
             )
 
         code = (result or {}).get("code")
         hint = self.ERROR_CODES.get(code, "") if code else ""
-        print(f"❌ Order REJECTED: {api_symbol} | code={code} | {self.last_error}"
+        print(f"❌ Order REJECTED: {symbol} | code={code} | {self.last_error}"
               + (f"\n   💡 {hint}" if hint else ""))
         return None
 
@@ -495,8 +464,6 @@ class BingXClient:
     async def test_connection(self) -> bool:
         """Проверяет соединение с BingX API."""
         try:
-            # ✅ FIX: Синхронизируем время перед первым запросом
-            await self._sync_server_time()
             balance = await self.get_account_balance()
             if balance:
                 print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
@@ -556,15 +523,20 @@ class BingXClient:
             sl_side = "SELL" if direction == "long" else "BUY"
             print(f"🔍 [BingX] sl_side={sl_side}")
 
-            # Получаем текущий размер позиции (нужен для SL ордера)
-            print(f"🔍 [BingX] Getting positions for {symbol}...")
-            positions = await self.get_positions(symbol)
-            print(f"🔍 [BingX] Found {len(positions)} positions")
+            # ✅ FIX v7: Получаем ВСЕ позиции без фильтра и ищем по символу client-side.
+            # get_positions(symbol) → BingX error 109425 "not exist" для редких пар.
+            # Причина: BingX требует точный формат (LIGHT-USDT, MON-USDT) который часто
+            # отличается от нашего. Решение: get_positions() без аргумента → все позиции.
+            print(f"🔍 [BingX] Getting ALL positions (no filter) to match {symbol}...")
+            positions = await self.get_positions()   # ← Без аргумента = все позиции
+            print(f"🔍 [BingX] Total exchange positions: {len(positions)}")
             for p in positions:
                 print(f"   - {p.symbol}: size={p.size}, side={p.side}, pos_side={p.position_side}")
 
+            # Matching: убираем дефисы и сравниваем чистые тикеры
+            clean_target = symbol.replace("-", "").replace("_", "").upper()
             pos = next((p for p in positions
-                        if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
+                        if p.symbol.replace("-", "").replace("_", "").upper() == clean_target), None)
             if not pos:
                 print(f"⚠️  [BingX] update_stop_loss: позиция {symbol} не найдена")
                 return False

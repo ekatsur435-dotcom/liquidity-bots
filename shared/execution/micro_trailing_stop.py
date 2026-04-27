@@ -14,16 +14,19 @@ Phase 3: Добавлена Redis persistence для сохранения сос
 - TRAIL_TP3_LOCK: 1.5 (1.5% в плюс после TP3)
 """
 
-import json
 import os
 import sys
 from dataclasses import dataclass
 from typing import Dict, Optional, List
 from datetime import datetime
 
-# ✅ FIX: Добавляем путь к shared и импортируем Redis
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-from upstash.redis_client import get_redis_client
+# ✅ FIX: импорт redis клиента (был не импортирован — NameError)
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    from upstash.redis_client import get_redis_client
+except ImportError:
+    def get_redis_client():
+        raise ImportError("upstash.redis_client not found")
 
 
 @dataclass

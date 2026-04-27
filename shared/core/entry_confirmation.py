@@ -36,7 +36,7 @@ class EntryConfirmation:
                              direction: str = "short",
                              min_confirmations: int = 2) -> Tuple[bool, List[str]]:
         """
-        ✅ v3.0: Мульти-ТФ подтверждение без EMA - используем свечи
+        ✅ v2.7: Мульти-ТФ подтверждение (2+ ТФ должны подтвердить)
         
         Args:
             tf_data: {"4h": ohlcv_4h, "2h": ohlcv_2h, "1h": ohlcv_1h, ...}
@@ -49,24 +49,24 @@ class EntryConfirmation:
         reasons = []
         
         for tf_name, ohlcv in tf_data.items():
-            if len(ohlcv) < 5:
+            if len(ohlcv) < 20:
                 continue
-            
-            # Проверяем последние 3 свечи - простая логика без EMA
-            last_3 = ohlcv[-3:]
-            bearish_candles = sum(1 for c in last_3 if _get_price(c, 'close') < _get_price(c, 'open'))
-            bullish_candles = sum(1 for c in last_3 if _get_price(c, 'close') > _get_price(c, 'open'))
+                
+            # Проверяем тренд на этом ТФ
+            ema_20 = EntryConfirmation._calc_ema(ohlcv, 20)
+            ema_50 = EntryConfirmation._calc_ema(ohlcv, 50)
+            current_price = _get_price(ohlcv[-1], 'close')
             
             if direction == "short":
-                # Для шорта: 2+ медвежьих свечи из 3 = нисходящий
-                if bearish_candles >= 2:
+                # Для шорта: цена < EMA20 < EMA50 = нисходящий
+                if current_price < ema_20[-1] < ema_50[-1]:
                     confirmations += 1
-                    reasons.append(f"📉 {tf_name}: {bearish_candles}/3 медвежьих")
+                    reasons.append(f"📉 {tf_name}: Нисходящий тренд")
             else:
-                # Для лонга: 2+ бычьих свечи из 3 = восходящий
-                if bullish_candles >= 2:
+                # Для лонга: цена > EMA20 > EMA50 = восходящий
+                if current_price > ema_20[-1] > ema_50[-1]:
                     confirmations += 1
-                    reasons.append(f"📈 {tf_name}: {bullish_candles}/3 бычьих")
+                    reasons.append(f"📈 {tf_name}: Восходящий тренд")
         
         passed = confirmations >= min_confirmations
         return passed, reasons

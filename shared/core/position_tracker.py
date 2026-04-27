@@ -47,8 +47,8 @@ class PositionTracker:
     BREAKEVEN_BUFFER = 0.001  # SL в безубыток = entry + 0.1%
 
     # ── Безубыток: переносим SL после этого тейка ────────────────────────────
-    # ✅ FIX v5.0: BE после TP2 = 40% позиции зафиксировано, меньше шумовых SL
-    BREAKEVEN_AFTER_TP = 2   # ✅ FIX: BE после TP2 (было 1) — даём позиции дышать
+    # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
+    BREAKEVEN_AFTER_TP = 2   # ✅ FIX v5: BE после TP2 — позиции живут дольше
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -150,6 +150,7 @@ class PositionTracker:
                     
                     # Вычисляем P&L на момент закрытия
                     if entry and entry > 0:
+                        # ✅ FIX v5: _pnl уже определена в этом модуле — убрал circular import
                         pnl = _pnl(direction, float(entry), float(current_price))
                     else:
                         pnl = 0.0
@@ -378,18 +379,12 @@ class PositionTracker:
         exchange_updated = False
         if self.auto_trader and self.auto_trader.bingx:
             try:
-                # ✅ FIX: Правильное форматирование символа как в aegis-bots
-                # MAGMAUSDT → MAGMA-USDT
-                if "-" not in symbol and symbol.endswith("USDT"):
-                    bingx_symbol = symbol[:-4] + "-USDT"
-                else:
-                    bingx_symbol = symbol
+                bingx_symbol = symbol + "-USDT" if "-USDT" not in symbol else symbol
                 print(f"🔍 [PT] _move_sl: symbol={symbol}, bingx_symbol={bingx_symbol}, position_side={position_side}")
                 # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.7)
                 for attempt in range(3):
                     print(f"🔍 [PT] Attempt {attempt + 1}/3")
-                    # ✅ FIX: Правильный порядок форматов — сначала с дефисом
-                    for sym_fmt in [bingx_symbol, symbol]:
+                    for sym_fmt in [bingx_symbol, symbol.replace("USDT", "-USDT"), symbol]:
                         print(f"🔍 [PT] Trying sym_fmt={sym_fmt}")
                         ok = await self.auto_trader.bingx.update_stop_loss(
                             sym_fmt, position_side, new_sl, direction
@@ -417,6 +412,13 @@ class PositionTracker:
 
         d_emoji = "🟢" if direction == "long" else "🔴"
         icon    = "🔒" if move_type == "безубыток" else "🔄"
+        # ✅ FIX v5: Запись SL cooldown при срабатывании стопа
+        try:
+            sl_cd_hours = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+            sl_cd_key = f"sl_cooldown:{self.bot_type}:{symbol}"
+            self.redis.set(sl_cd_key, "1", ex=int(sl_cd_hours * 3600))
+        except Exception:
+            pass
         sl_pnl  = _pnl(direction, entry, new_sl)
         old_pnl = _pnl(direction, entry, old_sl)
         taken   = len(signal.get("taken_tps", []))
@@ -468,6 +470,7 @@ class PositionTracker:
             signal["close_price"] = current_price
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
+            signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
             
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
@@ -593,6 +596,7 @@ class PositionTracker:
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = total_pnl
+        signal["pnl"]         = total_pnl  # ✅ FIX v6: dashboard compat
         # ✅ v2.5: Показываем "SL(после TP1)" если был взят TP
         max_tp_hit = signal.get("max_tp_reached", "")
         if max_tp_hit:
@@ -605,16 +609,6 @@ class PositionTracker:
             sl_type_label = "SL"
         signal["tp_level"]    = sl_type_label
         self._save(symbol, signal)
-        
-        # ✅ v5.0: Устанавливаем cooldown после SL (2-4 часа = 7200-14400 сек)
-        try:
-            import random
-            cooldown_ttl = random.randint(7200, 14400)  # 2-4 часа
-            cooldown_key = f"sl_cooldown:{symbol}"
-            self.redis.set(cooldown_key, "1", ex=cooldown_ttl)
-            print(f"⏸️ [COOLDOWN] {symbol}: SL cooldown set for {cooldown_ttl//3600}h")
-        except Exception as e:
-            print(f"⚠️ [COOLDOWN] {symbol}: Failed to set cooldown: {e}")
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
         sl_type  = ("трейлинг-стоп" if was_trailing else
@@ -721,7 +715,8 @@ class PositionTracker:
                     "entry_price":  entry,
                     "close_price":  close_p,
                     "stop_loss":    sl_price,
-                    "pnl":          round(pnl_pct, 4),
+                    "pnl":          round(pnl_pct, 4),  # ✅ both fields
+                    "pnl_pct":      round(pnl_pct, 4),
                     "tp_level":     tp_level,
                     "close_type":   close_type,
                     "opened_at":    opened_at,

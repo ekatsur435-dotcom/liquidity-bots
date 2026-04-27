@@ -331,115 +331,41 @@ class UpstashRedisClient:
             return {}
 
 
+# ============================================================================
     # =========================================================================
-    # GENERIC REDIS METHODS (proxy to self.client)
+    # PROXY METHODS — совместимость с MicroTrailingStop (redis-py interface)
     # =========================================================================
-    
-    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
-        """Set key with optional TTL"""
+
+    def set(self, key: str, value: str, ex=None) -> bool:
         try:
-            self.client.set(key, value, ex=ex)
-            return True
+            if ex:
+                return bool(self.client.set(key, value, ex=ex))
+            return bool(self.client.set(key, value))
         except Exception as e:
-            print(f"Redis set error: {e}")
+            print(f'[Redis] set error: {e}')
             return False
-    
-    def get(self, key: str) -> Optional[str]:
-        """Get value by key"""
+
+    def get(self, key: str):
         try:
             return self.client.get(key)
         except Exception as e:
-            print(f"Redis get error: {e}")
+            print(f'[Redis] get error: {e}')
             return None
-    
-    def keys(self, pattern: str = "*") -> List[str]:
-        """Get keys matching pattern"""
+
+    def keys(self, pattern: str = '*'):
         try:
             return self.client.keys(pattern)
         except Exception as e:
-            print(f"Redis keys error: {e}")
+            print(f'[Redis] keys error: {e}')
             return []
-    
+
     def delete(self, *keys: str) -> int:
-        """Delete keys, returns number of deleted keys"""
         try:
             return self.client.delete(*keys)
         except Exception as e:
-            print(f"Redis delete error: {e}")
+            print(f'[Redis] delete error: {e}')
             return 0
-    
-    def execute(self, command: list) -> any:
-        """Execute raw Redis command (for dashboard compatibility)"""
-        try:
-            cmd = command[0].upper()
-            args = command[1:]
-            if cmd == "LRANGE":
-                return self.client.lrange(args[0], int(args[1]), int(args[2]))
-            elif cmd == "KEYS":
-                return self.client.keys(args[0])
-            elif cmd == "GET":
-                return self.client.get(args[0])
-            elif cmd == "SCAN":
-                return self.client.scan(int(args[0]), match=args[1], count=int(args[2]))
-            elif cmd == "EXISTS":
-                return self.client.exists(args[0])
-            else:
-                print(f"Unknown command: {cmd}")
-                return None
-        except Exception as e:
-            print(f"Redis execute error: {e}")
-            return None
 
-    # =========================================================================
-    # ✅ v5.0: Прокси-методы для прямого доступа (position_tracker использует)
-    # =========================================================================
-
-    def lpush(self, key: str, value: str) -> int:
-        """Добавить элемент в начало списка"""
-        return self.client.lpush(key, value)
-
-    def ltrim(self, key: str, start: int, end: int) -> bool:
-        """Обрезать список до указанного диапазона"""
-        return self.client.ltrim(key, start, end)
-
-    def lrange(self, key: str, start: int, end: int) -> List[str]:
-        """Получить диапазон элементов списка"""
-        return self.client.lrange(key, start, end)
-
-    def incr(self, key: str) -> int:
-        """Инкрементировать значение"""
-        return self.client.incr(key)
-
-    def expire(self, key: str, seconds: int) -> bool:
-        """Установить TTL для ключа"""
-        return self.client.expire(key, seconds)
-
-    def hset(self, key: str, field: str, value: str) -> int:
-        """Установить поле в хэше"""
-        return self.client.hset(key, field, value)
-
-    def hgetall(self, key: str) -> Dict[str, str]:
-        """Получить все поля хэша"""
-        return self.client.hgetall(key)
-
-    def keys(self, pattern: str) -> List[str]:
-        """Найти ключи по паттерну"""
-        return self.client.keys(pattern)
-
-    def delete(self, key: str) -> int:
-        """Удалить ключ"""
-        return self.client.delete(key)
-
-    def get(self, key: str) -> Optional[str]:
-        """Получить значение по ключу"""
-        return self.client.get(key)
-
-    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
-        """Установить значение с опциональным TTL"""
-        return self.client.set(key, value, ex=ex)
-
-
-# ============================================================================
 # SINGLETON INSTANCE
 # ============================================================================
 

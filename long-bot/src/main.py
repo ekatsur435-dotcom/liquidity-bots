@@ -1,32 +1,16 @@
 """
-� LONG BOT v2.9 — FastAPI Application
+🤖 LONG BOT v4.0 — FastAPI Application
 
-ИСПРАВЛЕНИЯ v2.9:
-  🎢 Micro-Step Trailing Stop — плавное движение SL микро-шагами
-     TP1: +0.3%, TP2: +0.8%, TP3: +1.5% — не выбивает сделки!
-  
-ИСПРАВЛЕНИЯ v2.8:
-  ✅ Symbol Profiler — индивидуальный анализ каждой монеты
-  ✅ Order Block Detector — институциональные зоны входа
-  ✅ Adaptive Timeframes — авто-выбор ТФ под волатильность
-  ✅ Limit Entry System — лимитные ордера с TTL + fallback
-  
-ИСПРАВЛЕНИЯ v2.7:
-  ✅ Liquidity Sweep Detection (ловля сборов стопов)
-  ✅ TBS — Test Before Strike (ретест Order Block)
-  ✅ Entry Confirmation System (мульти-ТФ + объём + ATR + уровни)
-  ✅ Увеличены TP: 4%, 8%, 12%, 20%+ (R:R 3.3:1)
-  ✅ Уменьшен SL: 1.2% (было 1.5%)
-  
-ИСПРАВЛЕНИЯ v2.3:
-  ✅ MAX_WATCHLIST default = 300 (было 200)
-  ✅ MIN_LONG_SCORE default = 60 (было 65)
-  ✅ SCAN_INTERVAL default = 200 сек
-  ✅ HEAD /health → 200 OK (UptimeRobot fix)
-  ✅ Watchlist: объединяет Bybit + Binance (нет дублей, до 300 монет)
-  ✅ OI Proxy метрики в scan_symbol
-  ✅ volume_spike_ratio + atr_14_pct → scorer
-  ✅ pattern_detector (один файл, не v2)
+ИСПРАВЛЕНИЯ v4.0 (критические):
+  ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
+     Альткоины торгуются по СВОЕЙ структуре независимо от BTC!
+  ✅ Бонус за decoupling: альт растёт пока BTC падает → +5-12 к скору
+  ✅ Дневной P&L стоп -5% (DAILY_LOSS_STOP_PCT)
+  ✅ Азиатская сессия 03-06 UTC блокировка (BLOCK_ASIAN_SESSION)
+  ✅ Zombie cleanup — удаление мёртвых Redis позиций
+  ✅ SHORT BOT: исправлен "return Nonee" — краш на каждом символе
+  ✅ TP уровни в sweep-пути используют Config.TP_LEVELS (было хардкод 4%)
+  ✅ market_context.py — новый модуль контекста рынка
 """
 
 import os
@@ -76,6 +60,7 @@ from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
+from core.market_context import get_market_context, MarketContextFilter  # ✅ v4.0: Market Context Filter
 
 
 # ============================================================================
@@ -87,7 +72,7 @@ class Config:
     # ✅ FIX: MIN_LONG_SCORE default = 70
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
     # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))  # ✅ FIX v5: 60→65 лучший баланс качество/частота
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -96,11 +81,11 @@ class Config:
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
     # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.2"))  # was 1.5
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
 
-    # TP levels из Config (v3.0: реалистичные для бокового/медвежьего рынка)
-    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # LONG: SL=1.2% TP1=1.5% → R:R=1.25:1, но winrate выше
-    TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
+    # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX v5: TP1=2.5% → R:R=1.67:1 (математически прибыльно)
+    TP_WEIGHTS = [30,  25,  20,  15,  7,    3]   # TP1=30% — основной сбор прибыли
 
     # Trailing — LONG активирует при +2.5% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
@@ -142,6 +127,7 @@ class BotState:
         self.auto_trader      = None
         self.tracker: Optional[PositionTracker] = None
         self.coinglass        = None
+        self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
 
@@ -302,7 +288,7 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.7...")
+    print("🚀 Starting LONG Bot v6.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
@@ -391,12 +377,20 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
             print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
+
+
+    # ✅ FIX v5: Инициализируем Market Context Filter (было None — весь v4.0 функционал не работал!)
+    state.market_ctx = MarketContextFilter(
+        binance_client=state.binance,
+        redis_client=state.redis
+    )
+    print("✅ MarketContextFilter initialized (BTC filter, session block, daily PnL, decoupling)")
 
     # ── Watchlist: Bybit + Binance ─────────────────────────────────────────────
     # Инициализируем источник данных
@@ -426,7 +420,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🟢 <b>LONG Bot v2.9 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v5.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -455,7 +449,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v5.0")
 
 
 # ============================================================================
@@ -472,7 +466,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v6.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -601,7 +595,22 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
-        
+
+        # ✅ v4.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
+        if hasattr(state, 'market_ctx') and state.market_ctx:
+            ctx = await state.market_ctx.check(
+                direction="long",
+                symbol=symbol,
+                block_asian_session=True,
+                allow_decoupled_alts=True
+            )
+            if not ctx.allowed:
+                # Логируем блокировку только 1 раз в минуту чтобы не спамить
+                print(f"⛔ [CTX-LONG] {symbol}: {ctx.block_reason}")
+                return None
+            for w in ctx.warnings:
+                print(f"⚠️ [CTX-LONG] {symbol}: {w}")
+
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
@@ -679,20 +688,26 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     
                     entry = md.price
                     sl = entry * (1 - Config.SL_BUFFER / 100)
-                    tp1 = entry * (1 + 0.04)  # 4%
-                    tp2 = entry * (1 + 0.08)  # 8%
-                    tp3 = entry * (1 + 0.12)  # 12%
+                    # ✅ v4.0 FIX: Используем Config.TP_LEVELS вместо хардкода 4%/8%/12%
+                    tp1 = entry * (1 + Config.TP_LEVELS[0] / 100)  # 1.5%
+                    tp2 = entry * (1 + Config.TP_LEVELS[1] / 100)  # 3.0%
+                    tp3 = entry * (1 + Config.TP_LEVELS[2] / 100)  # 5.0%
                     
                     print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
+                    # ✅ FIX v5: единый формат TP [(price, weight)] для position_tracker
+                    _tp_w = Config.TP_WEIGHTS
                     return {
                         "symbol": symbol,
                         "direction": "long",
-                        "score": base_score,
-                        "price": entry,  # Alias для совместимости с telegram
+                        "score": min(100, base_score),
+                        "price": entry,
                         "entry_price": entry,
                         "stop_loss": sl,
-                        "take_profits": [tp1, tp2, tp3],
+                        "take_profits": [
+                            (round(entry * (1 + Config.TP_LEVELS[i] / 100), 8), _tp_w[i])
+                            for i in range(min(3, len(Config.TP_LEVELS)))
+                        ],
                         "reasons": reasons[:5],
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
@@ -741,9 +756,47 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # ✅ RSI ОТКЛЮЧЕН — не используем для входа (только для логирования)
-        # По требованию: RSI, EMA, MACD — не являются основанием для входа
-        # Оставляем только базовый скор от паттернов, фандинга, OI, дельты
+        # ✅ RSI 30m — бонус/штраф к скору (v2.9: не блокер)
+        rsi_30m_adj = 0
+        try:
+            if ohlcv_30m and len(ohlcv_30m) >= 14:
+                closes_30m = [c.close for c in ohlcv_30m[-14:]]
+                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
+                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+                rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
+                # v2.7: Не блокируем, корректируем скор
+                if rsi_30m < 30:
+                    rsi_30m_adj = +5  # Перепродан — хорошо для LONG
+                elif rsi_30m > 75:
+                    rsi_30m_adj = -5  # Перекуплен — плохо для LONG
+                elif rsi_30m > 65:
+                    rsi_30m_adj = -2  # Начало перекупленности
+        except Exception:
+            pass
+        
+        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
+        rsi_4h_adj = 0
+        try:
+            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            if ohlcv_4h and len(ohlcv_4h) >= 14:
+                closes_4h = [c.close for c in ohlcv_4h[-14:]]
+                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
+                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
+                ag = sum(gains)/13; al = sum(losses)/13
+                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
+                # v2.7: Не блокируем, корректируем скор
+                if rsi_4h < 35:
+                    rsi_4h_adj = +8   # Перепродан на 4h — отлично для LONG
+                elif rsi_4h > 70:
+                    rsi_4h_adj = -8   # Перекуплен на 4h — плохо для LONG
+                elif rsi_4h > 60:
+                    rsi_4h_adj = -3   # Начало перекупленности
+        except Exception:
+            pass
+        
+        # Применяем RSI корректировки к базовому бонусу
+        base_score_bonus = base_score_bonus + rsi_30m_adj + rsi_4h_adj
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
@@ -794,6 +847,23 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"OI Proxy error {symbol}: {e}")
 
         # ── Base score ────────────────────────────────────────────────────────
+        # ✅ v4.0: Рассчитываем изменение альта за 1ч для детектора независимости
+        symbol_change_1h = 0.0
+        btc_change_1h_score = 0.0
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 2:
+                c1 = ohlcv_1h[-1]
+                c0 = ohlcv_1h[-2]
+                close1 = float(c1.close if hasattr(c1, 'close') else c1[4])
+                open0  = float(c0.open  if hasattr(c0, 'open')  else c0[1])
+                if open0 > 0:
+                    symbol_change_1h = (close1 - open0) / open0 * 100
+            # BTC change от market_ctx если доступен
+            if hasattr(state, 'market_ctx') and state.market_ctx and state.market_ctx._btc_cache:
+                btc_change_1h_score = state.market_ctx._btc_cache.get('change_1h', 0.0)
+        except Exception:
+            pass
+
         score_result = state.scorer.calculate_score(
             rsi_1h=md.rsi_1h or 50,
             funding_current=md.funding_rate / 100,
@@ -806,58 +876,73 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
+            symbol_change_1h=symbol_change_1h,        # ✅ v4.0: для decoupling bonus
+            btc_change_1h=btc_change_1h_score,        # ✅ v4.0: для decoupling bonus
         )
         
-        # 💡 SMART SCORING v3.0: 4-уровневая система оверрайда для FILTER0
-        ob_quality = getattr(getattr(ob_result, 'bullish_ob', None), 'quality', 0) if ob_result else 0
-        confirmation_bonus = base_score_bonus if 'base_score_bonus' in locals() else 0
+        # ✅ FIX v3.1: SMART SCORING — многоуровневый оверрайд для LONG
+        ob_quality    = (ob_result.bullish_ob.quality if ob_result and ob_result.bullish_ob else 0)
+        ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
+        ob_q_high     = ob_quality >= 70   # Высокое качество
         
+        # ✅ FIX v7: Детальные логи score breakdown
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
         if not score_result.is_valid:
-            # 🎯 4-уровневый оверрайд — позволяет больше сделок при подтверждении
-            override_applied = False
-            override_reason = ""
-            bonus_points = 0
+            override_reason = None
+            boost = 0
             
-            if tbs_found and ob_quality >= 70:
-                # Уровень 1: TBS + высококачественный OB
-                bonus_points = 15
-                override_applied = True
-                override_reason = f"🎯 TBS+OB_Q{ob_quality} — оверрайд L1 (+15)"
-            elif tbs_found and ob_quality >= 60:
-                # Уровень 2: TBS + средний OB
-                bonus_points = 10
-                override_applied = True
-                override_reason = f"🎯 TBS+OB_Q{ob_quality} — оверрайд L2 (+10)"
-            elif tbs_found and confirmation_bonus >= 5:
-                # Уровень 3: TBS + confirmation bonus
-                bonus_points = 8
-                override_applied = True
-                override_reason = f"🎯 TBS+Conf{confirmation_bonus} — оверрайд L3 (+8)"
-            elif ob_quality >= 70 and confirmation_bonus >= 1:
-                # Уровень 4: Только качественный OB + confirmation
-                bonus_points = 5
-                override_applied = True
-                override_reason = f"🎯 OB_Q{ob_quality}+Conf — оверрайд L4 (+5)"
+            # Уровень 1: TBS + OB >= 70 — сильный оверрайд (было единственным условием)
+            if tbs_found and ob_q_high:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 15
+            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд  
+            elif tbs_found and ob_quality_ok:
+                override_reason = f"TBS+OB_Q{ob_quality}"
+                boost = 10
+            # Уровень 3: только TBS без OB (риск выше)
+            elif tbs_found and base_score_bonus >= 5:
+                override_reason = f"TBS+confirmation"
+                boost = 8
+            # Уровень 4: OB >= 70 без TBS (институциональная зона)
+            elif ob_q_high and base_score_bonus >= 3:
+                override_reason = f"OB_Q{ob_quality}+confirmation"
+                boost = 5
             
-            if override_applied:
-                print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason}")
-                from shared.core.scorer import ScoreResult, Confidence
+            if override_reason:
+                print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
+                from core.scorer import ScoreResult, Confidence
                 score_result = ScoreResult(
-                    total_score=max(70, score_result.total_score + bonus_points),
+                    total_score=max(70, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
                     direction=score_result.direction,
-                    is_valid=True,  # Принудительно валидный
-                    confidence=Confidence.MEDIUM,
-                    grade="B",
+                    is_valid=True,
+                    confidence=Confidence.MEDIUM if boost < 12 else Confidence.HIGH,
+                    grade="B" if boost < 12 else "A",
                     components=score_result.components,
-                    reasons=score_result.reasons + [override_reason]
+                    reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (TBS={tbs_found}, OB_Q={ob_quality}, Conf={confirmation_bonus})")
-                return None
+                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
+                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                if score_result.total_score >= bear_threshold:
+                    print(f"\U0001f7e1 [FILTER0-LONG] {symbol}: score={score_result.total_score} BEAR PASS")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score, max_possible=score_result.max_possible,
+                        direction=score_result.direction, is_valid=True,
+                        confidence=Confidence.LOW, grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["Bear market pass"],
+                    )
+                else:
+                    print(f"\U0001f534 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
+                    return None
         
         reasons     = list(score_result.reasons)
-        final_score = min(100, score_result.total_score + base_score_bonus)  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
+        final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
@@ -879,8 +964,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         reasons.extend(rt_result.factors)
         print(f"📊 [RT-LONG] {symbol}: base={rt_result.base_score} bonus={rt_result.bonus:+d} final={rt_result.final_score}")
 
-        # ✅ RSI ОТКЛЮЧЕН — не используем для входа
-
+        # 🆕 Бонус если RSI восстанавливается от низов (LONG сигнал)
+        rsi_now = md.rsi_1h or 0
+        if 30 <= rsi_now <= 50 and rsi_current > 0:
+            final_score += 3
+            reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
+        
         # 🌊 ELLIOTT WAVE v3.0: Детекция волн для точных входов
         elliott_min_score = Config.MIN_SCORE  # По умолчанию
         try:
@@ -900,8 +989,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             details_reason = wave_result.details.get('reason', 'N/A') if isinstance(wave_result.details, dict) else 'N/A'
             print(f"🌊 [ELLIOTT-LONG] {symbol}: Детали: {details_reason}")
             
-            # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B) — только если волна определена и уверенность высокая
-            if wave_result.is_trap and wave_result.wave != "?" and wave_result.confidence > 0.5:
+            # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
+            # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:  # ✅ FIX v5: 0.5→0.7 меньше ложных блоков
                 print(f"🚫 [ELLIOTT-BLOCK-LONG] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа
@@ -921,10 +1011,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 except:
                     pass
                 return None  # 🚫 БЛОКИРУЕМ ВХОД
-            elif wave_result.is_trap:
-                # Волна неопределена или уверенность низкая — пропускаем, но логируем
-                print(f"⚠️  [ELLIOTT-WARN-LONG] {symbol}: Волна {wave_result.wave} отмечена как ловушка, "
-                      f"но уверенность={wave_result.confidence:.0%} — пропускаем блокировку")
             
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
@@ -964,7 +1050,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🌊 [ELLIOTT-ERROR-LONG] {symbol}: {e}")
             elliott_data = {"error": str(e)}
             # 🔥 FIX: При ошибке Elliott Wave — снижаем минимум для TBS+OB сигналов
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = 55  # Очень низкий порог при ошибке
                 print(f"💡 [ELLIOTT-FALLBACK-LONG] {symbol}: Ошибка волн, но TBS+OB_Q{ob_quality} — снижаем мин до 55")
         
@@ -972,7 +1058,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if 'elliott_min_score' not in locals():
             elliott_min_score = Config.MIN_SCORE
             # Если нет данных Elliott но есть сильный TBS+OB — снижаем порог
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = max(55, Config.MIN_SCORE - 10)
                 print(f"💡 [LONG-FALLBACK] {symbol}: Нет данных Elliott, TBS+OB_Q{ob_quality} — мин={elliott_min_score}")
         
@@ -1040,7 +1126,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
             if pool_scan.active_sweeps:
                 # Бонус за активный sweep зоны ликвидности
-                final_score += 10
+                final_score = min(100, final_score + 10)
                 reasons.append(f"🌊 Liquidity sweep detected (+10)")
                 pool_data = {
                     "eqh_levels": len(pool_scan.eqh_levels),
@@ -1171,6 +1257,13 @@ async def scan_market():
             # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
+            # ✅ FIX v5: SL Cooldown — пауза 2ч после стопа по символу
+            try:
+                sl_cd = state.redis.get(f"sl_cooldown:long:{symbol}")
+                if sl_cd:
+                    continue
+            except Exception:
+                pass
 
             signal = await scan_symbol(symbol)
             if not signal:

@@ -1,187 +1,127 @@
 """
-Volume Profile Analysis — POC (Point of Control) и зоны объема
-Для определения ключевых уровней TP/SL
+Volume Spike Detector
+Анализ всплесков объема для раннего обнаружения сильных движений
 """
 
-from typing import Optional, List, Dict, Tuple
-from dataclasses import dataclass
 import numpy as np
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 
 
 @dataclass
-class VolumeProfile:
-    """Профиль объема"""
-    poc_price: float  # Point of Control (максимальный объем)
-    value_area_high: float  # Верхняя граница Value Area (70% объема)
-    value_area_low: float  # Нижняя граница Value Area
-    high_volume_nodes: List[float]  # Все HVN (High Volume Nodes)
-    low_volume_nodes: List[float]  # LVN (Low Volume Nodes — пробойные зоны)
-    volume_profile: Dict[float, float]  # {price_level: volume}
+class VolumeSpike:
+    """Данные о всплеске объема"""
+    symbol: str
+    current_volume: float
+    avg_volume: float
+    spike_ratio: float  # current / avg
+    price_change_pct: float
+    timestamp: int
+    confidence: str  # "weak", "moderate", "strong", "extreme"
 
 
-class VolumeProfileAnalyzer:
-    """Анализатор профиля объема"""
+class VolumeAnalyzer:
+    """
+    Анализатор объема для обнаружения pump/dump
     
-    def __init__(self, num_bins: int = 24):
-        self.num_bins = num_bins  # Количество уровней цены
+    Использует:
+    - Скользящее среднее объема (20 периодов)
+    - Отклонение текущего объема от среднего
+    - Корреляция с ценовым движением
+    """
     
-    def calculate(self, candles: List) -> Optional[VolumeProfile]:
+    # Пороги для всплесков
+    SPIKE_THRESHOLDS = {
+        "weak": 1.5,      # 1.5x average
+        "moderate": 2.5,  # 2.5x average
+        "strong": 4.0,    # 4x average
+        "extreme": 6.0    # 6x average
+    }
+    
+    def __init__(self, lookback_periods: int = 20):
+        self.lookback = lookback_periods
+    
+    def analyze_spike(self, 
+                      symbol: str,
+                      volumes: List[float],
+                      prices: List[float],
+                      timestamp: int) -> Optional[VolumeSpike]:
         """
-        Рассчитать Volume Profile из OHLCV данных
+        Анализировать всплеск объема
         
         Args:
-            candles: Список свечей с атрибутами high, low, close, volume
-        
+            symbol: Торговая пара
+            volumes: Список объемов (последний = текущий)
+            prices: Список цен (close)
+            timestamp: Текущее время
+            
         Returns:
-            VolumeProfile или None если недостаточно данных
+            VolumeSpike если всплеск обнаружен, иначе None
         """
-        if len(candles) < 20:
+        if len(volumes) < self.lookback + 1:
             return None
         
-        try:
-            # Извлекаем данные
-            highs = [c.high for c in candles]
-            lows = [c.low for c in candles]
-            closes = [c.close for c in candles]
-            volumes = [c.volume for c in candles]
-            
-            # Диапазон цен
-            min_price = min(lows)
-            max_price = max(highs)
-            price_range = max_price - min_price
-            
-            if price_range == 0:
-                return None
-            
-            # Создаем бины (уровни цены)
-            bin_size = price_range / self.num_bins
-            volume_by_level = {}
-            
-            for i, candle in enumerate(candles):
-                # Распределяем объем по уровням внутри диапазона свечи
-                candle_min = candle.low
-                candle_max = candle.high
-                candle_volume = candle.volume
-                
-                # Определяем какие бины пересекает свеча
-                bin_start = int((candle_min - min_price) / bin_size)
-                bin_end = int((candle_max - min_price) / bin_size)
-                
-                bin_start = max(0, min(bin_start, self.num_bins - 1))
-                bin_end = max(0, min(bin_end, self.num_bins - 1))
-                
-                # Распределяем объем равномерно
-                bins_covered = bin_end - bin_start + 1
-                vol_per_bin = candle_volume / bins_covered
-                
-                for bin_idx in range(bin_start, bin_end + 1):
-                    price_level = min_price + (bin_idx + 0.5) * bin_size
-                    volume_by_level[price_level] = volume_by_level.get(price_level, 0) + vol_per_bin
-            
-            if not volume_by_level:
-                return None
-            
-            # Находим POC (максимальный объем)
-            poc_price = max(volume_by_level, key=volume_by_level.get)
-            total_volume = sum(volume_by_level.values())
-            
-            # Сортируем уровни по объему
-            sorted_levels = sorted(volume_by_level.items(), key=lambda x: x[1], reverse=True)
-            
-            # Value Area (70% объема)
-            cumulative_volume = 0
-            value_area_levels = []
-            for price, vol in sorted_levels:
-                cumulative_volume += vol
-                value_area_levels.append(price)
-                if cumulative_volume >= total_volume * 0.7:
-                    break
-            
-            value_area_high = max(value_area_levels) if value_area_levels else max_price
-            value_area_low = min(value_area_levels) if value_area_levels else min_price
-            
-            # HVN — топ 30% уровней по объему
-            num_hvn = max(1, len(sorted_levels) // 3)
-            high_volume_nodes = [p for p, v in sorted_levels[:num_hvn]]
-            
-            # LVN — нижние 30% (редкие объемы = зоны пробоя)
-            low_volume_nodes = [p for p, v in sorted_levels[-num_hvn:]]
-            
-            return VolumeProfile(
-                poc_price=poc_price,
-                value_area_high=value_area_high,
-                value_area_low=value_area_low,
-                high_volume_nodes=high_volume_nodes,
-                low_volume_nodes=low_volume_nodes,
-                volume_profile=volume_by_level
-            )
-            
-        except Exception as e:
-            print(f"[VolumeProfile] Error: {e}")
-            return None
-    
-    def get_poc_based_levels(self, vp: VolumeProfile, current_price: float, 
-                             direction: str) -> Tuple[Optional[float], Optional[float]]:
-        """
-        Получить уровни TP и SL на основе POC
+        current_volume = volumes[-1]
+        avg_volume = np.mean(volumes[-self.lookback-1:-1])
         
-        Args:
-            vp: VolumeProfile
-            current_price: Текущая цена
-            direction: "long" или "short"
+        if avg_volume == 0:
+            return None
+        
+        spike_ratio = current_volume / avg_volume
+        
+        # Проверяем порог
+        if spike_ratio < self.SPIKE_THRESHOLDS["weak"]:
+            return None
+        
+        # Рассчитываем изменение цены
+        price_change_pct = ((prices[-1] - prices[-2]) / prices[-2]) * 100 if len(prices) >= 2 else 0
+        
+        # Определяем уровень уверенности
+        confidence = "weak"
+        for level, threshold in self.SPIKE_THRESHOLDS.items():
+            if spike_ratio >= threshold:
+                confidence = level
+        
+        return VolumeSpike(
+            symbol=symbol,
+            current_volume=current_volume,
+            avg_volume=avg_volume,
+            spike_ratio=spike_ratio,
+            price_change_pct=price_change_pct,
+            timestamp=timestamp,
+            confidence=confidence
+        )
+    
+    def calculate_volume_score(self, spike: VolumeSpike) -> int:
+        """
+        Рассчитать скор всплеска объема (0-100)
         
         Returns:
-            (tp_price, sl_price) или (None, None)
+            int: Score от 0 до 100
         """
-        try:
-            if direction == "long":
-                # TP: следующий HVN выше цены или Value Area High
-                tp_candidates = [p for p in vp.high_volume_nodes if p > current_price]
-                if tp_candidates:
-                    tp_price = min(tp_candidates)  # Ближайший HVN сверху
-                else:
-                    tp_price = vp.value_area_high
-                
-                # SL: POC или ближайший HVN ниже
-                sl_candidates = [p for p in vp.high_volume_nodes if p < current_price]
-                if sl_candidates:
-                    sl_price = max(sl_candidates)  # Ближайший HVN снизу
-                else:
-                    sl_price = vp.value_area_low
-                    
-            else:  # short
-                # TP: следующий HVN ниже цены
-                tp_candidates = [p for p in vp.high_volume_nodes if p < current_price]
-                if tp_candidates:
-                    tp_price = max(tp_candidates)
-                else:
-                    tp_price = vp.value_area_low
-                
-                # SL: POC или ближайший HVN выше
-                sl_candidates = [p for p in vp.high_volume_nodes if p > current_price]
-                if sl_candidates:
-                    sl_price = min(sl_candidates)
-                else:
-                    sl_price = vp.value_area_high
-            
-            return tp_price, sl_price
-            
-        except Exception:
-            return None, None
-    
-    def is_price_at_poc(self, vp: VolumeProfile, current_price: float, 
-                        tolerance: float = 0.005) -> bool:
-        """Проверить, находится ли цена около POC (±0.5% по умолчанию)"""
-        return abs(current_price - vp.poc_price) / vp.poc_price < tolerance
+        base_score = {
+            "weak": 25,
+            "moderate": 50,
+            "strong": 75,
+            "extreme": 100
+        }.get(spike.confidence, 0)
+        
+        # Бонус за сильное ценовое движение
+        price_momentum = abs(spike.price_change_pct)
+        if price_momentum > 5:
+            base_score += 10
+        if price_momentum > 10:
+            base_score += 10
+        
+        return min(base_score, 100)
 
 
-# Синглтон инстанс
-_analyzer: Optional[VolumeProfileAnalyzer] = None
+# Singleton для использования в ботах
+_volume_analyzer = None
 
-
-def get_volume_profile_analyzer() -> VolumeProfileAnalyzer:
-    """Получить анализатор"""
-    global _analyzer
-    if _analyzer is None:
-        _analyzer = VolumeProfileAnalyzer()
-    return _analyzer
+def get_volume_analyzer() -> VolumeAnalyzer:
+    """Получить singleton VolumeAnalyzer"""
+    global _volume_analyzer
+    if _volume_analyzer is None:
+        _volume_analyzer = VolumeAnalyzer(lookback_periods=20)
+    return _volume_analyzer
