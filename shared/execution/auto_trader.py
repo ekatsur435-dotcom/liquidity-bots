@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from api.bingx_client import BingXClient
 from upstash.redis_client import get_redis_client
 from execution.limit_executor import LimitExecutor, LimitOrderConfig, get_limit_executor
+# 🆕 Aegis: Kelly Risk Manager
+from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality
 
 
 def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
@@ -82,6 +84,9 @@ class AutoTrader:
 
         # 🎯 Phase 3: Limit Executor для адаптивных лимитных входов
         self.limit_executor = get_limit_executor()
+        
+        # 🆕 Aegis: Kelly Risk Manager
+        self.kelly_rm = get_kelly_risk_manager(capital=10000.0, redis_client=self.redis)
         
         mode = "DEMO" if self.config.demo_mode else "REAL"
         print(f"🤖 AutoTrader initialized ({mode})")
@@ -353,18 +358,53 @@ class AutoTrader:
             return None
 
         # ── 6. Sizing ─────────────────────────────────────────────────────────
+        # 🆕 Aegis: Kelly Risk Manager sizing
+        signal_quality = SignalQuality(
+            score=signal_score,
+            has_tbs=smc_data.get("has_tbs", False) if smc_data else False,
+            ob_quality=smc_data.get("ob_quality", 0) if smc_data else 0,
+            is_sweep=smc_data.get("is_sweep", False) if smc_data else False,
+            confidence="HIGH" if signal_score >= 80 else ("MEDIUM" if signal_score >= 65 else "LOW")
+        )
+        
+        # Получаем капитал из equity
+        self.kelly_rm.update_capital(equity)
+        
+        # Расчёт Kelly size
+        kelly_result = self.kelly_rm.calculate_position_size(
+            signal_quality=signal_quality,
+            sl_pct=sl_distance * 100,
+            current_exposure_pct=(n_pos / self.config.max_positions) if self.config.max_positions > 0 else 0
+        )
+        
+        if kelly_result.blocked:
+            print(f"{pfx} ⏸ SKIP — Kelly Risk Manager: {kelly_result.block_reason}")
+            await self._tg_reply(
+                f"⏸ <b>Блокировка Kelly RM</b>\n"
+                f"<b>#{symbol}</b> — {kelly_result.block_reason}", tg_msg_id
+            )
+            return None
+        
+        # Базовый расчёт sizing (legacy)
         risk_mult   = 1.5 if signal_score >= 85 else (1.2 if signal_score >= 75 else 1.0)
         actual_risk = self.config.risk_per_trade * risk_mult
         risk_amount = available * actual_risk
         sl_distance = abs(entry_price - stop_loss) / entry_price
 
         print(f"{pfx} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
+        print(f"{pfx} 🎯 Kelly: kelly_pct={kelly_result.kelly_pct:.1f}% | "
+              f"signal_boost={kelly_result.signal_boost:.1f}% | "
+              f"final_size_pct={kelly_result.adjusted_pct:.1f}%")
 
         if sl_distance < 0.001:
             print(f"{pfx} ❌ SKIP — SL too small ({sl_distance:.4%})")
             return None
 
-        position_value = risk_amount / sl_distance
+        # Используем MAX из legacy и Kelly sizing
+        legacy_position_value = risk_amount / sl_distance
+        kelly_position_value = kelly_result.size_usd if not kelly_result.blocked else 0
+        
+        position_value = max(legacy_position_value, kelly_position_value)
         leverage       = self._calc_leverage(signal_score)
         size           = position_value / entry_price
 

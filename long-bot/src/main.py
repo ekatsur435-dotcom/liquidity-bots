@@ -61,6 +61,10 @@ from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
 from core.market_context import get_market_context, MarketContextFilter  # ✅ v4.0: Market Context Filter
+# 🆕 Aegis components
+from core.pump_detector import detect_pump, PumpDetectionResult  # ✅ NEW: Z-Score detector
+from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality  # ✅ NEW: Kelly sizing
+from core.delta_analyzer import analyze_delta  # ✅ NEW: CVD/Order Flow analyzer
 
 
 # ============================================================================
@@ -601,7 +605,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             ctx = await state.market_ctx.check(
                 direction="long",
                 symbol=symbol,
-                block_asian_session=True,
+                block_asian_session=False,  # ✅ FIX: Asian session OFF
                 allow_decoupled_alts=True
             )
             if not ctx.allowed:
@@ -910,6 +914,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             elif ob_q_high and base_score_bonus >= 3:
                 override_reason = f"OB_Q{ob_quality}+confirmation"
                 boost = 5
+            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
+            elif ob_q_high:
+                override_reason = f"OB_Q{ob_quality} (standalone)"
+                boost = 12  # Сильный буст для институционального OB
+            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
+            elif ob_quality_ok:
+                override_reason = f"OB_Q{ob_quality} (standalone)"
+                boost = 8
             
             if override_reason:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
@@ -1135,6 +1147,35 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 }
         except Exception as e:
             print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
+
+        # 🆕 Aegis: Z-Score Pump/Dump Detection
+        try:
+            pump_result = detect_pump(_ohlcv(ohlcv_15m), direction="long")
+            if pump_result.detected and pump_result.signal_type == "dump":
+                # Для LONG: дамп (Z < -2) = хороший вход
+                z_bonus = min(15, int(abs(pump_result.z_score) * 3))  # Z=-3 → +9
+                final_score = min(100, final_score + z_bonus)
+                reasons.append(f"📉 Z-Score Dump: {pump_result.z_score:.1f}σ (RSI {pump_result.rsi:.0f}) +{z_bonus}")
+                print(f"🎯 [AEGIS-Z] {symbol}: DUMP detected Z={pump_result.z_score:.2f}, +{z_bonus} to score")
+            elif pump_result.z_score > 2.0:
+                # Для LONG: памп (Z > 2) = плохой вход, штраф
+                z_penalty = min(10, int(pump_result.z_score * 2))
+                final_score = max(0, final_score - z_penalty)
+                reasons.append(f"⚠️ Z-Score Pump: +{pump_result.z_score:.1f}σ — штраф -{z_penalty}")
+        except Exception as e:
+            print(f"[AEGIS-Z] {symbol} error: {e}")
+
+        # 🆕 Aegis: Delta Analyzer (CVD + Order Flow)
+        try:
+            delta_result = analyze_delta(_ohlcv(ohlcv_15m), direction="long")
+            if delta_result.score >= 30:
+                # Для LONG: bullish divergence или buy imbalance
+                delta_bonus = min(15, int(delta_result.score * 0.25))  # max +15
+                final_score = min(100, final_score + delta_bonus)
+                reasons.append(f"🌊 Delta/CVD: {delta_result.reasons[0][:50]}... +{delta_bonus}")
+                print(f"🎯 [AEGIS-Δ] {symbol}: CVD score={delta_result.score:.0f}, +{delta_bonus}")
+        except Exception as e:
+            print(f"[AEGIS-Δ] {symbol} error: {e}")
 
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
