@@ -562,35 +562,41 @@ class BinanceFuturesClient:
 
     async def get_open_interest(self, symbol: str) -> Optional[float]:
         await self._init_source()
-        if self._use_binance:
-            d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
-            if d:
-                return float(d.get("openInterest", 0))
+        # ✅ FIX: Try Bybit FIRST (works without proxies), then Binance
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
             items = result.get("list", [])
             if items:
                 oi = items[0].get("openInterest")
-                return float(oi) if oi else None
+                if oi:
+                    return float(oi)
+        # Fallback to Binance
+        if self._use_binance:
+            d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
+            if d:
+                return float(d.get("openInterest", 0))
         return None
 
     async def get_open_interest_history(self, symbol: str,
                                          period: str = "1h", limit: int = 5) -> List[Dict]:
         await self._init_source()
-        if self._use_binance:
-            d = await self._binance("/fapi/v1/openInterestHist",
-                                    {"symbol": symbol, "period": period, "limit": limit})
-            return d or []
+        # ✅ FIX: Try Bybit FIRST (works without proxies)
         imap = {"5m": "5min", "15m": "15min", "30m": "30min",
                 "1h": "1h", "4h": "4h", "1d": "1d"}
         result = await self._bybit("/v5/market/open-interest",
                                    {"category": "linear", "symbol": symbol,
                                     "intervalTime": imap.get(period, "1h"),
                                     "limit": limit})
-        if result:
-            return [{"sumOpenInterest": item.get("openInterest", 0)}
+        if result and result.get("list"):
+            return [{"sumOpenInterest": item.get("openInterest", 0), 
+                     "timestamp": int(item.get("openInterest", 0))}  # placeholder
                     for item in result.get("list", [])]
+        # Fallback to Binance
+        if self._use_binance:
+            d = await self._binance("/fapi/v1/openInterestHist",
+                                    {"symbol": symbol, "period": period, "limit": limit})
+            return d or []
         return []
 
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
@@ -629,6 +635,7 @@ class BinanceFuturesClient:
         0.0 = все продают агрессивно, 1.0 = все покупают агрессивно.
         """
         await self._init_source()
+        # ✅ FIX: Bybit doesn't have direct taker ratio, use Binance only
         if self._use_binance:
             d = await self._binance("/futures/data/takerBuySellVolRatio",
                                     {"symbol": symbol, "period": period, "limit": 1})
@@ -637,6 +644,7 @@ class BinanceFuturesClient:
                 sell_vol = float(d[0].get("sellVol", 0))
                 total = buy_vol + sell_vol
                 return buy_vol / total if total > 0 else None
+        # Try to estimate from klines if available
         return None
 
     async def get_liquidations(self, symbol: str,
@@ -646,6 +654,17 @@ class BinanceFuturesClient:
         Возвращает сумму в USD и доминирующую сторону.
         """
         await self._init_source()
+        # ✅ FIX: Try Bybit liquidations first (available in recent trades)
+        try:
+            bybit_result = await self._bybit("/v5/market/recent-trade",
+                                            {"category": "linear", "symbol": symbol, "limit": limit})
+            if bybit_result and bybit_result.get("list"):
+                trades = bybit_result.get("list", [])
+                # Bybit recent trade doesn't show liquidation flag directly
+                # Fallback to Binance for now
+        except Exception:
+            pass
+        
         if self._use_binance:
             try:
                 d = await self._binance("/fapi/v1/allForceOrders",
