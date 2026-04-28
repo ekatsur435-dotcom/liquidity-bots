@@ -279,7 +279,8 @@ class MomentumDetector:
         self,
         watchlist: List[str],
         get_candles_func,
-        min_volume_usdt: float = 100000
+        min_volume_usdt: float = 100000,
+        debug: bool = False
     ) -> List[MomentumSignal]:
         """
         Сканирование вотчлиста на momentum сигналы
@@ -288,35 +289,67 @@ class MomentumDetector:
             watchlist: Список тикеров
             get_candles_func: Функция для получения свечей (symbol, tf) -> candles
             min_volume_usdt: Минимальный объём для фильтра
+            debug: Включить подробное логирование
         
         Returns:
             Список сигналов
         """
         if not self.config.enabled:
+            if debug:
+                print(f"🔍 [MOMENTUM] Detector disabled, returning empty")
             return []
         
         signals = []
+        checked = 0
+        rejected_candles = 0
+        rejected_volume = 0
+        rejected_filters = 0
         
         for symbol in watchlist:
             try:
+                checked += 1
                 # Получаем 1-минутные свечи
                 candles = await get_candles_func(symbol, "1m", limit=30)
                 
                 if not candles or len(candles) < 25:
+                    rejected_candles += 1
+                    if debug and checked <= 5:
+                        print(f"🔍 [MOMENTUM-DEBUG] {symbol}: rejected - candles={len(candles) if candles else 0} < 25")
                     continue
                 
                 # Фильтр по объёму (последняя свеча)
-                if candles[-1].quote_volume < min_volume_usdt:
+                last_volume = candles[-1].quote_volume if candles else 0
+                if last_volume < min_volume_usdt:
+                    rejected_volume += 1
+                    if debug and rejected_volume <= 3:
+                        print(f"🔍 [MOMENTUM-DEBUG] {symbol}: rejected - volume=${last_volume:,.0f} < ${min_volume_usdt:,.0f}")
                     continue
                 
                 signal = self.detect_momentum(symbol, candles)
                 
                 if signal:
                     signals.append(signal)
+                    if debug:
+                        print(f"🚀 [MOMENTUM-DEBUG] {symbol}: ✅ SIGNAL! score={signal.score:.0f}, velocity={signal.change_1m:.2f}%, vol={signal.volume_spike:.1f}x")
+                else:
+                    rejected_filters += 1
+                    if debug and rejected_filters <= 5:
+                        # Покажем почему отсеялось
+                        price_now = candles[-1].close
+                        price_1m_ago = candles[-2].close if len(candles) >= 2 else candles[0].close
+                        change_1m = (price_now - price_1m_ago) / price_1m_ago * 100
+                        avg_volume = sum(c.quote_volume for c in candles[-21:-1]) / 20
+                        current_volume = candles[-1].quote_volume
+                        volume_spike = current_volume / avg_volume if avg_volume > 0 else 1.0
+                        rsi = self._calc_rsi(candles)
+                        print(f"🔍 [MOMENTUM-DEBUG] {symbol}: filters rejected - change={change_1m:.2f}% (need {self.config.min_1m_change}%), vol={volume_spike:.1f}x (need {self.config.volume_spike_min}x), RSI={rsi:.1f}")
                     
             except Exception as e:
                 # Не логируем каждую ошибку чтобы не спамить
                 pass
+        
+        if debug or len(signals) > 0:
+            print(f"🔍 [MOMENTUM] Scanned {checked} symbols: {len(signals)} signals, {rejected_candles} no candles, {rejected_volume} low volume, {rejected_filters} filtered out")
         
         return signals
 
