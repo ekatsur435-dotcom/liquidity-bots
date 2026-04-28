@@ -326,24 +326,23 @@ def api_trades():
     return jsonify(trades)
 
 
-@app.route("/api/active_positions")
-def api_active_positions():
-    """API: Активные позиции с текущим P&L"""
+@app.route("/api/positions")
+def api_positions():
+    """API: Получить список активных позиций (все)"""
     positions = []
-    seen_symbols = set()  # 🔧 FIX: Дедупликация по нормализованным символам
+    seen_symbols = set()
+    debug_info = {"short_keys": 0, "long_keys": 0, "skipped_status": 0, "skipped_dup": 0}
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
             prefix = bot_name.lower()
-            
-            # Читаем активные позиции из positions:*
             try:
-                # Используем KEYS для Upstash
                 result = redis.execute(["KEYS", f"{prefix}:positions:*"])
                 position_keys = result if result and isinstance(result, list) else []
+                debug_info[f"{prefix}_keys"] = len(position_keys)
                 
-                for key in position_keys[:10]:  # Максимум 10
+                for key in position_keys:  # ✅ ВСЕ позиции, без ограничения
                     pos_data = redis.execute(["GET", key])
                     if pos_data:
                         try:
@@ -353,8 +352,15 @@ def api_active_positions():
                             # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
                             symbol_normalized = symbol.replace('-', '').upper()
                             if symbol_normalized in seen_symbols:
+                                debug_info["skipped_dup"] += 1
                                 continue  # Пропускаем дубликат
                             seen_symbols.add(symbol_normalized)
+                            
+                            # ✅ Дополнительные поля для отображения
+                            status = pos.get('status', 'active')
+                            if status not in ['active', 'filled', 'open']:
+                                debug_info["skipped_status"] += 1
+                                continue  # Пропускаем неактивные позиции
 
                             positions.append({
                                 "symbol": symbol_normalized,  # Возвращаем нормализованный символ
@@ -366,14 +372,16 @@ def api_active_positions():
                                 "duration_min": pos.get("duration_min", 0),
                                 "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
                             })
-                        except:
+                        except Exception as e:
+                            print(f"[API] Error parsing position {key}: {e}")
                             continue
             except Exception as e:
                 print(f"Error scanning positions for {bot_name}: {e}")
         except Exception as e:
             print(f"Error reading positions for {bot_name}: {e}")
     
-    return jsonify({"positions": positions, "count": len(positions)})
+    print(f"[API Positions] Found {len(positions)} active positions. Debug: {debug_info}")
+    return jsonify({"positions": positions, "count": len(positions), "debug": debug_info})
 
 
 @app.route("/api/feed")
