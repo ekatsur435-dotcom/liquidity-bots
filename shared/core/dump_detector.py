@@ -118,20 +118,21 @@ class DumpDetector:
         if len(candles) < 3:
             return 0.0, 1.0, 0
         
-        start_price = candles[0]["open"]
-        end_price = candles[-1]["close"]
+        # c = [open, high, low, close, volume] - list format from _ohlcv()
+        start_price = candles[0][0]  # open
+        end_price = candles[-1][3]   # close
         
         price_change = (end_price - start_price) / start_price * 100
         
-        # Объём
-        avg_volume = sum(c.get("volume", 0) for c in candles[:-1]) / max(1, len(candles) - 1)
-        recent_volume = candles[-1].get("volume", 0)
+        # Объём (index 4)
+        avg_volume = sum(c[4] for c in candles[:-1]) / max(1, len(candles) - 1)
+        recent_volume = candles[-1][4]  # volume
         volume_spike = recent_volume / avg_volume if avg_volume > 0 else 1.0
         
         # Длительность (сколько свечей падения)
         decline_candles = 0
         for c in candles:
-            if c["close"] < c["open"]:  # Медвежья свеча
+            if c[3] < c[0]:  # close < open = Медвежья свеча
                 decline_candles += 1
         
         return price_change, volume_spike, decline_candles
@@ -146,7 +147,8 @@ class DumpDetector:
         max_liq = 0
         
         for c in candles[-5:]:  # Последние 5 свечей
-            liq = c.get("liquidations_usd", 0) or c.get("recent_liquidations_usd", 0)
+            # c = [open, high, low, close, volume, liquidations_usd?] - list format
+            liq = c[5] if len(c) > 5 else 0  # liquidations_usd if present
             total_liq += liq
             max_liq = max(max_liq, liq)
         
@@ -168,16 +170,17 @@ class DumpDetector:
         signals = []
         
         # 1. Отскок от минимума
-        recent_low = min(c["low"] for c in candles[-3:])
-        current_price = candles[-1]["close"]
+        # c = [open, high, low, close, volume] - list format
+        recent_low = min(c[2] for c in candles[-3:])  # low = index 2
+        current_price = candles[-1][3]  # close = index 3
         bounce = (current_price - recent_low) / recent_low * 100
         
         if bounce >= self.cfg.bottom_bounce_min:
             signals.append(f"bounce_{bounce:.1f}%")
         
         # 2. Снижение объёма после пика
-        peak_volume = max(c.get("volume", 0) for c in candles[-10:])
-        current_volume = candles[-1].get("volume", 0)
+        peak_volume = max(c[4] for c in candles[-10:])  # volume = index 4
+        current_volume = candles[-1][4]  # volume = index 4
         
         if peak_volume > 0 and current_volume < peak_volume * self.cfg.bottom_volume_drop:
             signals.append("volume_drop")
@@ -188,8 +191,9 @@ class DumpDetector:
         
         # 4. Свеча с длинным нижним хвостом (поглощение продаж)
         last = candles[-1]
-        body = abs(last["close"] - last["open"])
-        lower_wick = min(last["open"], last["close"]) - last["low"]
+        # c = [open, high, low, close, volume] - list format
+        body = abs(last[3] - last[0])  # |close - open|
+        lower_wick = min(last[0], last[3]) - last[2]  # min(open,close) - low
         
         if body > 0 and lower_wick > body * 2:
             signals.append("long_lower_wick")
