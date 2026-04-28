@@ -892,10 +892,18 @@
         function updatePositions(data) {
             const list = document.getElementById('active-positions-list');
             const countSpan = document.getElementById('active-positions-count');
+            const activePosCard = document.getElementById('active-pos');
             
-            // ✅ Обновляем счетчик позиций
+            const count = data.positions ? data.positions.length : 0;
+            
+            // ✅ Обновляем счетчик в секции "Текущие позиции"
             if (countSpan) {
-                countSpan.textContent = data.positions ? data.positions.length : 0;
+                countSpan.textContent = count;
+            }
+            
+            // ✅ Обновляем верхнюю карточку "Активных позиций"
+            if (activePosCard) {
+                activePosCard.textContent = count;
             }
             
             if (data.positions && data.positions.length > 0) {
