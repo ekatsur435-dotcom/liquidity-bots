@@ -82,6 +82,9 @@ class MarketData:
     # Расстояние до 24h low в %
     pct_from_low_24h:     float = 5.0
 
+    # Breakout score (0-1) — сила пробоя уровней
+    breakout_score:       float = 0.0
+
     # ── Realtime метрики (из Pump Detector) ──────────────────────────────────
     # Taker buy/sell ratio: 0.0 = все продают, 1.0 = все покупают
     # >0.6 = агрессивные покупки (бычье давление), <0.4 = агрессивные продажи
