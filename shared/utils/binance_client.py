@@ -725,7 +725,8 @@ class BinanceFuturesClient:
     @staticmethod
     def _calc_atr(candles: List[CandleData], period: int = 14) -> float:
         """ATR(14) — Average True Range."""
-        if len(candles) < period + 1:
+        # ✅ FIX: защита от одиночного CandleData вместо списка
+        if not isinstance(candles, list) or len(candles) < period + 1:
             return 0.0
         trs = []
         for i in range(1, len(candles)):
@@ -744,7 +745,8 @@ class BinanceFuturesClient:
         Отношение объёма последней свечи к среднему за lookback свечей.
         >2.0 = volume spike, >5.0 = экстремальный spike.
         """
-        if len(candles) < lookback + 1:
+        # ✅ FIX: защита от одиночного CandleData вместо списка
+        if not isinstance(candles, list) or len(candles) < lookback + 1:
             return 1.0
         vols = [c.quote_volume for c in candles[-(lookback+1):-1]]
         if not vols:
