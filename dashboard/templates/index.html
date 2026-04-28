@@ -777,7 +777,7 @@
                 updateTrades(trades);
                 
                 // 4. Active Positions
-                const posRes = await fetch('/api/active_positions');
+                const posRes = await fetch('/api/positions');
                 const positions = await posRes.json();
                 updatePositions(positions);
                 
