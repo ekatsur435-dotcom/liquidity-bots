@@ -61,18 +61,32 @@ class BybitClient:
         self.base_url = self.TESTNET_URL if testnet else self.MAINNET_URL
         self.session: Optional[aiohttp.ClientSession] = None
         
-        # ✅ Прокси для обхода geo-block
-        self.proxy = os.getenv("BYBIT_PROXY", "")  # http://user:pass@host:port
+        # ✅ Прокси для обхода geo-block (используем тот же PROXY_LIST что и для Binance)
+        proxy_env = os.getenv("PROXY_LIST", "")
+        self._proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        self._proxy_idx = 0
+        self._active_proxy: Optional[str] = None
+        self._proxy_enabled = os.getenv("USE_PROXY_FOR_BYBIT", "true").lower() == "true"
         
         print(f"🚀 Bybit Client initialized ({'TESTNET' if testnet else 'MAINNET'})")
-        if self.proxy:
-            print(f"   🌐 Proxy enabled: {self.proxy.split('@')[-1]}")  # Логируем только host:port
+        if self._proxies and self._proxy_enabled:
+            print(f"   🌐 Proxy rotation enabled: {len(self._proxies)} proxies available")
+        elif self._proxies:
+            print(f"   ⚠️  Proxies available but USE_PROXY_FOR_BYBIT=false (direct connection)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
+    
+    def _next_proxy(self) -> Optional[str]:
+        """Получить следующий прокси из списка (rotation)"""
+        if not self._proxies or not self._proxy_enabled:
+            return None
+        p = self._proxies[self._proxy_idx % len(self._proxies)]
+        self._proxy_idx += 1
+        return p
     
     def _generate_signature(self, payload: str) -> str:
         """Генерация подписи для приватных запросов"""
@@ -93,7 +107,7 @@ class BybitClient:
                            params: Optional[Dict] = None,
                            signed: bool = False) -> Optional[Dict]:
         """
-        Выполнить запрос к API
+        Выполнить запрос к API с поддержкой proxy rotation
         
         Args:
             method: GET или POST
@@ -101,53 +115,81 @@ class BybitClient:
             params: Параметры
             signed: Требуется ли подпись
         """
+        url = f"{self.base_url}{endpoint}"
+        params = params or {}
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        if signed and self.api_key and self.api_secret:
+            payload = json.dumps(params) if method == "POST" else ""
+            signature, timestamp = self._generate_signature(payload)
+            
+            headers.update({
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-TIMESTAMP": timestamp,
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-RECV-WINDOW": "5000"
+            })
+        
+        # Если нет прокси или отключено — пробуем напрямую
+        if not self._proxies or not self._proxy_enabled:
+            return await self._try_request(method, url, params, headers)
+        
+        # 🔄 Пробуем все прокси по очереди
+        errors = []
+        for idx, proxy in enumerate(self._proxies):
+            try:
+                result = await self._try_request(method, url, params, headers, proxy=proxy)
+                if result is not None:
+                    # ✅ Успех! Запоминаем рабочий прокси
+                    if self._active_proxy != proxy:
+                        self._active_proxy = proxy
+                        host = proxy.split('@')[-1] if '@' in proxy else proxy
+                        print(f"🔄 [BYBIT] Switched to working proxy ({host})")
+                    return result
+            except Exception as e:
+                error_type = type(e).__name__
+                errors.append(f"proxy{idx+1}:{error_type}")
+                continue
+        
+        # ❌ Все прокси упали — пробуем напрямую как fallback
+        print(f"⚠️ [BYBIT] All proxies failed ({', '.join(errors)}), trying direct connection...")
+        return await self._try_request(method, url, params, headers)
+    
+    async def _try_request(self, method: str, url: str, params: Dict, headers: Dict, proxy: Optional[str] = None) -> Optional[Dict]:
+        """Выполнить один запрос с опциональным прокси"""
         try:
-            url = f"{self.base_url}{endpoint}"
-            params = params or {}
-            
-            headers = {
-                "Content-Type": "application/json"
-            }
-            
-            if signed and self.api_key and self.api_secret:
-                payload = json.dumps(params) if method == "POST" else ""
-                signature, timestamp = self._generate_signature(payload)
-                
-                headers.update({
-                    "X-BAPI-API-KEY": self.api_key,
-                    "X-BAPI-TIMESTAMP": timestamp,
-                    "X-BAPI-SIGN": signature,
-                    "X-BAPI-RECV-WINDOW": "5000"
-                })
-            
             session = await self._get_session()
-            
-            # ✅ Прокси для обхода geo-block
-            proxy_kwargs = {}
-            if self.proxy:
-                proxy_kwargs["proxy"] = self.proxy
+            proxy_kwargs = {"proxy": proxy} if proxy else {}
             
             if method == "GET":
-                async with session.get(url, params=params, headers=headers, timeout=30, **proxy_kwargs) as resp:
+                async with session.get(url, params=params, headers=headers, timeout=30, ssl=False, **proxy_kwargs) as resp:
                     if resp.status == 200:
                         return await resp.json()
+                    elif resp.status == 403:
+                        # Geo-block
+                        raise Exception(f"Geo-block (403)")
                     else:
                         error = await resp.text()
-                        print(f"Bybit Error {resp.status}: {error}")
+                        print(f"Bybit Error {resp.status}: {error[:100]}")
                         return None
             
             elif method == "POST":
-                async with session.post(url, json=params, headers=headers, timeout=30, **proxy_kwargs) as resp:
+                async with session.post(url, json=params, headers=headers, timeout=30, ssl=False, **proxy_kwargs) as resp:
                     if resp.status == 200:
                         return await resp.json()
+                    elif resp.status == 403:
+                        raise Exception(f"Geo-block (403)")
                     else:
                         error = await resp.text()
-                        print(f"Bybit Error {resp.status}: {error}")
+                        print(f"Bybit Error {resp.status}: {error[:100]}")
                         return None
         
         except Exception as e:
-            print(f"Request error: {e}")
-            return None
+            # Прокидываем ошибку для логирования в _make_request
+            raise e
     
     async def close(self):
         """Закрыть сессию"""

@@ -15,6 +15,7 @@
 
 import os
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
@@ -24,6 +25,27 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 import sys
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_FORMAT = "%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s"
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format=LOG_FORMAT,
+    handlers=[
+        logging.StreamHandler()  # Вывод в консоль (Render берёт отсюда)
+    ]
+)
+
+# Уменьшаем шум от сторонних библиотек
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+logger = logging.getLogger("short_bot")
+logger.info(f"📝 Logging initialized (level={LOG_LEVEL})")
 
 def _find_shared() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -172,6 +194,8 @@ class Config:
 
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
+    USE_COINMARKETCAP = bool(os.getenv("COINMARKETCAP_API_KEY", ""))
+    USE_COINGECKO  = os.getenv("USE_COINGECKO", "true").lower() == "true"  # Работает и без API ключа
 
     # ✅ FIX: default MAX_WATCHLIST = 300
     # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
@@ -540,15 +564,82 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️ AUTO_TRADING is disabled — AutoTrader not initialized")
 
+    # =============================================================================
+    # EXTERNAL API CLIENTS INITIALIZATION
+    # =============================================================================
+    logger.info("🔌 Initializing external API clients...")
+    
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
-            state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
-            print("✅ CoinGlass connected")
+            from api.coinglass_client import CoinglassClient
+            cg_key = os.getenv("COINGLASS_API_KEY", "")
+            logger.info(f"🔑 CoinGlass API key: {'✅ Set' if cg_key else '❌ Not set'}")
+            state.coinglass = CoinglassClient(api_key=cg_key)
+            logger.info("✅ CoinGlass: Client initialized successfully")
+            test_data = await state.coinglass.get_liquidation_data("BTC", "1h", 1)
+            if test_data:
+                logger.info(f"✅ CoinGlass: Connection test passed")
+            else:
+                logger.warning("⚠️ CoinGlass: Connection test returned empty data")
         except Exception as e:
-            print(f"⚠️ CoinGlass: {e}")
+            logger.error(f"❌ CoinGlass: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
             Config.USE_COINGLASS = False
+            state.coinglass = None
+    else:
+        logger.info("⚠️ CoinGlass: Disabled (COINGLASS_API_KEY not set)")
+    
+    # CoinMarketCap
+    if Config.USE_COINMARKETCAP:
+        try:
+            from api.coinmarketcap_client import get_coinmarketcap_client
+            cmc_key = os.getenv("COINMARKETCAP_API_KEY", "")
+            logger.info(f"🔑 CoinMarketCap API key: {'✅ Set' if cmc_key else '❌ Not set'}")
+            state.cmc = get_coinmarketcap_client()
+            logger.info("✅ CoinMarketCap: Client initialized successfully")
+            test_data = await state.cmc.get_quotes_latest(["BTC"])
+            if test_data:
+                logger.info(f"✅ CoinMarketCap: Connection test passed")
+            else:
+                logger.warning("⚠️ CoinMarketCap: Connection test returned empty data")
+        except Exception as e:
+            logger.error(f"❌ CoinMarketCap: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
+            Config.USE_COINMARKETCAP = False
+            state.cmc = None
+    else:
+        logger.info("⚠️ CoinMarketCap: Disabled (COINMARKETCAP_API_KEY not set)")
+    
+    # CoinGecko
+    if Config.USE_COINGECKO:
+        try:
+            from api.coingecko_client import get_coingecko_client
+            cg_key = os.getenv("COINGECKO_API_KEY", "")
+            logger.info(f"🔑 CoinGecko API key: {'✅ Set (PRO tier)' if cg_key else '⚠️ Not set (free tier)'}")
+            state.coingecko = get_coingecko_client()
+            logger.info("✅ CoinGecko: Client initialized successfully")
+            test_data = await state.coingecko.get_coin_data("BTC")
+            if test_data:
+                logger.info(f"✅ CoinGecko: Connection test passed (price: ${test_data.price:,.2f})")
+            else:
+                logger.warning("⚠️ CoinGecko: Connection test returned empty data")
+        except Exception as e:
+            logger.error(f"❌ CoinGecko: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
+            Config.USE_COINGECKO = False
+            state.coingecko = None
+    else:
+        logger.info("⚠️ CoinGecko: Disabled by configuration")
+    
+    # Summary
+    available_sources = []
+    if Config.USE_COINGLASS and state.coinglass:
+        available_sources.append("CoinGlass")
+    if Config.USE_COINMARKETCAP and state.cmc:
+        available_sources.append("CoinMarketCap")
+    if Config.USE_COINGECKO and state.coingecko:
+        available_sources.append("CoinGecko")
+    available_sources.extend(["Bybit", "Binance"])
+    
+    logger.info(f"📊 Available data sources: {', '.join(available_sources)} ({len(available_sources)}/5)")
 
 
     # ✅ FIX v6: Инициализируем Market Context Filter
