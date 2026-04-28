@@ -423,13 +423,25 @@ async def lifespan(app: FastAPI):
         print("✅ Dump Detector: Flash crash & panic sell detection")
     
     # 🆕 NEW: Momentum Detector (Dump Catching for Short)
-    print(f"🔥 MOMENTUM CONFIG: ENABLE_MOMENTUM_SHORT={Config.ENABLE_MOMENTUM_SHORT}")
+    print(f"\n{'='*60}")
+    print(f"🔥 MOMENTUM DETECTOR INITIALIZATION 🔥")
+    print(f"{'='*60}")
+    print(f"ENABLE_MOMENTUM_SHORT = {Config.ENABLE_MOMENTUM_SHORT}")
+    print(f"{'='*60}\n")
+    
     if Config.ENABLE_MOMENTUM_SHORT:
-        state.momentum_detector = get_momentum_detector(direction="short")
-        print(f"🔥 momentum_detector exists: {hasattr(state, 'momentum_detector')}")
-        print("✅ Momentum Detector: Dump catching mode (velocity + panic volume)")
+        try:
+            print("[MOMENTUM] Creating detector instance...")
+            state.momentum_detector = get_momentum_detector(direction="short")
+            print(f"[MOMENTUM] ✅ Detector created: {state.momentum_detector is not None}")
+            print(f"[MOMENTUM] ✅ Direction: {state.momentum_detector.direction if state.momentum_detector else 'N/A'}")
+            print("[MOMENTUM] ✅ Dump catching mode ACTIVE (velocity + panic volume)")
+        except Exception as e:
+            print(f"[MOMENTUM] ❌ FAILED to create detector: {e}")
+            import traceback
+            traceback.print_exc()
     else:
-        print("⚠️ Momentum Detector: DISABLED in config")
+        print("[MOMENTUM] ⚠️ DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
     if Config.ENABLE_CANDLE_HISTORY:
