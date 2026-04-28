@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>🚀 Trading Dashboard — Live v6.0</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -227,8 +230,9 @@
         
         /* Trades List */
         .trades-list {
-            max-height: 220px;
+            max-height: 240px;
             overflow-y: auto;
+            padding-right: 5px;
         }
         
         .trade-item {
@@ -292,6 +296,15 @@
         /* Live Feed */
         .feed-list {
             max-height: 240px;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+        
+        /* Active Positions Scrollable */
+        .positions-scrollable {
+            max-height: 240px;
+            overflow-y: auto;
+            padding-right: 5px;
         }
         
         .period-btn {
@@ -777,7 +790,7 @@
                 updateTrades(trades);
                 
                 // 4. Active Positions
-                const posRes = await fetch('/api/positions');
+                const posRes = await fetch('/api/positions?_=' + Date.now());
                 const positions = await posRes.json();
                 updatePositions(positions);
                 
