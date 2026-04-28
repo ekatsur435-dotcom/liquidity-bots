@@ -74,6 +74,7 @@ from core.xvp import get_xvp_analyzer, XVPAnalyzer  # ✅ NEW: Extended Volume P
 from core.grid_entry import get_grid_entry, GridEntry  # ✅ NEW: Grid Entry System
 from core.smart_sl_detector import get_smart_sl_detector, SmartSLDetector  # ✅ NEW: Smart Multi-TF SL
 from core.dump_detector import get_dump_detector, DumpDetector, DumpType  # ✅ NEW: Dump Detector
+from core.momentum_detector import get_momentum_detector, MomentumDetector  # ✅ NEW: Momentum Detector
 from core.candle_history_manager import (
     get_candle_manager, CandleHistoryManager, TFConfig,
     fetch_and_store_candles, prefetch_all_tfs, check_data_ready
@@ -139,6 +140,19 @@ class Config:
     # Dump Detector
     ENABLE_DUMP_DETECTOR = os.getenv("ENABLE_DUMP_DETECTOR", "true").lower() == "true"
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
+    
+    # 🆕 NEW: Momentum Detector (Dump Catching for Short)
+    ENABLE_MOMENTUM_SHORT = os.getenv("ENABLE_MOMENTUM_SHORT", "true").lower() == "true"
+    MOMENTUM_SHORT_MIN_1MIN_CHANGE = float(os.getenv("MOMENTUM_SHORT_MIN_1MIN_CHANGE", "0.8"))  # -0.8% за мин
+    MOMENTUM_SHORT_MIN_5MIN_CHANGE = float(os.getenv("MOMENTUM_SHORT_MIN_5MIN_CHANGE", "2.0"))   # -2% за 5 мин
+    MOMENTUM_SHORT_VOLUME_SPIKE = float(os.getenv("MOMENTUM_SHORT_VOLUME_SPIKE", "2.5"))
+    MOMENTUM_SHORT_RSI_MIN = float(os.getenv("MOMENTUM_SHORT_RSI_MIN", "60"))   # RSI > 60 (перекуплено)
+    MOMENTUM_SHORT_RSI_MAX = float(os.getenv("MOMENTUM_SHORT_RSI_MAX", "85"))  # RSI < 85 (не перепродано)
+    MOMENTUM_SHORT_SCORE_MIN = float(os.getenv("MOMENTUM_SHORT_SCORE_MIN", "50"))
+    MOMENTUM_SHORT_MAX_POSITIONS = int(os.getenv("MOMENTUM_SHORT_MAX_POSITIONS", "5"))
+    MOMENTUM_SHORT_RISK_PER_TRADE = float(os.getenv("MOMENTUM_SHORT_RISK_PER_TRADE", "0.0003"))
+    MOMENTUM_SHORT_SL_BUFFER = float(os.getenv("MOMENTUM_SHORT_SL_BUFFER", "1.0"))
+    MOMENTUM_SHORT_TRAIL_START = float(os.getenv("MOMENTUM_SHORT_TRAIL_START", "0.5"))
     
     # 🆕 NEW: Candle History Manager
     ENABLE_CANDLE_HISTORY = os.getenv("ENABLE_CANDLE_HISTORY", "true").lower() == "true"
@@ -407,6 +421,11 @@ async def lifespan(app: FastAPI):
     if Config.ENABLE_DUMP_DETECTOR:
         state.dump_detector = get_dump_detector()
         print("✅ Dump Detector: Flash crash & panic sell detection")
+    
+    # 🆕 NEW: Momentum Detector (Dump Catching for Short)
+    if Config.ENABLE_MOMENTUM_SHORT:
+        state.momentum_detector = get_momentum_detector(direction="short")
+        print("✅ Momentum Detector: Dump catching mode (velocity + panic volume)")
     
     # 🆕 NEW: Candle History Manager
     if Config.ENABLE_CANDLE_HISTORY:
@@ -1606,6 +1625,90 @@ async def scan_market():
         except Exception as e:
             print(f"Error {symbol}: {e}")
 
+    # 🆕 NEW: Momentum Scanning (Dump Catching)
+    if Config.ENABLE_MOMENTUM_SHORT and hasattr(state, 'momentum_detector'):
+        try:
+            print(f"\n🚀 [MOMENTUM-SHORT] Scanning {len(state.watchlist)} symbols for dumps...")
+            
+            async def get_1m_candles(symbol, tf, limit):
+                return await state.binance.get_recent_candles(symbol, timeframe="1m", limit=30)
+            
+            momentum_signals = await state.momentum_detector.scan_watchlist(
+                state.watchlist,
+                get_1m_candles,
+                min_volume_usdt=100000  # Ниже порог для мемов
+            )
+            
+            if momentum_signals:
+                print(f"🎯 [MOMENTUM-SHORT] Found {len(momentum_signals)} dump signals")
+                
+                for mom_sig in momentum_signals:
+                    try:
+                        symbol = mom_sig.symbol
+                        
+                        # Дедупликация
+                        if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
+                            continue
+                        
+                        # Преобразуем momentum signal
+                        signal = {
+                            "symbol": symbol,
+                            "direction": "short",
+                            "score": mom_sig.score,
+                            "price": mom_sig.entry_price,
+                            "entry_price": mom_sig.entry_price,
+                            "stop_loss": round(mom_sig.entry_price * (1 + Config.MOMENTUM_SHORT_SL_BUFFER/100), 6),
+                            "take_profits": [
+                                round(mom_sig.entry_price * 0.985, 6),  # TP1 1.5%
+                                round(mom_sig.entry_price * 0.97, 6),   # TP2 3%
+                            ],
+                            "sl_pct": Config.MOMENTUM_SHORT_SL_BUFFER,
+                            "best_pattern": "momentum_dump",
+                            "indicators": {
+                                "rsi": round(mom_sig.rsi, 1),
+                                "volume_spike": round(mom_sig.volume_spike, 1),
+                                "velocity_1m": round(abs(mom_sig.change_1m), 2),
+                                "factors": mom_sig.factors
+                            },
+                            "signal_type": "momentum",
+                            "risk_per_trade": Config.MOMENTUM_SHORT_RISK_PER_TRADE,
+                        }
+                        
+                        # Telegram сигнал
+                        tg_msg_id = await state.telegram.send_signal(
+                            direction="short", symbol=symbol,
+                            score=signal["score"], price=signal["price"],
+                            pattern="💥 MOMENTUM DUMP",
+                            indicators=signal["indicators"],
+                            entry=signal["entry_price"],
+                            stop_loss=signal["stop_loss"],
+                            take_profits=signal["take_profits"],
+                            leverage=Config.LEVERAGE, risk="≤0.5% deposit",
+                        )
+                        signal["tg_msg_id"] = tg_msg_id
+                        state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
+                        
+                        # Биржевое исполнение
+                        if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
+                            if state.auto_trader:
+                                try:
+                                    await state.auto_trader.execute_momentum_signal(signal)
+                                    active_count += 1
+                                    exchange_full = active_count >= Config.MAX_POSITIONS
+                                    new_signals += 1
+                                    print(f"✅ [MOMENTUM-SHORT] Executed: {symbol} Score={signal['score']:.0f}%")
+                                except Exception as e:
+                                    print(f"❌ [MOMENTUM-SHORT] Error {symbol}: {e}")
+                        else:
+                            tg_only_count += 1
+                            print(f"📡 [MOMENTUM-SHORT] TG-only: {symbol}")
+                            
+                    except Exception as e:
+                        print(f"❌ [MOMENTUM-SHORT] Signal error: {e}")
+                        
+        except Exception as e:
+            print(f"❌ [MOMENTUM-SHORT] Scanner error: {e}")
+    
     state.daily_signals += new_signals + tg_only_count
     state.last_scan      = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))

@@ -256,6 +256,84 @@ class AutoTrader:
         """Callback для fallback с лимитки на маркет"""
         return {"symbol": symbol, "side": side, "quantity": quantity, "filled_price": None}
 
+    async def execute_momentum_signal(self, signal: Dict) -> Optional[Dict]:
+        """
+        🚀 Momentum Signal Execution
+        Отдельный метод для momentum сигналов с особым риск-менеджментом:
+        - Меньший риск (0.03% vs 0.05%)
+        - Уже стопы (1% vs 1.5-2%)
+        - Быстрый трейлинг (с 0.5%)
+        - Макс время 30 минут
+        """
+        symbol = signal.get("symbol", "?")
+        direction = signal.get("direction", "long")
+        pfx = f"[AT-MOMENTUM][{symbol}][{direction.upper()}]"
+        
+        print(f"\n🚀 {pfx} Executing momentum signal...")
+        print(f"   Score: {signal.get('score', 0):.1f}")
+        print(f"   Velocity: {signal.get('indicators', {}).get('velocity_1m', 0):.2f}%/min")
+        print(f"   Volume spike: {signal.get('indicators', {}).get('volume_spike', 0):.1f}x")
+        
+        # Отдельный риск для momentum
+        momentum_risk = signal.get("risk_per_trade", 0.0003)  # Default 0.03%
+        original_risk = self.config.risk_per_trade
+        
+        try:
+            # Временно меняем риск на momentum
+            self.config.risk_per_trade = momentum_risk
+            
+            # У momentum более агрессивные TP
+            take_profits = signal.get("take_profits", [])
+            if not take_profits:
+                # Default momentum TPs: быстрая фиксация
+                entry = signal.get("entry_price", 0)
+                if direction == "long":
+                    take_profits = [
+                        round(entry * 1.015, 6),  # TP1 1.5%
+                        round(entry * 1.03, 6),   # TP2 3%
+                    ]
+                else:
+                    take_profits = [
+                        round(entry * 0.985, 6),  # TP1 1.5%
+                        round(entry * 0.97, 6),  # TP2 3%
+                    ]
+            
+            result = await self.open_position(
+                symbol=symbol,
+                direction=direction,
+                entry_price=signal.get("entry_price"),
+                stop_loss=signal.get("stop_loss"),
+                take_profits=take_profits,
+                signal_score=signal.get("score", 50),
+                smc_data=signal.get("indicators"),
+                tg_msg_id=signal.get("tg_msg_id"),
+            )
+            
+            if result:
+                print(f"✅ {pfx} Momentum position opened successfully")
+                # Дополнительно логируем momentum-специфичные параметры
+                if self.telegram:
+                    await self.telegram.send_message(
+                        f"🚀 <b>Momentum Trade Executed</b>\n"
+                        f"Symbol: {symbol}\n"
+                        f"Direction: {direction.upper()}\n"
+                        f"Risk: {momentum_risk*100:.3f}% (momentum mode)\n"
+                        f"Max hold: 30 min"
+                    )
+            else:
+                print(f"❌ {pfx} Failed to open momentum position")
+            
+            return result
+            
+        except Exception as e:
+            print(f"❌ {pfx} Momentum execution error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        finally:
+            # Восстанавливаем оригинальный риск
+            self.config.risk_per_trade = original_risk
+
     async def open_position(self, symbol, direction, entry_price, stop_loss,
                             take_profits, signal_score, smc_data=None,
                             tg_msg_id=None) -> Optional[Dict]:
