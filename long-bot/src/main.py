@@ -411,9 +411,13 @@ async def lifespan(app: FastAPI):
         print("✅ Dump Detector: Flash crash & panic sell detection")
     
     # 🆕 NEW: Momentum Detector (Trend Following)
+    print(f"🔥 MOMENTUM CONFIG: ENABLE_MOMENTUM_LONG={Config.ENABLE_MOMENTUM_LONG}")
     if Config.ENABLE_MOMENTUM_LONG:
         state.momentum_detector = get_momentum_detector(direction="long")
+        print(f"🔥 momentum_detector exists: {hasattr(state, 'momentum_detector')}")
         print("✅ Momentum Detector: Trend following mode (velocity + volume spike)")
+    else:
+        print("⚠️ Momentum Detector: DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
     if Config.ENABLE_CANDLE_HISTORY:

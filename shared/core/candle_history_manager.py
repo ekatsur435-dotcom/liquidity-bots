@@ -239,7 +239,15 @@ class CandleHistoryManager:
         try:
             history = self.get_or_create_history(symbol, timeframe)
             
+            # Проверка типа данных
+            if not isinstance(ohlcv_data, (list, tuple)):
+                print(f"⚠️ [CHM] Invalid data type for {symbol} {timeframe}: {type(ohlcv_data)}")
+                return
+            
             for candle_data in ohlcv_data:
+                # Пропускаем если это не список/кортеж (например, CandleData объект)
+                if not isinstance(candle_data, (list, tuple)):
+                    continue
                 if len(candle_data) >= 6:
                     candle = Candle(
                         timestamp=int(candle_data[0]),

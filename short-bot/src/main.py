@@ -423,9 +423,13 @@ async def lifespan(app: FastAPI):
         print("✅ Dump Detector: Flash crash & panic sell detection")
     
     # 🆕 NEW: Momentum Detector (Dump Catching for Short)
+    print(f"🔥 MOMENTUM CONFIG: ENABLE_MOMENTUM_SHORT={Config.ENABLE_MOMENTUM_SHORT}")
     if Config.ENABLE_MOMENTUM_SHORT:
         state.momentum_detector = get_momentum_detector(direction="short")
+        print(f"🔥 momentum_detector exists: {hasattr(state, 'momentum_detector')}")
         print("✅ Momentum Detector: Dump catching mode (velocity + panic volume)")
+    else:
+        print("⚠️ Momentum Detector: DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
     if Config.ENABLE_CANDLE_HISTORY:
