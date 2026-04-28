@@ -595,15 +595,96 @@ class BingXClient:
         except Exception as e:
             print(f"⚠️  cancel_order {symbol}/{order_id}: {e}")
             return False
-            balance = await self.get_account_balance()
-            if balance:
-                print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
-                return True
-            print(f"❌ BingX failed | {self.last_error}")
-            return False
+
+    async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 200) -> List[Dict]:
+        """
+        📊 Получить свечи (klines) для анализа тренда
+        
+        Args:
+            symbol: Торговая пара (BTC-USDT)
+            interval: Таймфрейм (1m, 5m, 15m, 30m, 1h, 4h, 1d)
+            limit: Количество свечей (макс 500)
+        
+        Returns:
+            List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
+        """
+        try:
+            symbol_api = self._normalize_symbol(symbol)
+            result = await self._make_request(
+                "GET", "/openApi/swap/v3/quote/klines",
+                params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
+            )
+            
+            if result and result.get("code") == 0:
+                data = result.get("data", [])
+                klines = []
+                for item in data:
+                    klines.append({
+                        'time': item[0],      # Open time
+                        'open': float(item[1]),
+                        'high': float(item[2]),
+                        'low': float(item[3]),
+                        'close': float(item[4]),
+                        'volume': float(item[5])
+                    })
+                return klines
+            return []
         except Exception as e:
-            print(f"❌ BingX error: {e}")
-            return False
+            print(f"⚠️  get_klines {symbol}: {e}")
+            return []
+
+    async def check_trend(self, symbol: str, direction: str) -> Tuple[bool, str]:
+        """
+        📈 Проверить соответствие направления сделки тренду
+        
+        Returns:
+            (allowed: bool, reason: str)
+        """
+        try:
+            # Получаем свечи 1H
+            klines = await self.get_klines(symbol, interval="1h", limit=100)
+            if len(klines) < 50:
+                return True, "Недостаточно данных для анализа тренда"
+            
+            # Получаем цены закрытия
+            closes = [k['close'] for k in klines]
+            
+            # Рассчитываем EMA50 и EMA200
+            ema50 = self._calculate_ema(closes, 50)
+            ema200 = self._calculate_ema(closes, 200)
+            
+            if not ema50 or not ema200:
+                return True, "Не удалось рассчитать EMA"
+            
+            # Проверяем направление
+            if direction.lower() == "long":
+                if ema50 < ema200:
+                    return False, f"🚫 LONG запрещён: EMA50({ema50:.6f}) < EMA200({ema200:.6f}) - падающий тренд"
+                return True, f"✅ LONG разрешён: EMA50({ema50:.6f}) > EMA200({ema200:.6f}) - восходящий тренд"
+            
+            elif direction.lower() == "short":
+                if ema50 > ema200:
+                    return False, f"🚫 SHORT запрещён: EMA50({ema50:.6f}) > EMA200({ema200:.6f}) - восходящий тренд"
+                return True, f"✅ SHORT разрешён: EMA50({ema50:.6f}) < EMA200({ema200:.6f}) - падающий тренд"
+            
+            return True, "Неизвестное направление"
+            
+        except Exception as e:
+            print(f"⚠️  check_trend {symbol}: {e}")
+            return True, f"Ошибка анализа тренда: {e}"
+    
+    def _calculate_ema(self, prices: List[float], period: int) -> Optional[float]:
+        """Рассчитать EMA для списка цен"""
+        if len(prices) < period:
+            return None
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(prices[:period]) / period  # Начальное SMA
+        
+        for price in prices[period:]:
+            ema = (price - ema) * multiplier + ema
+        
+        return ema
 
 
 _bingx_client = None
