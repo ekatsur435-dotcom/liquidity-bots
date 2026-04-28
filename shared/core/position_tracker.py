@@ -428,6 +428,25 @@ class PositionTracker:
         entry     = _f(signal["entry_price"])
         position_side = "LONG" if direction == "long" else "SHORT"
 
+        # ✅ ШАГ 0: Проверяем что позиция ещё существует на бирже
+        position_exists = False
+        if self.auto_trader and self.auto_trader.bingx:
+            try:
+                all_positions = await self.auto_trader.bingx.get_positions()
+                clean_symbol = symbol.replace("-", "").replace("_", "").upper()
+                for pos in all_positions:
+                    pos_clean = pos.symbol.replace("-", "").replace("_", "").upper()
+                    if pos_clean == clean_symbol:
+                        position_exists = True
+                        break
+                if not position_exists:
+                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — возможно закрыта. Пропускаем обновление SL.")
+                    # Удаляем из Redis тоже
+                    self.redis.delete(f"{self.bot_type}:signal:{symbol}")
+                    return
+            except Exception as e:
+                print(f"⚠️  [PT] _move_sl: ошибка проверки позиции {symbol}: {e}")
+
         # ✅ ШАГ 1: Обновляем SL на бирже (если auto_trader доступен)
         exchange_updated = False
         if self.auto_trader and self.auto_trader.bingx:
