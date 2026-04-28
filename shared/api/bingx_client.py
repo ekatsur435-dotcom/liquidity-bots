@@ -159,9 +159,9 @@ class BingXClient:
                     hint = self.ERROR_CODES.get(code, "")
                     self.last_error = msg
                     self.last_error_code = code
-                    # ✅ v4.0: AUTO-RETRY при ошибке timestamp
+                    # ✅ AUTO-SYNC: при ошибке timestamp сбрасываем offset
                     if code == 109400:
-                        # Пересинхронизируем время сервера
+                        # ✅ FIX v5: sync immediately
                         await self._sync_server_time()
                     print(f"❌ [BingX] [{endpoint}] code={code} | {msg}"
                           + (f"\n   💡 {hint}" if hint else ""))
@@ -252,16 +252,8 @@ class BingXClient:
         return round(price, info.get("price_precision", 4))
 
     def _normalize_symbol(self, symbol: str) -> str:
-        """
-        ✅ v4.0 FIX: BingX требует ATOM-USDT формат для ВСЕХ endpoints,
-        включая trade/order. Формат ATOMUSDT (без дефиса) → ошибка 109400/symbol invalid.
-        """
-        clean = symbol.replace('-', '').replace('_', '')
-        if clean.endswith('USDT'):
-            return clean[:-4] + '-USDT'
-        if clean.endswith('USDC'):
-            return clean[:-4] + '-USDC'
-        return clean
+        """Нормализует символ для BingX API (убирает дефисы)."""
+        return symbol.replace('-', '').replace('_', '')
 
     def _format_symbol_for_positions(self, symbol: str) -> str:
         """
@@ -531,15 +523,20 @@ class BingXClient:
             sl_side = "SELL" if direction == "long" else "BUY"
             print(f"🔍 [BingX] sl_side={sl_side}")
 
-            # Получаем текущий размер позиции (нужен для SL ордера)
-            print(f"🔍 [BingX] Getting positions for {symbol}...")
-            positions = await self.get_positions(symbol)
-            print(f"🔍 [BingX] Found {len(positions)} positions")
+            # ✅ FIX v7: Получаем ВСЕ позиции без фильтра и ищем по символу client-side.
+            # get_positions(symbol) → BingX error 109425 "not exist" для редких пар.
+            # Причина: BingX требует точный формат (LIGHT-USDT, MON-USDT) который часто
+            # отличается от нашего. Решение: get_positions() без аргумента → все позиции.
+            print(f"🔍 [BingX] Getting ALL positions (no filter) to match {symbol}...")
+            positions = await self.get_positions()   # ← Без аргумента = все позиции
+            print(f"🔍 [BingX] Total exchange positions: {len(positions)}")
             for p in positions:
                 print(f"   - {p.symbol}: size={p.size}, side={p.side}, pos_side={p.position_side}")
 
+            # Matching: убираем дефисы и сравниваем чистые тикеры
+            clean_target = symbol.replace("-", "").replace("_", "").upper()
             pos = next((p for p in positions
-                        if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
+                        if p.symbol.replace("-", "").replace("_", "").upper() == clean_target), None)
             if not pos:
                 print(f"⚠️  [BingX] update_stop_loss: позиция {symbol} не найдена")
                 return False

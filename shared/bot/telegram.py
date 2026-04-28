@@ -157,6 +157,7 @@ class TelegramBot:
         ✅ reply_to_message_id — привязка к исходному сообщению сигнала.
         """
         try:
+            print(f"📤 [TG-SEND] Sending message, chat={chat_id or self.chat_id}, len={len(text)}")  # DEBUG
             payload: Dict = {
                 "chat_id":                  chat_id or self.chat_id,
                 "text":                     text,

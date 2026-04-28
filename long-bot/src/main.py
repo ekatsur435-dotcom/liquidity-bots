@@ -61,6 +61,23 @@ from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
 from core.market_context import get_market_context, MarketContextFilter  # ✅ v4.0: Market Context Filter
+# 🆕 Aegis components
+from core.pump_detector import detect_pump, PumpDetectionResult  # ✅ NEW: Z-Score detector
+from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality  # ✅ NEW: Kelly sizing
+from core.delta_analyzer import analyze_delta  # ✅ NEW: CVD/Order Flow analyzer
+
+# 🆕 NEW: Advanced trading modules
+from core.smart_dca import get_smart_dca, SmartDCA, DCAStrength  # ✅ NEW: Smart DCA
+from core.grid_dca import get_grid_dca, GridDCA  # ✅ NEW: Grid DCA
+from core.amd_detector import get_amd_detector, AMDDetector, AMDPhase  # ✅ NEW: AMD Detector
+from core.xvp import get_xvp_analyzer, XVPAnalyzer  # ✅ NEW: Extended Volume Profile
+from core.grid_entry import get_grid_entry, GridEntry  # ✅ NEW: Grid Entry System
+from core.smart_sl_detector import get_smart_sl_detector, SmartSLDetector  # ✅ NEW: Smart Multi-TF SL
+from core.dump_detector import get_dump_detector, DumpDetector, DumpType  # ✅ NEW: Dump Detector
+from core.candle_history_manager import (
+    get_candle_manager, CandleHistoryManager, TFConfig,
+    fetch_and_store_candles, prefetch_all_tfs, check_data_ready
+)  # ✅ NEW: Candle History for accurate analysis
 
 
 # ============================================================================
@@ -72,7 +89,7 @@ class Config:
     # ✅ FIX: MIN_LONG_SCORE default = 70
     # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
     # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "60"))
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))  # ✅ FIX v5: 60→65 лучший баланс качество/частота
     # ✅ FIX: SCAN_INTERVAL default = 200
     SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
     # ✅ FIX: MAX_WATCHLIST default = 300
@@ -81,10 +98,48 @@ class Config:
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
     # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.0"))  # ✅ FIX: 1.0% — чётче SL → меньше потери
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+
+    # 🆕 NEW: Advanced modules configuration
+    # Smart DCA
+    ENABLE_SMART_DCA = os.getenv("ENABLE_SMART_DCA", "true").lower() == "true"
+    DCA_MAX_ADDITIONS = int(os.getenv("DCA_MAX_ADDITIONS", "3"))
+    DCA_MAX_PORTFOLIO_RISK = float(os.getenv("DCA_MAX_PORTFOLIO_RISK", "3.0"))
+    
+    # Grid DCA
+    ENABLE_GRID_DCA = os.getenv("ENABLE_GRID_DCA", "true").lower() == "true"
+    GRID_DCA_MAX_LEVELS = int(os.getenv("GRID_DCA_MAX_LEVELS", "5"))
+    
+    # AMD Detector
+    ENABLE_AMD = os.getenv("ENABLE_AMD_DETECTOR", "true").lower() == "true"
+    
+    # XVP
+    ENABLE_XVP = os.getenv("ENABLE_XVP", "true").lower() == "true"
+    
+    # Grid Entry
+    ENABLE_GRID_ENTRY = os.getenv("ENABLE_GRID_ENTRY", "true").lower() == "true"
+    
+    # Smart SL
+    ENABLE_SMART_SL = os.getenv("ENABLE_SMART_SL", "true").lower() == "true"
+    SMART_SL_MIN_PCT = float(os.getenv("SMART_SL_MIN_PCT", "0.8"))
+    SMART_SL_MAX_PCT = float(os.getenv("SMART_SL_MAX_PCT", "4.0"))
+    
+    # Dump Detector
+    ENABLE_DUMP_DETECTOR = os.getenv("ENABLE_DUMP_DETECTOR", "true").lower() == "true"
+    
+    # 🆕 NEW: Candle History Manager
+    ENABLE_CANDLE_HISTORY = os.getenv("ENABLE_CANDLE_HISTORY", "true").lower() == "true"
+    CANDLE_4H_COUNT = int(os.getenv("CANDLE_4H_COUNT", "30"))
+    CANDLE_2H_COUNT = int(os.getenv("CANDLE_2H_COUNT", "50"))
+    CANDLE_1H_COUNT = int(os.getenv("CANDLE_1H_COUNT", "80"))
+    CANDLE_30M_COUNT = int(os.getenv("CANDLE_30M_COUNT", "120"))
+    CANDLE_15M_COUNT = int(os.getenv("CANDLE_15M_COUNT", "150"))
+    CANDLE_5M_COUNT = int(os.getenv("CANDLE_5M_COUNT", "300"))
+    CANDLE_MIN_REQUIRED = int(os.getenv("CANDLE_MIN_REQUIRED", "20"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
 
     # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
-    TP_LEVELS  = [1.5, 3.0, 5.0, 8.0, 15.0, 25.0]  # ✅ FIX: TP1=1.5% → R:R=1.25:1, чаще берём TP1!
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX v5: TP1=2.5% → R:R=1.67:1 (математически прибыльно)
     TP_WEIGHTS = [30,  25,  20,  15,  7,    3]   # TP1=30% — основной сбор прибыли
 
     # Trailing — LONG активирует при +2.5% (после TP1)
@@ -104,6 +159,8 @@ class Config:
     # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
+    # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
+    MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
 
 
 # ============================================================================
@@ -288,13 +345,77 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v2.7...")
+    print("🚀 Starting LONG Bot v6.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
+    
+    # 🆕 NEW: Initialize advanced trading modules
+    print("🔄 Initializing advanced modules...")
+    
+    # Smart DCA
+    if Config.ENABLE_SMART_DCA:
+        state.smart_dca = get_smart_dca()
+        print(f"✅ Smart DCA: max {Config.DCA_MAX_ADDITIONS} additions, {Config.DCA_MAX_PORTFOLIO_RISK}% risk")
+    
+    # Grid DCA
+    if Config.ENABLE_GRID_DCA:
+        state.grid_dca = get_grid_dca()
+        print(f"✅ Grid DCA: {Config.GRID_DCA_MAX_LEVELS} levels")
+    
+    # AMD Detector
+    if Config.ENABLE_AMD:
+        state.amd_detector = get_amd_detector()
+        print("✅ AMD Detector: Accumulation/Manipulation/Distribution phases")
+    
+    # XVP
+    if Config.ENABLE_XVP:
+        state.xvp = get_xvp_analyzer()
+        print("✅ XVP: Extended Volume Profile (POC, VAH/VAL, Single Prints)")
+    
+    # Grid Entry
+    if Config.ENABLE_GRID_ENTRY:
+        state.grid_entry = get_grid_entry()
+        print("✅ Grid Entry: Multi-level entry system")
+    
+    # Smart SL Detector
+    if Config.ENABLE_SMART_SL:
+        from core.smart_sl_detector import SLConfig
+        sl_config = SLConfig(
+            min_sl_pct=Config.SMART_SL_MIN_PCT,
+            max_sl_pct=Config.SMART_SL_MAX_PCT
+        )
+        state.smart_sl = get_smart_sl_detector(sl_config)
+        print(f"✅ Smart SL: {Config.SMART_SL_MIN_PCT}%-{Config.SMART_SL_MAX_PCT}% range, multi-TF analysis")
+    
+    # Dump Detector
+    if Config.ENABLE_DUMP_DETECTOR:
+        state.dump_detector = get_dump_detector()
+        print("✅ Dump Detector: Flash crash & panic sell detection")
+    
+    # 🆕 NEW: Candle History Manager
+    if Config.ENABLE_CANDLE_HISTORY:
+        from core.candle_history_manager import CandleHistoryManager, TFConfig
+        tf_configs = {
+            "4h": TFConfig("4h", Config.CANDLE_4H_COUNT, 240, 1),
+            "2h": TFConfig("2h", Config.CANDLE_2H_COUNT, 120, 2),
+            "1h": TFConfig("1h", Config.CANDLE_1H_COUNT, 60, 3),
+            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 4),
+            "15m": TFConfig("15m", Config.CANDLE_15M_COUNT, 15, 5),
+            "5m": TFConfig("5m", Config.CANDLE_5M_COUNT, 5, 6),
+        }
+        state.candle_manager = CandleHistoryManager(tf_configs)
+        print(f"✅ Candle History: {Config.CANDLE_4H_COUNT}/{Config.CANDLE_1H_COUNT}/{Config.CANDLE_30M_COUNT}/"
+              f"{Config.CANDLE_15M_COUNT}/{Config.CANDLE_5M_COUNT} candles per TF")
+    
+    # Pump Detector (CVD уже в delta_analyzer)
+    state.pump_detector_enabled = True
+    print("✅ Pump Detector: Z-Score based detection")
+    print("✅ CVD Analyzer: Cumulative Volume Delta")
+    
     # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
@@ -377,12 +498,20 @@ async def lifespan(app: FastAPI):
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from utils.coinglass_client import CoinglassClient
+            from api.coinglass_client import CoinglassClient  # ✅ FIX v7: correct path
             state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
             print("✅ CoinGlass connected")
         except Exception as e:
             print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
+
+
+    # ✅ FIX v5: Инициализируем Market Context Filter (было None — весь v4.0 функционал не работал!)
+    state.market_ctx = MarketContextFilter(
+        binance_client=state.binance,
+        redis_client=state.redis
+    )
+    print("✅ MarketContextFilter initialized (BTC filter, session block, daily PnL, decoupling)")
 
     # ── Watchlist: Bybit + Binance ─────────────────────────────────────────────
     # Инициализируем источник данных
@@ -412,7 +541,7 @@ async def lifespan(app: FastAPI):
     mode_str = "DEMO" if Config.BINGX_DEMO else "REAL"
     at_str   = f"✅ {mode_str}" if state.auto_trader else "❌ disabled"
     await state.telegram.send_message(
-        f"🟢 <b>LONG Bot v2.9 запущен</b>\n\n"
+        f"🟢 <b>LONG Bot v5.0 запущен</b>\n\n"
         f"📊 Watchlist: {len(state.watchlist)} монет\n"
         f"🛑 SL: {Config.SL_BUFFER}%  |  Score≥{Config.MIN_SCORE}%\n"
         f"🤖 AutoTrader: {at_str}\n"
@@ -441,7 +570,7 @@ async def lifespan(app: FastAPI):
     print("👋 LONG Bot stopped")
 
 
-app = FastAPI(lifespan=lifespan, title="LONG Bot v2.9")
+app = FastAPI(lifespan=lifespan, title="LONG Bot v5.0")
 
 
 # ============================================================================
@@ -458,7 +587,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v6.0", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -581,19 +710,32 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: get_complete_market_data returned: {type(md)}")  # DEBUG
         if not md:
+            print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: NO market data")
             return None
+        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: got market data, price={md.price}")  # DEBUG
         
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
+
+        # 🆕 Aegis: Фильтр минимальной капитализации ($900k)
+        market_cap = getattr(md, 'market_cap', 0) or 0
+        if market_cap and market_cap < Config.MIN_MARKET_CAP:
+            print(f"🔴 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} < ${Config.MIN_MARKET_CAP:,.0f} — skip")
+            return None
+        elif market_cap:
+            print(f"💰 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} ✅")
 
         # ✅ v4.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
             ctx = await state.market_ctx.check(
                 direction="long",
                 symbol=symbol,
-                block_asian_session=True,
+                block_asian_session=False,  # ✅ FIX: Asian session OFF
                 allow_decoupled_alts=True
             )
             if not ctx.allowed:
@@ -611,6 +753,25 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 100)
         ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
         ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
+
+        # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
+        if hasattr(state, 'candle_manager') and state.candle_manager:
+            try:
+                tf_data = {
+                    "30m": ohlcv_30m,
+                    "1h": ohlcv_1h
+                }
+                for tf, data in tf_data.items():
+                    if data:
+                        state.candle_manager.update_candles(symbol, tf, data)
+                
+                # Проверяем качество данных
+                quality = state.candle_manager.get_all_data_quality(symbol)
+                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
+                if insufficient:
+                    print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
+            except Exception as e:
+                print(f"[CandleHistory] {symbol} error: {e}")
 
         # Используем 30m как основной ТФ для анализа (вместо 15m)
         ohlcv_15m = ohlcv_30m  # совместимость с existing code
@@ -687,14 +848,19 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     
                     print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
+                    # ✅ FIX v5: единый формат TP [(price, weight)] для position_tracker
+                    _tp_w = Config.TP_WEIGHTS
                     return {
                         "symbol": symbol,
                         "direction": "long",
-                        "score": base_score,
-                        "price": entry,  # Alias для совместимости с telegram
+                        "score": min(100, base_score),
+                        "price": entry,
                         "entry_price": entry,
                         "stop_loss": sl,
-                        "take_profits": [tp1, tp2, tp3],
+                        "take_profits": [
+                            (round(entry * (1 + Config.TP_LEVELS[i] / 100), 8), _tp_w[i])
+                            for i in range(min(3, len(Config.TP_LEVELS)))
+                        ],
                         "reasons": reasons[:5],
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
@@ -872,6 +1038,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
+        # ✅ FIX v7: Детальные логи score breakdown
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
         if not score_result.is_valid:
             override_reason = None
             boost = 0
@@ -892,6 +1063,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             elif ob_q_high and base_score_bonus >= 3:
                 override_reason = f"OB_Q{ob_quality}+confirmation"
                 boost = 5
+            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
+            elif ob_q_high:
+                override_reason = f"OB_Q{ob_quality} (standalone)"
+                boost = 12  # Сильный буст для институционального OB
+            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
+            elif ob_quality_ok:
+                override_reason = f"OB_Q{ob_quality} (standalone)"
+                boost = 8
             
             if override_reason:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
@@ -907,11 +1086,24 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70)")
-                return None
+                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
+                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                if score_result.total_score >= bear_threshold:
+                    print(f"\U0001f7e1 [FILTER0-LONG] {symbol}: score={score_result.total_score} BEAR PASS")
+                    from core.scorer import ScoreResult, Confidence
+                    score_result = ScoreResult(
+                        total_score=score_result.total_score, max_possible=score_result.max_possible,
+                        direction=score_result.direction, is_valid=True,
+                        confidence=Confidence.LOW, grade="C",
+                        components=score_result.components,
+                        reasons=score_result.reasons + ["Bear market pass"],
+                    )
+                else:
+                    print(f"\U0001f534 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
+                    return None
         
         reasons     = list(score_result.reasons)
-        final_score = min(100, score_result.total_score + base_score_bonus)  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
+        final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
@@ -960,7 +1152,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 🚫 БЛОКИРОВКА ЛОВУШЕК (Волна 2 и B)
             # ✅ FIX: НЕ блокируем неизвестные волны "?" — только реальные ловушки с высокой уверенностью
-            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.5:
+            if wave_result.is_trap and wave_result.wave not in ["?", "unknown"] and wave_result.confidence > 0.70:  # ✅ FIX v5: 0.5→0.7 меньше ложных блоков
                 print(f"🚫 [ELLIOTT-BLOCK-LONG] {symbol}: Волна {wave_result.wave} — ЛОВУШКА! "
                       f"Блокируем вход. Следующая цель: {wave_result.next_target}")
                 # Пишем в Redis для анализа
@@ -1019,7 +1211,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🌊 [ELLIOTT-ERROR-LONG] {symbol}: {e}")
             elliott_data = {"error": str(e)}
             # 🔥 FIX: При ошибке Elliott Wave — снижаем минимум для TBS+OB сигналов
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = 55  # Очень низкий порог при ошибке
                 print(f"💡 [ELLIOTT-FALLBACK-LONG] {symbol}: Ошибка волн, но TBS+OB_Q{ob_quality} — снижаем мин до 55")
         
@@ -1027,7 +1219,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if 'elliott_min_score' not in locals():
             elliott_min_score = Config.MIN_SCORE
             # Если нет данных Elliott но есть сильный TBS+OB — снижаем порог
-            if tbs_detected and ob_quality >= 70:
+            if tbs_found and ob_quality >= 70:
                 elliott_min_score = max(55, Config.MIN_SCORE - 10)
                 print(f"💡 [LONG-FALLBACK] {symbol}: Нет данных Elliott, TBS+OB_Q{ob_quality} — мин={elliott_min_score}")
         
@@ -1095,7 +1287,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
             if pool_scan.active_sweeps:
                 # Бонус за активный sweep зоны ликвидности
-                final_score += 10
+                final_score = min(100, final_score + 10)
                 reasons.append(f"🌊 Liquidity sweep detected (+10)")
                 pool_data = {
                     "eqh_levels": len(pool_scan.eqh_levels),
@@ -1104,6 +1296,58 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 }
         except Exception as e:
             print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
+
+        # 🆕 Aegis: Z-Score Pump/Dump Detection
+        try:
+            pump_result = detect_pump(_ohlcv(ohlcv_15m), direction="long")
+            if pump_result.detected and pump_result.signal_type == "dump":
+                # Для LONG: дамп (Z < -2) = хороший вход
+                z_bonus = min(15, int(abs(pump_result.z_score) * 3))  # Z=-3 → +9
+                final_score = min(100, final_score + z_bonus)
+                reasons.append(f"📉 Z-Score Dump: {pump_result.z_score:.1f}σ (RSI {pump_result.rsi:.0f}) +{z_bonus}")
+                print(f"🎯 [AEGIS-Z] {symbol}: DUMP detected Z={pump_result.z_score:.2f}, +{z_bonus} to score")
+            elif pump_result.z_score > 2.0:
+                # Для LONG: памп (Z > 2) = плохой вход, штраф
+                z_penalty = min(10, int(pump_result.z_score * 2))
+                final_score = max(0, final_score - z_penalty)
+                reasons.append(f"⚠️ Z-Score Pump: +{pump_result.z_score:.1f}σ — штраф -{z_penalty}")
+        except Exception as e:
+            print(f"[AEGIS-Z] {symbol} error: {e}")
+
+        # 🆕 Aegis: Delta Analyzer (CVD + Order Flow)
+        try:
+            delta_result = analyze_delta(_ohlcv(ohlcv_15m), direction="long")
+            if delta_result.score >= 30:
+                # Для LONG: bullish divergence или buy imbalance
+                delta_bonus = min(15, int(delta_result.score * 0.25))  # max +15
+                final_score = min(100, final_score + delta_bonus)
+                reasons.append(f"🌊 Delta/CVD: {delta_result.reasons[0][:50]}... +{delta_bonus}")
+                print(f"🎯 [AEGIS-Δ] {symbol}: CVD score={delta_result.score:.0f}, +{delta_bonus}")
+        except Exception as e:
+            print(f"[AEGIS-Δ] {symbol} error: {e}")
+
+        # 🆕 NEW: Dump Detector (Flash Crash Detection)
+        try:
+            if hasattr(state, 'dump_detector') and state.dump_detector:
+                dump_result = state.dump_detector.analyze(
+                    _ohlcv(ohlcv_15m),
+                    cvd_value=delta_result.cvd_pressure if 'delta_result' in locals() else None
+                )
+                if dump_result.detected:
+                    if dump_result.is_bottoming:
+                        # Для LONG: дамп + дно = отличный вход
+                        bottom_bonus = min(20, int(dump_result.confidence / 5))
+                        final_score = min(100, final_score + bottom_bonus)
+                        reasons.append(f"📈 Dump Bottoming: {dump_result.dump_type.value} +{bottom_bonus}")
+                        print(f"🎯 [DUMP-LONG] {symbol}: BOTTOM detected after {dump_result.dump_type.value}, +{bottom_bonus}")
+                    else:
+                        # Для LONG: дамп без дна = опасно, штраф
+                        dump_penalty = min(15, int(dump_result.confidence / 6))
+                        final_score = max(0, final_score - dump_penalty)
+                        reasons.append(f"⚠️ Active Dump: {dump_result.dump_type.value} -{dump_penalty}")
+                        print(f"⚠️ [DUMP-LONG] {symbol}: Active dump {dump_result.dump_type.value}, -{dump_penalty}")
+        except Exception as e:
+            print(f"[DUMP-LONG] {symbol} error: {e}")
 
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
@@ -1120,7 +1364,42 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ]
 
         sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
-        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} — сигнал создан!")
+        
+        # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
+        # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
+        has_smc_pattern = (
+            patterns or  # Есть паттерн от pattern_detector
+            (ob_quality >= 60) or  # Есть качественный Order Block
+            tbs_found or  # Есть TBS (Test Before Strike)
+            (pool_data.get("active_sweeps", 0) > 0) or  # Есть активный sweep ликвидности
+            # 🆕 Aegis: Сильный Z-Score дамп тоже паттерн!
+            (pump_result.detected if 'pump_result' in locals() else False) or
+            # 🆕 Aegis: Сильная дивергенция CVD тоже паттерн!
+            (delta_result.score >= 40 if 'delta_result' in locals() else False)
+        )
+        
+        if not has_smc_pattern:
+            print(f"🔴 [FILTER-SMC-LONG] {symbol}: Нет SMC паттерна — сигнал отменён!")
+            return None
+        
+        # Определяем лучший паттерн для отображения
+        if not best_pattern:
+            if ob_quality >= 60:
+                best_pattern = f"OB_Q{ob_quality}"
+            elif tbs_found:
+                best_pattern = "TBS"
+            elif pool_data.get("active_sweeps", 0) > 0:
+                best_pattern = "LIQUIDITY_SWEEP"
+            # 🆕 Aegis: Z-Score паттерны
+            elif 'pump_result' in locals() and pump_result.detected:
+                best_pattern = f"Z-SCORE_{pump_result.signal_type.upper()}"
+            # 🆕 Aegis: Delta/CVD паттерны
+            elif 'delta_result' in locals() and delta_result.score >= 40:
+                best_pattern = f"CVD_{delta_result.divergence.upper()}"
+            else:
+                best_pattern = "SMC_STRUCTURE"
+        
+        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
@@ -1129,7 +1408,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "stop_loss": round(stop_loss, 8), "sl_pct": sl_pct,
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
-            "best_pattern": patterns[0].name if patterns else None,
+            "best_pattern": best_pattern,
             "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
@@ -1170,7 +1449,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "status": "active", "taken_tps": [],
         }
     except Exception as e:
-        print(f"Error scanning {symbol}: {e}")
+        import traceback
+        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {e}")
+        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {traceback.format_exc()[:500]}")
         return None
 
 
@@ -1205,7 +1486,9 @@ async def scan_market():
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - Единственный блокер: команда /pause
     """
+    print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
+        print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
         return
 
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
@@ -1226,10 +1509,20 @@ async def scan_market():
             # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
+            # ✅ FIX v5: SL Cooldown — пауза 2ч после стопа по символу
+            try:
+                sl_cd = state.redis.get(f"sl_cooldown:long:{symbol}")
+                if sl_cd:
+                    continue
+            except Exception:
+                pass
 
+            print(f"🔍 [DEBUG-LONG] {symbol}: calling scan_symbol...")  # DEBUG
             signal = await scan_symbol(symbol)
             if not signal:
+                print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned None")  # DEBUG
                 continue
+            print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
             # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
             tg_msg_id = await state.telegram.send_signal(
