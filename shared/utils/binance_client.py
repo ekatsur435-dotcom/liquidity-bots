@@ -969,7 +969,7 @@ class BinanceFuturesClient:
                 top_trader_long_short_ratio=top_trader_long_short_ratio,
                 breakout_score=breakout_score,
                 volume_spike_ratio=vol_spike,
-                atr_pct=atr_pct,
+                atr_14_pct=atr_pct,
                 candle_body_pct=body_pct,
                 high_24h=high_24h,
                 low_24h=low_24h,
