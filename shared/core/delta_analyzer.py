@@ -39,6 +39,7 @@ class DeltaAnalysisResult:
     score: float           # 0-100 для интеграции в скорер
     cvd: float            # Текущее значение CVD
     cvd_change: float     # Изменение CVD за lookback
+    cvd_pressure: float   # 0-100 давление CVD (0=sell pressure, 100=buy pressure)
     price_change: float  # Изменение цены за lookback
     divergence: str       # "bullish", "bearish", "none"
     divergence_strength: float  # 0-1
@@ -273,10 +274,18 @@ class DeltaAnalyzer:
         if not reasons:
             reasons.append(f"Neutral delta: CVD={cvd:.0f}, imbalance={imb_ratio:.2f}")
         
+        # Calculate CVD pressure (0-100 scale)
+        # Based on imbalance ratio: ratio=1 -> 50, ratio>1 -> 50-100 (buy pressure), ratio<1 -> 0-50 (sell pressure)
+        if imb_ratio >= 1:
+            cvd_pressure = 50 + min(50, (imb_ratio - 1) * 50)  # 50-100 for buy pressure
+        else:
+            cvd_pressure = 50 - min(50, (1 / imb_ratio - 1) * 50)  # 0-50 for sell pressure
+        
         return DeltaAnalysisResult(
             score=round(score, 1),
             cvd=round(cvd, 2),
             cvd_change=round(cvd_change, 2),
+            cvd_pressure=round(cvd_pressure, 1),
             price_change=round(price_change, 2),
             divergence=div_type,
             divergence_strength=round(div_strength, 2),
