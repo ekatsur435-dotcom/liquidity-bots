@@ -51,8 +51,8 @@ def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
 class TradeConfig:
     enabled:             bool  = True
     demo_mode:           bool  = True
-    max_positions:       int   = 20
-    risk_per_trade:      float = 0.0005     # 0.05%
+    max_positions:       int   = 30        # увеличили для 200K депо
+    risk_per_trade:      float = 0.0005     # 0.05% на сделку!
     max_daily_risk:      float = 5.0        # 5% (в %, не дробях!)
     default_leverage:    int   = 20
     min_leverage:        int   = 5
@@ -62,6 +62,9 @@ class TradeConfig:
     notional_safety_pct: float = 0.92      # 92% от лимита (запас 8%)
     open_cooldown_sec:   float = 30.0      # антидубль
     bot_type:            str   = "short"   # "long" или "short" для фильтрации позиций
+    # 🆕 ФИЛЬТР ТРЕНДА
+    trend_filter_enabled: bool = True      # включить проверку EMA50/200
+    trend_filter_tf:      str  = "1h"      # таймфрейм для анализа тренда
 
 
 class AutoTrader:
@@ -119,8 +122,17 @@ class AutoTrader:
 
     async def execute_signal(self, signal: Dict) -> Optional[Dict]:
         symbol = signal.get("symbol", "?")
+        direction = signal.get("direction", "long")
         score  = signal.get("score", 0)
-        print(f"\n🚀 [AutoTrader] {symbol} | score={score:.1f}")
+        print(f"\n🚀 [AutoTrader] {symbol} | score={score:.1f} | {direction.upper()}")
+        
+        # 📈 ФИЛЬТР ТРЕНДА: Проверяем направление перед входом
+        if self.config.trend_filter_enabled:
+            allowed, reason = await self.bingx.check_trend(symbol, direction)
+            print(f"📊 [TREND][{symbol}] {reason}")
+            if not allowed:
+                print(f"🚫 [AutoTrader][{symbol}] Сделка отклонена по фильтру тренда")
+                return None
         
         # 🎯 Phase 3: Limit Executor — проверяем возможность лимитного входа
         if self.limit_executor.should_use_limit(signal):
