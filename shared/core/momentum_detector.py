@@ -102,6 +102,11 @@ class MomentumDetector:
         print(f"   Volume spike: {config.volume_spike_min}x")
         print(f"   RSI range: {config.rsi_min}-{config.rsi_max}")
     
+    @property
+    def direction(self) -> str:
+        """Expose direction from config"""
+        return self.config.direction
+    
     def _calc_ema(self, prices: List[float], period: int) -> float:
         """Расчёт EMA"""
         if len(prices) < period:
