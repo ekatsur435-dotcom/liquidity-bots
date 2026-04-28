@@ -1,5 +1,5 @@
 """
-🤖 LONG BOT v4.0 — FastAPI Application
+🤖 LONG BOT v6.0 — FastAPI Application
 
 ИСПРАВЛЕНИЯ v4.0 (критические):
   ✅ BTC фильтр ОПЦИОНАЛЬНЫЙ — по умолч. ВЫКЛ (BTC_CORRELATION_FILTER=false)
