@@ -12,7 +12,7 @@ BingX Futures API Client  v2.7
 """
 
 import os, json, hmac, hashlib, time
-from typing import Optional, Dict, List, Any, Set
+from typing import Optional, Dict, List, Any, Set, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 import aiohttp
