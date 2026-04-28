@@ -957,7 +957,7 @@ class BinanceFuturesClient:
                 volume_24h=float(ticker.get("volume", 0)) * price if ticker else 0.0,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
-                long_short_ratio=float(ratio.get("longShortRatio", 1.0)) if ratio else 1.0,
+                long_short_ratio=float(ratio.get("longShortRatio", 1.0)) if isinstance(ratio, dict) else (float(ratio) if isinstance(ratio, (int, float)) else 1.0),
                 hourly_deltas=hourly_vols,
                 taker_buy_sell_ratio=taker_buy_sell_ratio,
                 recent_liquidations_usd=recent_liquidations_usd,
