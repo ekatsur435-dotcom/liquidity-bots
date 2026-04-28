@@ -1652,7 +1652,8 @@ async def scan_market():
             momentum_signals = await state.momentum_detector.scan_watchlist(
                 state.watchlist,
                 get_1m_candles,
-                min_volume_usdt=100000  # Ниже порог для мемов
+                min_volume_usdt=100000,  # Ниже порог для мемов
+                debug=True  # 🔍 DEBUG: показывать почему отсеиваются монеты
             )
             
             if momentum_signals:
