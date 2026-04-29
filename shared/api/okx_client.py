@@ -462,6 +462,309 @@ class OKXClient:
         return []
     
     # =========================================================================
+    # RECENT TRADES (ЛЕНТА СДЕЛОК)
+    # =========================================================================
+    
+    async def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
+        """
+        Получить ленту сделок (Recent Trades)
+        
+        Args:
+            symbol: Тикер, например "BTCUSDT"
+            limit: Количество сделок (max 100)
+        
+        Returns:
+            Список сделок:
+            [
+                {
+                    "price": float,
+                    "size": float,
+                    "side": str,  # 'buy' или 'sell'
+                    "timestamp": int,
+                    "trade_id": str
+                }
+            ]
+        """
+        okx_symbol = self._convert_symbol(symbol)
+        
+        endpoint = "/api/v5/market/trades"
+        params = {
+            "instId": okx_symbol,
+            "limit": str(min(limit, 100))  # Max 100
+        }
+        
+        data = await self._make_request(endpoint, params)
+        if data:
+            trades = []
+            for item in data:
+                # side: 'buy' = мейкер продал (агрессор покупал)
+                # side: 'sell' = мейкер купил (агрессор продавал)
+                side = item.get("side", "")
+                price = float(item.get("px", 0))
+                size = float(item.get("sz", 0))
+                
+                trades.append({
+                    "price": price,
+                    "size": size,
+                    "side": side,  # 'buy' или 'sell'
+                    "timestamp": int(item.get("ts", 0)),
+                    "trade_id": item.get("tradeId", ""),
+                    "usd_value": price * size
+                })
+            
+            return trades
+        return []
+    
+    async def analyze_recent_trades(self, symbol: str, limit: int = 100) -> Optional[Dict]:
+        """
+        Проанализировать ленту сделок
+        
+        Returns:
+            {
+                "total_trades": int,
+                "buy_volume": float,  # USD
+                "sell_volume": float,  # USD
+                "buy_count": int,
+                "sell_count": int,
+                "dominant_side": str,  # 'buy', 'sell', 'neutral'
+                "avg_trade_size": float,
+                "large_trades": List[Dict],  # Сделки > $50k
+                "pressure": float,  # -1.0 to 1.0
+                "signal": str  # 'strong_buy', 'buy', 'neutral', 'sell', 'strong_sell'
+            }
+        """
+        trades = await self.get_recent_trades(symbol, limit)
+        if not trades:
+            return None
+        
+        buy_vol = 0.0
+        sell_vol = 0.0
+        buy_count = 0
+        sell_count = 0
+        large_trades = []
+        
+        min_large_usd = 50000  # $50k
+        
+        for trade in trades:
+            usd = trade["usd_value"]
+            
+            if trade["side"] == "buy":
+                buy_vol += usd
+                buy_count += 1
+            else:
+                sell_vol += usd
+                sell_count += 1
+            
+            # Крупные сделки
+            if usd >= min_large_usd:
+                large_trades.append({
+                    "price": trade["price"],
+                    "size": trade["size"],
+                    "usd": usd,
+                    "side": trade["side"]
+                })
+        
+        total_vol = buy_vol + sell_vol
+        total_count = len(trades)
+        
+        # Доминирующая сторона
+        dominant = "neutral"
+        if buy_vol > sell_vol * 1.5:
+            dominant = "buy"
+        elif sell_vol > buy_vol * 1.5:
+            dominant = "sell"
+        
+        # Давление (-1.0 to 1.0)
+        pressure = 0.0
+        if total_vol > 0:
+            pressure = (buy_vol - sell_vol) / total_vol
+        
+        # Сигнал
+        signal = "neutral"
+        if pressure > 0.6:
+            signal = "strong_buy"
+        elif pressure > 0.3:
+            signal = "buy"
+        elif pressure < -0.6:
+            signal = "strong_sell"
+        elif pressure < -0.3:
+            signal = "sell"
+        
+        return {
+            "symbol": symbol,
+            "total_trades": total_count,
+            "buy_volume": round(buy_vol, 2),
+            "sell_volume": round(sell_vol, 2),
+            "buy_count": buy_count,
+            "sell_count": sell_count,
+            "dominant_side": dominant,
+            "avg_trade_size": round(total_vol / total_count, 2) if total_count > 0 else 0,
+            "large_trades": large_trades[:10],  # Топ 10
+            "large_trade_count": len(large_trades),
+            "pressure": round(pressure, 3),
+            "signal": signal,
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    # =========================================================================
+    # ORDER BOOK (СТАКАН)
+    # =========================================================================
+    
+    async def get_order_book(self, symbol: str, depth: int = 50) -> Optional[Dict]:
+        """
+        Получить стакан (Order Book)
+        
+        Args:
+            symbol: Тикер, например "BTCUSDT"
+            depth: Глубина стакана (5, 50, 400)
+        
+        Returns:
+            Dict с bids и asks:
+            {
+                "symbol": str,
+                "bids": [[price, size], ...],  # От high к low
+                "asks": [[price, size], ...],  # От low к high
+                "timestamp": int,
+                "spread": float,
+                "mid_price": float
+            }
+        """
+        okx_symbol = self._convert_symbol(symbol)
+        
+        # OKX позволяет: 5, 50, 400 уровней
+        valid_depths = [5, 50, 400]
+        sz = min(valid_depths, key=lambda x: abs(x - depth))
+        
+        endpoint = "/api/v5/market/books"
+        params = {
+            "instId": okx_symbol,
+            "sz": str(sz)
+        }
+        
+        data = await self._make_request(endpoint, params)
+        if data and len(data) > 0:
+            item = data[0]
+            
+            bids = [[float(p), float(s)] for p, s in item.get("bids", [])]
+            asks = [[float(p), float(s)] for p, s in item.get("asks", [])]
+            
+            # Рассчитываем метрики
+            spread = 0.0
+            mid_price = 0.0
+            if bids and asks:
+                best_bid = bids[0][0]
+                best_ask = asks[0][0]
+                spread = best_ask - best_bid
+                mid_price = (best_bid + best_ask) / 2
+            
+            # Сортируем: bids по убыванию (high → low), asks по возрастанию (low → high)
+            bids.sort(key=lambda x: x[0], reverse=True)
+            asks.sort(key=lambda x: x[0])
+            
+            return {
+                "symbol": symbol,
+                "bids": bids,
+                "asks": asks,
+                "timestamp": int(item.get("ts", time.time() * 1000)),
+                "spread": spread,
+                "mid_price": mid_price,
+                "spread_pct": (spread / mid_price * 100) if mid_price else 0
+            }
+        return None
+    
+    async def analyze_order_book(self, symbol: str, depth: int = 50) -> Optional[Dict]:
+        """
+        Провести анализ стакана
+        
+        Returns:
+            {
+                "symbol": str,
+                "spread": float,
+                "spread_pct": float,
+                "bid_ask_imbalance": float,  # -1.0 to 1.0
+                "total_bid_volume": float,
+                "total_ask_volume": float,
+                "big_walls": List[Dict],  # Крупные стены > $50k
+                "support_levels": List[float],  # Уровни поддержки
+                "resistance_levels": List[float],  # Уровни сопротивления
+            }
+        """
+        ob = await self.get_order_book(symbol, depth)
+        if not ob:
+            return None
+        
+        bids = ob["bids"]
+        asks = ob["asks"]
+        mid_price = ob["mid_price"]
+        
+        # Объёмы
+        total_bid_vol = sum(s for _, s in bids)
+        total_ask_vol = sum(s for _, s in asks)
+        total_vol = total_bid_vol + total_ask_vol
+        
+        # Имбаланс
+        imbalance = 0.0
+        if total_vol > 0:
+            imbalance = (total_bid_vol - total_ask_vol) / total_vol
+        
+        # Крупные стены (> $50k)
+        min_wall_usd = 50000
+        big_walls = []
+        
+        for price, size in bids[:20]:  # Топ 20 bids
+            usd = price * size
+            if usd >= min_wall_usd:
+                big_walls.append({
+                    "side": "bid",
+                    "price": price,
+                    "size": size,
+                    "usd": usd,
+                    "distance_pct": (mid_price - price) / mid_price * 100
+                })
+        
+        for price, size in asks[:20]:  # Топ 20 asks
+            usd = price * size
+            if usd >= min_wall_usd:
+                big_walls.append({
+                    "side": "ask", 
+                    "price": price,
+                    "size": size,
+                    "usd": usd,
+                    "distance_pct": (price - mid_price) / mid_price * 100
+                })
+        
+        # Сортируем стены по размеру
+        big_walls.sort(key=lambda x: x["usd"], reverse=True)
+        
+        # Уровни поддержки (кластеры bids)
+        support_levels = []
+        if len(bids) >= 5:
+            # Находим кластеры объёма
+            for i in range(0, min(10, len(bids)), 2):
+                price = bids[i][0]
+                support_levels.append(price)
+        
+        # Уровни сопротивления (кластеры asks)
+        resistance_levels = []
+        if len(asks) >= 5:
+            for i in range(0, min(10, len(asks)), 2):
+                price = asks[i][0]
+                resistance_levels.append(price)
+        
+        return {
+            "symbol": symbol,
+            "spread": ob["spread"],
+            "spread_pct": ob["spread_pct"],
+            "bid_ask_imbalance": round(imbalance, 3),
+            "total_bid_volume": round(total_bid_vol, 4),
+            "total_ask_volume": round(total_ask_vol, 4),
+            "big_walls": big_walls[:5],  # Топ 5 стен
+            "support_levels": support_levels[:3],
+            "resistance_levels": resistance_levels[:3],
+            "timestamp": ob["timestamp"]
+        }
+    
+    # =========================================================================
     # HELPERS
     # =========================================================================
     
