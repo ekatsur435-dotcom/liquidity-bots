@@ -131,7 +131,7 @@ class Config:
     # ✅ v8: Увеличен default с 63 до 70 (строгая фильтрация)
     MIN_SCORE     = int(os.getenv("MIN_SCORE_SHORT", "70"))  # ⭐ ИЗМЕНИТЬ на Render!
     
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # 3 минуты (было 2 мин)
     
     # ✅ FIX: Уменьшено default с 20 до 10 (меньше позиций = меньше риск)
     MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "10"))  # ⭐ ИЗМЕНИТЬ на Render!
@@ -217,10 +217,10 @@ class Config:
     USE_COINMARKETCAP = bool(os.getenv("COINMARKETCAP_API_KEY", ""))
     USE_COINGECKO  = os.getenv("USE_COINGECKO", "true").lower() == "true"  # Работает и без API ключа
 
-    # ✅ FIX: default MAX_WATCHLIST = 300
-    # ✅ ADJUSTED: 300K → 150K для SHORT (мемы имеют меньший объём, но дают большие движения)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # Было: 300000
-    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
+    # ✅ REDUCED: 300 → 80 монет (меньше запросов к API)
+    # ✅ INCREASED: 300K → 1M (только ликвидные монеты, меньше ошибок)
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))  # $1M минимум
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "80"))  # 80 монет max
     # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
     MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
 
