@@ -264,7 +264,9 @@ class DumpDetector:
         
         # 1. FLASH DUMP - резкое падение за 1 свечу
         last_candle = candles[-1]
-        last_change = (last_candle["close"] - last_candle["open"]) / last_candle["open"] * 100
+        last_close = self._get_candle_value(last_candle, 3)
+        last_open = self._get_candle_value(last_candle, 0)
+        last_change = (last_close - last_open) / last_open * 100 if last_open > 0 else 0
         
         if last_change <= -self.cfg.flash_dump_1candle and volume_spike >= self.cfg.volume_spike_flash:
             dump_type = DumpType.FLASH_DUMP
