@@ -1,18 +1,20 @@
 """
-Market Data Client v2.7 — Bybit (основной) + Binance через прокси
+Market Data Client v3.0 — Multi-Source Fallback Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ИСТОЧНИКИ ДАННЫХ (приоритет от высокого к низкому):
+  1️⃣ OKX        — OI, фандинг, ликвидации, taker volume (публичные, работают!)
+  2️⃣ Bybit      — основной источник цен, watchlist (работает без прокси)
+  3️⃣ Binance    — fallback через прокси (часть endpoints не работает)
+  4️⃣ Coinglass  — ликвидации, funding heatmap (нужен API ключ)
+  5️⃣ Estimation — расчёт из свечей если все API недоступны
 
-ИЗМЕНЕНИЯ v2.7:
-  ✅ get_all_symbols: default min_volume снижен 5M → 300K (было 50 монет, стало 150-200)
-  ✅ MarketData: добавлены поля для breakout/momentum анализа:
-       volume_spike_ratio  — объём последней 15м свечи / средний объём (20 свечей)
-       price_change_1h     — изменение цены за последний час %
-       atr_14_pct          — ATR(14) на 15м как % от цены (волатильность)
-       candle_body_pct     — тело последней свечи как % от ATR (сила свечи)
-       volume_15m_candles  — последние 20 объёмов на 15м (для паттерн-детектора)
-       high_24h / low_24h  — хай/лоу за сутки (для breakout зон)
-  ✅ get_breakout_data()   — быстрый метод только для breakout проверки
-  ✅ get_volume_spike_ratio() — отдельный метод для volume spike
-  ✅ _symbols_bybit: возвращает до MAX_WATCHLIST символов (не ограничено 200)
+ИЗМЕНЕНИЯ v3.0:
+  ✅ OKX Client integration — полный fallback для всех broken Binance endpoints
+  ✅ get_open_interest_history — OKX → Bybit → Binance → estimation
+  ✅ get_taker_buy_sell_ratio — OKX taker volume → estimation from klines
+  ✅ get_liquidations — OKX → Coinglass → estimation
+  ✅ get_funding_rate — OKX → Bybit → Binance
+  ✅ Автоматический source switching при ошибках API
 """
 
 import os
@@ -23,6 +25,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import time
 import statistics
+
+# ✅ NEW: OKX Client для fallback данных
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from api.okx_client import get_okx_client, OKXClient
 
 
 @dataclass
@@ -580,8 +587,20 @@ class BinanceFuturesClient:
 
     async def get_open_interest_history(self, symbol: str,
                                          period: str = "1h", limit: int = 5) -> List[Dict]:
+        """
+        Получить историю Open Interest с многоуровневым fallback:
+        OKX → Bybit → Binance → empty list
+        """
         await self._init_source()
-        # ✅ FIX: Try Bybit FIRST (works without proxies)
+        
+        # 🆕 NEW: Level 1 — OKX (работает без прокси!)
+        okx = get_okx_client()
+        okx_data = await okx.get_open_interest_history(symbol, period, limit)
+        if okx_data:
+            print(f"   ✅ OI from OKX: {len(okx_data)} points")
+            return okx_data
+        
+        # Level 2 — Bybit
         imap = {"5m": "5min", "15m": "15min", "30m": "30min",
                 "1h": "1h", "4h": "4h", "1d": "1d"}
         result = await self._bybit("/v5/market/open-interest",
@@ -589,14 +608,20 @@ class BinanceFuturesClient:
                                     "intervalTime": imap.get(period, "1h"),
                                     "limit": limit})
         if result and result.get("list"):
+            print(f"   ✅ OI from Bybit: {len(result.get('list', []))} points")
             return [{"sumOpenInterest": item.get("openInterest", 0), 
-                     "timestamp": int(item.get("openInterest", 0))}  # placeholder
+                     "timestamp": int(item.get("ts", 0))}
                     for item in result.get("list", [])]
-        # Fallback to Binance
+        
+        # Level 3 — Binance (часто не работает /fapi/v1/openInterestHist)
         if self._use_binance:
             d = await self._binance("/fapi/v1/openInterestHist",
                                     {"symbol": symbol, "period": period, "limit": limit})
-            return d or []
+            if d:
+                print(f"   ✅ OI from Binance: {len(d)} points")
+                return d
+        
+        print(f"   ⚠️ OI data unavailable for {symbol}")
         return []
 
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
@@ -633,9 +658,19 @@ class BinanceFuturesClient:
         """
         Получить Taker Buy/Sell Volume Ratio.
         0.0 = все продают агрессивно, 1.0 = все покупают агрессивно.
+        
+        Fallback: OKX taker volume → estimation from klines
         """
         await self._init_source()
-        # ✅ FIX: Bybit doesn't have direct taker ratio, use Binance only
+        
+        # 🆕 NEW: Level 1 — OKX taker volume (альтернатива taker ratio)
+        okx = get_okx_client()
+        okx_taker = await okx.get_taker_volume(symbol, period)
+        if okx_taker:
+            print(f"   ✅ Taker ratio from OKX: {okx_taker.ratio:.2f}")
+            return okx_taker.ratio
+        
+        # Level 2 — Binance (часто не работает /futures/data/takerBuySellVolRatio)
         if self._use_binance:
             d = await self._binance("/futures/data/takerBuySellVolRatio",
                                     {"symbol": symbol, "period": period, "limit": 1})
@@ -643,28 +678,67 @@ class BinanceFuturesClient:
                 buy_vol = float(d[0].get("buyVol", 0))
                 sell_vol = float(d[0].get("sellVol", 0))
                 total = buy_vol + sell_vol
-                return buy_vol / total if total > 0 else None
-        # Try to estimate from klines if available
+                if total > 0:
+                    ratio = buy_vol / total
+                    print(f"   ✅ Taker ratio from Binance: {ratio:.2f}")
+                    return ratio
+        
+        # Level 3 — Estimation from klines (close vs open)
+        try:
+            klines = await self.get_klines(symbol, period, 10)
+            if klines:
+                buy_vol = 0
+                total_vol = 0
+                for c in klines:
+                    vol = getattr(c, 'volume', 0)
+                    total_vol += vol
+                    if getattr(c, 'close', 0) > getattr(c, 'open', 0):
+                        buy_vol += vol
+                if total_vol > 0:
+                    estimated = buy_vol / total_vol
+                    print(f"   ⚠️ Estimated taker ratio from klines: {estimated:.2f}")
+                    return estimated
+        except Exception:
+            pass
+        
         return None
 
     async def get_liquidations(self, symbol: str,
                                 limit: int = 100) -> Optional[Dict]:
         """
-        Получить данные о ликвидациях за последние сделки.
-        Возвращает сумму в USD и доминирующую сторону.
+        Получить данные о ликвидациях.
+        Fallback: OKX → Coinglass → estimation from volume spikes
         """
         await self._init_source()
-        # ✅ FIX: Try Bybit liquidations first (available in recent trades)
+        
+        # 🆕 NEW: Level 1 — OKX liquidations (работает без прокси!)
+        okx = get_okx_client()
+        okx_liq = await okx.get_liquidations(symbol, limit)
+        if okx_liq:
+            print(f"   ✅ Liquidations from OKX: ${okx_liq.get('total_usd', 0):,.0f}")
+            return okx_liq
+        
+        # Level 2 — Coinglass (если есть API ключ)
         try:
-            bybit_result = await self._bybit("/v5/market/recent-trade",
-                                            {"category": "linear", "symbol": symbol, "limit": limit})
-            if bybit_result and bybit_result.get("list"):
-                trades = bybit_result.get("list", [])
-                # Bybit recent trade doesn't show liquidation flag directly
-                # Fallback to Binance for now
+            from api.coinglass_client import get_coinglass_client
+            cg = get_coinglass_client()
+            if cg.api_key:  # Только если ключ настроен
+                cg_liq = await cg.get_liquidations(symbol, hours=1)
+                if cg_liq and cg_liq.get('total_1h'):
+                    total = cg_liq.get('total_1h', 0)
+                    long_liq = cg_liq.get('long_liq_1h', total * 0.5)
+                    short_liq = cg_liq.get('short_liq_1h', total * 0.5)
+                    print(f"   ✅ Liquidations from Coinglass: ${total:,.0f}")
+                    return {
+                        "total_usd": total,
+                        "long_liq_usd": long_liq,
+                        "short_liq_usd": short_liq,
+                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT"
+                    }
         except Exception:
             pass
         
+        # Level 3 — Binance (часто не работает /fapi/v1/allForceOrders)
         if self._use_binance:
             try:
                 d = await self._binance("/fapi/v1/allForceOrders",
@@ -678,12 +752,11 @@ class BinanceFuturesClient:
                         side = order.get("side", "").upper()
                         usd = qty * price
                         if side == "SELL":
-                            # SELL liquidation = LONG position liquidated
                             long_liq += usd
                         else:
-                            # BUY liquidation = SHORT position liquidated
                             short_liq += usd
                     total = long_liq + short_liq
+                    print(f"   ✅ Liquidations from Binance: ${total:,.0f}")
                     return {
                         "total_usd": total,
                         "long_liq_usd": long_liq,
@@ -692,6 +765,8 @@ class BinanceFuturesClient:
                     }
             except Exception:
                 pass
+        
+        print(f"   ⚠️ Liquidation data unavailable for {symbol}")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,

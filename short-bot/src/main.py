@@ -16,6 +16,7 @@
 import os
 import asyncio
 import logging
+import time  # 🆕 NEW: For BTC block caching
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
@@ -70,6 +71,9 @@ print(f"📁 shared path: {_SHARED}")
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
+from utils.redis_client import get_redis_client
+from utils.data_aggregator import DataAggregator, get_data_aggregator
+from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
 from core.scorer import get_short_scorer
 from core.pattern_detector import ShortPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
@@ -416,6 +420,7 @@ async def lifespan(app: FastAPI):
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
+    state.okx              = get_okx_client()  # 🆕 NEW: OKX fallback for OI, funding, liquidations
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
     
@@ -1669,7 +1674,18 @@ async def scan_market():
             btc_status = f"+{_btc_1h_change:.2f}%" if _btc_1h_change and _btc_1h_change > 0 else f"{_btc_1h_change:.2f}%" if _btc_1h_change else "N/A"
             # Автоблокировка SHORT при BTC > BTC_BLOCK_THRESHOLD%
             if _btc_1h_change and _btc_1h_change >= Config.BTC_BLOCK_THRESHOLD:
+                block_msg = f"🚫 <b>BTC БЛОКИРОВКА SHORT</b>\n\n📈 BTC растёт на <b>{btc_status}</b> (порог: {Config.BTC_BLOCK_THRESHOLD}%)\n⏸ Шорт-входы заблокированы на этом скане\n\n<i>Ждём когда BTC остынет...</i>"
                 print(f"🚫 [BTC-BLOCK] BTC {btc_status} ≥ {Config.BTC_BLOCK_THRESHOLD}% — SHORT заблокирован на этом скане!")
+                # 🆕 NEW: Telegram уведомление о блокировке (1 раз в 10 минут)
+                if hasattr(state, 'telegram') and state.telegram:
+                    cache_key = f"btc_block_alert:{int(time.time() / 600)}"  # 10 минутная бUCKET
+                    try:
+                        if not state.redis.get(cache_key):
+                            await state.telegram.send_message(block_msg)
+                            state.redis.set(cache_key, "1", 600)  # Cache на 10 мин
+                            print(f"   📨 BTC block alert sent to Telegram")
+                    except Exception as e:
+                        print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 _btc_1h_change = _btc_1h_change  # Позволяем ShortFilter принять решение
             print(f"📡 BTC 1h: {btc_status}")
     except Exception as e:

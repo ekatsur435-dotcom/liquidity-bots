@@ -71,6 +71,7 @@ print(f"📁 shared path: {_SHARED}")
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
+from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
@@ -403,6 +404,7 @@ async def lifespan(app: FastAPI):
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
+    state.okx              = get_okx_client()  # 🆕 NEW: OKX fallback for OI, funding, liquidations
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
     
@@ -885,6 +887,17 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if not ctx.allowed:
                 # Логируем блокировку только 1 раз в минуту чтобы не спамить
                 print(f"⛔ [CTX-LONG] {symbol}: {ctx.block_reason}")
+                # 🆕 NEW: Telegram уведомление о блокировке (1 раз в 15 минут для BTC блока)
+                if hasattr(state, 'telegram') and state.telegram and 'BTC' in ctx.block_reason:
+                    try:
+                        cache_key = f"btc_block_long:{symbol}:{int(time.time() / 900)}"  # 15 минут
+                        if not state.redis.get(cache_key):
+                            block_alert = f"🔴 <b>BTC БЛОКИРОВКА LONG</b>\n\n{ctx.block_reason}\n\n📍 Символ: <b>#{symbol}</b>\n\n<i>Ждём стабилизации BTC...</i>"
+                            await state.telegram.send_message(block_alert)
+                            state.redis.set(cache_key, "1", 900)
+                            print(f"   📨 BTC block alert for LONG sent to Telegram")
+                    except Exception as e:
+                        print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 return None
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
