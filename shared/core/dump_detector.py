@@ -329,8 +329,8 @@ class DumpDetector:
             reasons=reasons,
             metadata={
                 "last_candle_change": last_change,
-                "avg_volume": sum(self._get_candle_value(c, "volume", 4, 0) for c in candles) / len(candles),
-                "max_volume": max(self._get_candle_value(c, "volume", 4, 0) for c in candles)
+                "avg_volume": sum(self._get_candle_value(c, 4, 0) for c in candles) / len(candles),
+                "max_volume": max(self._get_candle_value(c, 4, 0) for c in candles)
             }
         )
 
