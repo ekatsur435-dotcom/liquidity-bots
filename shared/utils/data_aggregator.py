@@ -14,7 +14,7 @@ from collections import defaultdict
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from api.binance_client import get_binance_client, MarketData as BinanceData
+from utils.binance_client import get_binance_client, MarketData as BinanceData
 from api.bybit_client import get_bybit_client, BybitMarketData
 from api.coinmarketcap_client import get_coinmarketcap_client, CMCMarketData
 from api.coinglass_client import get_coinglass_client, LiquidationData

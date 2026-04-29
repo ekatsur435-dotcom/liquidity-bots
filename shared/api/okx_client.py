@@ -144,6 +144,9 @@ class OKXClient:
                         data = await response.json()
                         if data.get("code") == "0":
                             return data.get("data", [])
+                        elif data.get("code") == "51001":
+                            # Instrument not found - normal for some tickers
+                            return None
                         else:
                             print(f"   ⚠️ OKX API error: {data.get('msg')}")
                             return None

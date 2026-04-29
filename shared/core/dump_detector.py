@@ -107,8 +107,29 @@ class DumpDetector:
     
     def __init__(self, config: Optional[DumpConfig] = None):
         self.cfg = config or DumpConfig()
+    
+    def _get_candle_value(self, candle, key_or_index, default=0.0):
+        """
+        Универсальный getter для свечей (list или dict)
         
-    def analyze_candles(self, candles: List[Dict]) -> Tuple[float, float, int]:
+        Args:
+            candle: свеча (list или dict)
+            key_or_index: индекс для list или ключ для dict
+            default: значение по умолчанию
+        """
+        try:
+            if isinstance(candle, dict):
+                # Dict format: {'open': 100, 'high': 105, ...}
+                key_map = {0: 'open', 1: 'high', 2: 'low', 3: 'close', 4: 'volume', 5: 'liquidations_usd'}
+                key = key_map.get(key_or_index, key_or_index) if isinstance(key_or_index, int) else key_or_index
+                return candle.get(key, default)
+            else:
+                # List format: [open, high, low, close, volume, ...]
+                return candle[key_or_index] if key_or_index < len(candle) else default
+        except (IndexError, KeyError, TypeError):
+            return default
+        
+    def analyze_candles(self, candles: List[Any]) -> Tuple[float, float, int]:
         """
         Анализировать свечи на предмет дампа.
         
@@ -118,26 +139,26 @@ class DumpDetector:
         if len(candles) < 3:
             return 0.0, 1.0, 0
         
-        # c = [open, high, low, close, volume] - list format from _ohlcv()
-        start_price = candles[0][0]  # open
-        end_price = candles[-1][3]   # close
+        # Поддержка обоих форматов: list [o,h,l,c,v] или dict {'open': o, ...}
+        start_price = self._get_candle_value(candles[0], 0, 1.0)  # open
+        end_price = self._get_candle_value(candles[-1], 3, 1.0)   # close
         
         price_change = (end_price - start_price) / start_price * 100
         
         # Объём (index 4)
-        avg_volume = sum(c[4] for c in candles[:-1]) / max(1, len(candles) - 1)
-        recent_volume = candles[-1][4]  # volume
+        avg_volume = sum(self._get_candle_value(c, 4) for c in candles[:-1]) / max(1, len(candles) - 1)
+        recent_volume = self._get_candle_value(candles[-1], 4)  # volume
         volume_spike = recent_volume / avg_volume if avg_volume > 0 else 1.0
         
         # Длительность (сколько свечей падения)
         decline_candles = 0
         for c in candles:
-            if c[3] < c[0]:  # close < open = Медвежья свеча
+            if self._get_candle_value(c, 3) < self._get_candle_value(c, 0):  # close < open = Медвежья свеча
                 decline_candles += 1
         
         return price_change, volume_spike, decline_candles
     
-    def detect_liquidation_cascade(self, candles: List[Dict]) -> Tuple[bool, float]:
+    def detect_liquidation_cascade(self, candles: List[Any]) -> Tuple[bool, float]:
         """Детектировать каскад ликвидаций"""
         if not candles:
             return False, 0.0
@@ -147,8 +168,8 @@ class DumpDetector:
         max_liq = 0
         
         for c in candles[-5:]:  # Последние 5 свечей
-            # c = [open, high, low, close, volume, liquidations_usd?] - list format
-            liq = c[5] if len(c) > 5 else 0  # liquidations_usd if present
+            # Поддержка list и dict форматов
+            liq = self._get_candle_value(c, 5, 0)  # liquidations_usd if present
             total_liq += liq
             max_liq = max(max_liq, liq)
         
@@ -160,7 +181,7 @@ class DumpDetector:
         return False, max_liq
     
     def check_bottoming(self,
-                        candles: List[Dict],
+                        candles: List[Any],
                         cvd_value: Optional[float] = None
                        ) -> Tuple[bool, List[str]]:
         """Проверить признаки дна после дампа"""
@@ -170,17 +191,17 @@ class DumpDetector:
         signals = []
         
         # 1. Отскок от минимума
-        # c = [open, high, low, close, volume] - list format
-        recent_low = min(c[2] for c in candles[-3:])  # low = index 2
-        current_price = candles[-1][3]  # close = index 3
+        # Поддержка list и dict форматов
+        recent_low = min(self._get_candle_value(c, 2) for c in candles[-3:])  # low = index 2
+        current_price = self._get_candle_value(candles[-1], 3)  # close = index 3
         bounce = (current_price - recent_low) / recent_low * 100
         
         if bounce >= self.cfg.bottom_bounce_min:
             signals.append(f"bounce_{bounce:.1f}%")
         
         # 2. Снижение объёма после пика
-        peak_volume = max(c[4] for c in candles[-10:])  # volume = index 4
-        current_volume = candles[-1][4]  # volume = index 4
+        peak_volume = max(self._get_candle_value(c, 4) for c in candles[-10:])  # volume
+        current_volume = self._get_candle_value(candles[-1], 4)  # volume
         
         if peak_volume > 0 and current_volume < peak_volume * self.cfg.bottom_volume_drop:
             signals.append("volume_drop")
@@ -191,9 +212,13 @@ class DumpDetector:
         
         # 4. Свеча с длинным нижним хвостом (поглощение продаж)
         last = candles[-1]
-        # c = [open, high, low, close, volume] - list format
-        body = abs(last[3] - last[0])  # |close - open|
-        lower_wick = min(last[0], last[3]) - last[2]  # min(open,close) - low
+        # Поддержка list и dict форматов
+        last_open = self._get_candle_value(last, 0)
+        last_high = self._get_candle_value(last, 1)
+        last_low = self._get_candle_value(last, 2)
+        last_close = self._get_candle_value(last, 3)
+        body = abs(last_close - last_open)  # |close - open|
+        lower_wick = min(last_open, last_close) - last_low  # min(open,close) - low
         
         if body > 0 and lower_wick > body * 2:
             signals.append("long_lower_wick")
@@ -204,7 +229,7 @@ class DumpDetector:
         return is_bottom, signals
     
     def analyze(self,
-                candles: List[Dict],
+                candles: List[Any],
                 cvd_value: Optional[float] = None,
                 current_price: Optional[float] = None
                ) -> DumpResult:
