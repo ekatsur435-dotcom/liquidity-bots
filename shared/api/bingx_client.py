@@ -85,9 +85,9 @@ class BingXClient:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
         self._time_offset: int = 0   # ✅ FIX: server time offset
-        # ✅ RATE LIMITING: минимум 200ms между запросами
+        # ✅ RATE LIMITING: минимум 300ms между запросами (избегаем 109429)
         self._last_request_time: float = 0
-        self._rate_limit_delay: float = 0.2  # 200ms
+        self._rate_limit_delay: float = 0.3  # 300ms
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
