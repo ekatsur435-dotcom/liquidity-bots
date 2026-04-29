@@ -1123,7 +1123,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             tbs = detect_tbs_entry(ohlcv_primary, direction="short")
             if tbs and tbs["found"]:
                 print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
-                base_score_bonus += 10  # +10 за TBS
+                base_score_bonus += 15  # +15 за TBS (усилено для слабых рынков)
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
@@ -1160,13 +1160,13 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
                 ag = sum(gains)/13; al = sum(losses)/13
                 rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # RSI 4h < 30 = сильный медвежий тренд = +10 к шорту
+                # RSI 4h < 30 = сильный медвежий тренд = бонусы для SHORT
                 if rsi_4h < 20:
-                    rsi_4h_score_adj = +12
+                    rsi_4h_score_adj = +15  # усилено для слабых рынков
                 elif rsi_4h < 30:
-                    rsi_4h_score_adj = +8   # глубокий даунтренд = хороший SHORT
+                    rsi_4h_score_adj = +10  # глубокий даунтренд
                 elif rsi_4h < 40:
-                    rsi_4h_score_adj = +5   # даунтренд подтверждён
+                    rsi_4h_score_adj = +7   # даунтренд подтверждён
                 elif rsi_4h > 70:
                     rsi_4h_score_adj = -8   # перекуплен на 4h — риск разворота против шорта
         except Exception:
@@ -1234,8 +1234,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         )
         # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
         ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)
-        ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
-        ob_q_high     = ob_quality >= 70   # Высокое качество
+        ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
+        ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
         
         # ✅ FIX v7: Детальные логи score breakdown для диагностики
         print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
@@ -1288,8 +1288,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
-                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                # FIX v7: Bear Market Pass — score >= MIN-20 -> pass with LOW confidence
+                bear_threshold = max(35, Config.MIN_SCORE - 20)
                 if score_result.total_score >= bear_threshold:
                     print(f"\U0001f7e1 [FILTER0-SCORE] {symbol}: score={score_result.total_score} BEAR PASS")
                     from core.scorer import ScoreResult, Confidence
