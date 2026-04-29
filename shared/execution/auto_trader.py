@@ -53,7 +53,7 @@ class TradeConfig:
     demo_mode:           bool  = True
     max_positions:       int   = 30        # увеличили для 200K депо
     risk_per_trade:      float = 0.0005     # 0.05% на сделку!
-    max_daily_risk:      float = 5.0        # 5% (в %, не дробях!)
+    max_daily_risk:      float = 10.0        # 5% (в %, не дробях!)
     default_leverage:    int   = 20
     min_leverage:        int   = 5
     max_leverage:        int   = 50
