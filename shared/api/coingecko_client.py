@@ -7,6 +7,7 @@ https://www.coingecko.com/en/api/documentation
 
 import os
 import asyncio
+import time
 import aiohttp
 from typing import Optional, Dict, List, Any, Set
 from dataclasses import dataclass
