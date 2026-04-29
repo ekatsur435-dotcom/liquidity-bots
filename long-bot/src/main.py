@@ -1120,6 +1120,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         oi_accumulation  = False
         oi_weakness_long = False
         oi_score_adj     = 0.0
+        
+        # ── Override tracking (для честного отображения скора) ──────────────────
+        override_used = False
+        override_type = None
+        base_score_before_override = 0
 
         try:
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
@@ -1234,6 +1239,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if override_reason:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
                 from core.scorer import ScoreResult, Confidence
+                # Помечаем что использован оверрайд
+                override_used = True
+                override_type = override_reason
                 score_result = ScoreResult(
                     total_score=max(70, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
@@ -1262,6 +1270,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     return None
         
         reasons     = list(score_result.reasons)
+        base_score_before_override = score_result.total_score  # Сохраняем базовый скор
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
         
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
@@ -1595,6 +1604,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
             "confidence": score_result.confidence.value,
+            # ✅ Честное отображение скора
+            "base_score": base_score_before_override,
+            "override_used": override_used,
+            "override_type": override_type,
             "price": price, "entry_price": entry_price,
             "stop_loss": round(stop_loss, 8), "sl_pct": sl_pct,
             "take_profits": take_profits,
@@ -1715,7 +1728,7 @@ async def scan_market():
                 continue
             print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
-            # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
+            # ✅ ВСЕГДА: Telegram сигнал (с честным отображением скора)
             tg_msg_id = await state.telegram.send_signal(
                 direction="long", symbol=signal["symbol"],
                 score=signal["score"], price=signal["price"],
@@ -1725,6 +1738,9 @@ async def scan_market():
                 stop_loss=signal["stop_loss"],
                 take_profits=signal["take_profits"],
                 leverage=Config.LEVERAGE, risk="≤1% deposit",
+                base_score=signal.get("base_score"),
+                override_used=signal.get("override_used", False),
+                override_type=signal.get("override_type"),
             )
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
