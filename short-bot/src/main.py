@@ -74,6 +74,7 @@ from utils.binance_client import get_binance_client
 from utils.redis_client import get_redis_client
 from utils.data_aggregator import DataAggregator, get_data_aggregator
 from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
+from core.market_data_integrator import get_market_data_integrator  # 🆕 NEW: Market Data Integrator
 from core.scorer import get_short_scorer
 from core.pattern_detector import ShortPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
@@ -421,6 +422,7 @@ async def lifespan(app: FastAPI):
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
     state.okx              = get_okx_client()  # 🆕 NEW: OKX fallback for OI, funding, liquidations
+    state.market_integrator = get_market_data_integrator(state.okx, state.binance)  # 🆕 NEW: Full market context
     state.scorer           = get_short_scorer(Config.MIN_SCORE)
     state.pattern_detector = ShortPatternDetector()
     
@@ -1304,6 +1306,37 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         if rsi_4h_score_adj != 0:
             print(f"[MTF] {symbol}: RSI4h={rsi_4h:.0f} adj={rsi_4h_score_adj:+d}")
         reasons     = list(score_result.reasons)
+        
+        # 🆕 NEW: Market Data Integrator — полный рыночный контекст
+        market_context_adjustment = 0
+        if hasattr(state, 'market_integrator') and state.market_integrator:
+            try:
+                # Получаем полный контекст
+                ctx = await state.market_integrator.get_full_context(symbol)
+                
+                # Логируем контекст
+                await state.market_integrator.log_context(symbol, ctx, "short")
+                
+                # Рассчитываем корректировку
+                adjustment = state.market_integrator.calculate_score_adjustment(ctx, "short")
+                market_context_adjustment = adjustment["score_delta"]
+                
+                # Добавляем причины
+                reasons.extend(adjustment["reasons"])
+                
+                # Блокировка если нужно
+                if adjustment["should_block"]:
+                    print(f"🔴 [MARKET-INTEGRATOR] {symbol}: BLOCKED — {adjustment['reasons'][:2]}")
+                    return None
+                
+                # Применяем корректировку
+                final_score += market_context_adjustment
+                
+                print(f"📊 [MARKET-INTEGRATOR] {symbol}: score adjusted by {market_context_adjustment:+d} "
+                      f"(quality: {ctx.data_quality_score}%, confidence: {adjustment['confidence']})")
+                
+            except Exception as e:
+                print(f"⚠️ [MARKET-INTEGRATOR] {symbol}: Error — {e}")
 
         # ── SHORT-специфичные фильтры ─────────────────────────────────────────
         sf   = get_short_filter()

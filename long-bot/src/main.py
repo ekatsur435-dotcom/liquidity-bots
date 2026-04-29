@@ -72,6 +72,7 @@ print(f"📁 shared path: {_SHARED}")
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
 from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
+from core.market_data_integrator import get_market_data_integrator  # 🆕 NEW: Market Data Integrator
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
@@ -405,6 +406,7 @@ async def lifespan(app: FastAPI):
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
     state.okx              = get_okx_client()  # 🆕 NEW: OKX fallback for OI, funding, liquidations
+    state.market_integrator = get_market_data_integrator(state.okx, state.binance)  # 🆕 NEW: Full market context
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
     
@@ -1261,6 +1263,38 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         
         reasons     = list(score_result.reasons)
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
+        
+        # 🆕 NEW: Market Data Integrator — полный рыночный контекст
+        market_context_adjustment = 0
+        if hasattr(state, 'market_integrator') and state.market_integrator:
+            try:
+                # Получаем полный контекст
+                ctx = await state.market_integrator.get_full_context(symbol)
+                
+                # Логируем контекст
+                await state.market_integrator.log_context(symbol, ctx, "long")
+                
+                # Рассчитываем корректировку
+                adjustment = state.market_integrator.calculate_score_adjustment(ctx, "long")
+                market_context_adjustment = adjustment["score_delta"]
+                
+                # Добавляем причины
+                reasons.extend(adjustment["reasons"])
+                
+                # Блокировка если нужно
+                if adjustment["should_block"]:
+                    print(f"🔴 [MARKET-INTEGRATOR-LONG] {symbol}: BLOCKED — {adjustment['reasons'][:2]}")
+                    return None
+                
+                # Применяем корректировку
+                final_score += market_context_adjustment
+                final_score = min(100, final_score)  # Cap at 100
+                
+                print(f"📊 [MARKET-INTEGRATOR-LONG] {symbol}: score adjusted by {market_context_adjustment:+d} "
+                      f"(quality: {ctx.data_quality_score}%, confidence: {adjustment['confidence']})")
+                
+            except Exception as e:
+                print(f"⚠️ [MARKET-INTEGRATOR-LONG] {symbol}: Error — {e}")
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
