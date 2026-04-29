@@ -5,6 +5,7 @@ CoinMarketCap API Client
 
 import os
 import asyncio
+import time
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 from datetime import datetime
