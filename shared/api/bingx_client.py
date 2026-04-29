@@ -136,6 +136,7 @@ class BingXClient:
         self._last_request_time = time.time()
 
     async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
+        await self._rate_limit()  # ✅ RATE LIMITING: ждём перед каждым запросом
         try:
             session  = await self._get_session()
             all_p    = {}
