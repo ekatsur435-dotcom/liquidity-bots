@@ -71,7 +71,6 @@ print(f"📁 shared path: {_SHARED}")
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
-from utils.redis_client import get_redis_client
 from utils.data_aggregator import DataAggregator, get_data_aggregator
 from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
 from core.market_data_integrator import get_market_data_integrator  # 🆕 NEW: Market Data Integrator
