@@ -92,10 +92,11 @@ class OKXClient:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
             connector = aiohttp.TCPConnector(ssl=False, limit=100)
+            # Увеличиваем таймаут для медленных прокси
             self.session = aiohttp.ClientSession(
                 headers=headers, 
                 connector=connector,
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=aiohttp.ClientTimeout(total=60, connect=20, sock_read=30)
             )
         return self.session
     
@@ -124,25 +125,37 @@ class OKXClient:
         session = await self._get_session()
         url = f"{self.BASE_URL}{endpoint}"
         
-        # Пробуем с прокси и без
+        # Пробуем сначала напрямую (быстрее), потом через прокси
         attempts = []
-        if self._proxy_enabled and self._proxies:
-            attempts.append(self._get_proxy())
-        attempts.append(None)  # Без прокси
         
-        for attempt, proxy in enumerate(attempts):
+        # Сначала пробуем без прокси (если не заблокировано)
+        attempts.append((None, "direct", 15))  # (proxy, type, timeout)
+        
+        # Потом пробуем через прокси
+        if self._proxy_enabled and self._proxies:
+            for _ in range(min(3, len(self._proxies))):  # Максимум 3 прокси
+                attempts.append((self._get_proxy(), "proxy", 30))
+        
+        for attempt, (proxy, conn_type, timeout_secs) in enumerate(attempts):
             try:
                 connector_params = {}
                 if proxy:
                     connector_params["proxy"] = proxy
-                    print(f"   🌐 Using proxy: {proxy[:20]}...")
+                    print(f"   🌐 [{conn_type}] Proxy: {proxy[:25]}... (timeout: {timeout_secs}s)")
+                else:
+                    print(f"   🌐 [{conn_type}] Direct connection (timeout: {timeout_secs}s)")
                 
-                async with session.get(url, params=params, **connector_params) as response:
+                # Создаем таймаут для этой конкретной попытки
+                req_timeout = aiohttp.ClientTimeout(total=timeout_secs, connect=10)
+                
+                async with session.get(url, params=params, timeout=req_timeout, **connector_params) as response:
                     self._request_count += 1
                     
                     if response.status == 200:
                         data = await response.json()
                         if data.get("code") == "0":
+                            conn_label = "proxy" if proxy else "direct"
+                            print(f"   ✅ [{conn_label}] OKX success: {endpoint}")
                             return data.get("data", [])
                         elif data.get("code") == "51001":
                             # Instrument not found - normal for some tickers
