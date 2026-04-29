@@ -85,6 +85,9 @@ class BingXClient:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
         self._time_offset: int = 0   # ✅ FIX: server time offset
+        # ✅ RATE LIMITING: минимум 200ms между запросами
+        self._last_request_time: float = 0
+        self._rate_limit_delay: float = 0.2  # 200ms
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -122,6 +125,15 @@ class BingXClient:
     def _get_timestamp(self) -> int:
         offset = getattr(self, "_time_offset", 0)
         return int(time.time() * 1000) + offset
+
+    async def _rate_limit(self):
+        """✅ RATE LIMITING: ждём между запросами чтобы не получить бан"""
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self._rate_limit_delay:
+            wait = self._rate_limit_delay - elapsed
+            await asyncio.sleep(wait)
+        self._last_request_time = time.time()
 
     async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
         try:
