@@ -126,10 +126,10 @@ class Config:
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
-    # ✅ v8: Увеличен default с 65 до 75 (строгая фильтрация на медвежьем рынке)
-    MIN_SCORE     = int(os.getenv("MIN_SCORE_LONG", "75"))  # ⭐ ИЗМЕНИТЬ на Render!
+    # ✅ REDUCED: default 75 → 65 (больше сигналов на медвежьем рынке)
+    MIN_SCORE     = int(os.getenv("MIN_SCORE_LONG", "65"))  # ⭐ Снижен для активности
     
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # 3 минуты (было 2 мин)
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # ✅ 3 минуты для снижения нагрузки API
     
     # ✅ FIX: Уменьшено default с 20 до 10 (меньше позиций = меньше риск)
     MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "10"))  # ⭐ ИЗМЕНИТЬ на Render!
@@ -1253,8 +1253,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # FIX v7: Bear Market Pass — score >= MIN-15 -> pass with LOW confidence
-                bear_threshold = max(45, Config.MIN_SCORE - 15)
+                # FIX v7: Bear Market Pass — score >= MIN-20 -> pass with LOW confidence
+                bear_threshold = max(40, Config.MIN_SCORE - 20)
                 if score_result.total_score >= bear_threshold:
                     print(f"\U0001f7e1 [FILTER0-LONG] {symbol}: score={score_result.total_score} BEAR PASS")
                     from core.scorer import ScoreResult, Confidence
