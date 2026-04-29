@@ -109,18 +109,34 @@ from core.candle_history_manager import (
 
 class Config:
     BOT_TYPE      = "short"
-    # ✅ FIX: MIN_SHORT_SCORE default = 65
-    # ✅ v2.5 BACKTEST: Score 67+ → WR 55.4%, PF 2.07x
-    MIN_SCORE     = int(os.getenv("MIN_SHORT_SCORE", "63"))  # ✅ FIX v7: 67→63
-    # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
-    # ✅ FIX: MAX_WATCHLIST default = 300
-    MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "20"))
+    
+    # ============================================================================
+    # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
+    # ============================================================================
+    # MIN_SCORE_SHORT      - Минимальный score для входа (default: 70) ⭐ КЛЮЧЕВОЙ
+    # MAX_SHORT_POSITIONS  - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
+    # SHORT_SL_BUFFER      - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
+    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 120)
+    # SHORT_LEVERAGE       - Плечо (default: "5-50")
+    # SHORT_TRAIL_ACTIVATION - Активация trailing SL (default: 0.030)
+    # BTC_BLOCK_SHORT_THRESHOLD - Блокировка при пампе BTC (default: 4.0)
+    # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # ============================================================================
+    
+    # ✅ FIX: Переименовано MIN_SHORT_SCORE → MIN_SCORE_SHORT для соответствия Render
+    # ✅ v8: Увеличен default с 63 до 70 (строгая фильтрация)
+    MIN_SCORE     = int(os.getenv("MIN_SCORE_SHORT", "70"))  # ⭐ ИЗМЕНИТЬ на Render!
+    
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    
+    # ✅ FIX: Уменьшено default с 20 до 10 (меньше позиций = меньше риск)
+    MAX_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "10"))  # ⭐ ИЗМЕНИТЬ на Render!
+    
     LEVERAGE      = os.getenv("SHORT_LEVERAGE", "5-50")
 
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
-    # ✅ v2.5: Уменьшен SL с 2.0% до 1.5% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "1.5"))  # ✅ FIX: 1.0% — чётче SL
+    # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
+    SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
 
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1

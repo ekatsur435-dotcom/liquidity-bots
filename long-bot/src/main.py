@@ -109,19 +109,34 @@ from core.candle_history_manager import (
 
 class Config:
     BOT_TYPE      = "long"
-    # ✅ FIX: MIN_LONG_SCORE default = 70
-    # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
-    # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
-    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))  # ✅ FIX v5: 60→65 лучший баланс качество/частота
-    # ✅ FIX: SCAN_INTERVAL default = 200
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
-    # ✅ FIX: MAX_WATCHLIST default = 300
-    MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "20"))
+    
+    # ============================================================================
+    # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
+    # ============================================================================
+    # MIN_SCORE_LONG       - Минимальный score для входа (default: 75) ⭐ КЛЮЧЕВОЙ
+    # MAX_LONG_POSITIONS   - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
+    # LONG_SL_BUFFER       - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
+    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 120)
+    # LONG_LEVERAGE        - Плечо (default: "5-50")
+    # LONG_TRAIL_ACTIVATION - Активация trailing SL (default: 0.025)
+    # BTC_BLOCK_LONG_THRESHOLD - Блокировка при дампе BTC (default: 4.0)
+    # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # ============================================================================
+    
+    # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
+    # ✅ v8: Увеличен default с 65 до 75 (строгая фильтрация на медвежьем рынке)
+    MIN_SCORE     = int(os.getenv("MIN_SCORE_LONG", "75"))  # ⭐ ИЗМЕНИТЬ на Render!
+    
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))
+    
+    # ✅ FIX: Уменьшено default с 20 до 10 (меньше позиций = меньше риск)
+    MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "10"))  # ⭐ ИЗМЕНИТЬ на Render!
+    
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
-    # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
+    # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
 
     # 🆕 NEW: Advanced modules configuration
