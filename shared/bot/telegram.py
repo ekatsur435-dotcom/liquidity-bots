@@ -248,7 +248,10 @@ class TelegramBot:
                            take_profits: List[tuple],
                            leverage: str,
                            risk: str,
-                           valid_minutes: int = 30) -> str:
+                           valid_minutes: int = 30,
+                           base_score: float = None,
+                           override_used: bool = False,
+                           override_type: str = None) -> str:
         emoji, strength = self._score_grade(score)
         sl_pct = self._calc_pct(entry, stop_loss)
 
@@ -260,11 +263,18 @@ class TelegramBot:
             tp_lines += f"   TP{i}: <b>{fmt_price(tp_price)}</b>  (+{pct:.1f}%)  [{tp_weight}%]\n"
 
         ind_lines = "\n".join(f"   {k}: <b>{v}</b>" for k, v in indicators.items())
+        
+        # ✅ Честное отображение скора
+        score_line = f"<b>Score: {score:.0f}%</b>"
+        if base_score and base_score < score:
+            score_line += f" <i>(base: {base_score:.0f}%)</i>"
+        if override_used and override_type:
+            score_line += f"\n   <i>🎯 Override: {override_type}</i>"
 
         # ✅ #SYMBOL для удобного поиска в Telegram
         return (
             f"\n{emoji} <b>LONG SIGNAL | {strength}</b>\n"
-            f"<b>Score: {score:.0f}%</b>\n\n"
+            f"{score_line}\n\n"
             f"<b>💎 SYMBOL:</b> <b>#{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
@@ -289,7 +299,10 @@ class TelegramBot:
                             take_profits: List[tuple],
                             leverage: str,
                             risk: str,
-                            valid_minutes: int = 30) -> str:
+                            valid_minutes: int = 30,
+                            base_score: float = None,
+                            override_used: bool = False,
+                            override_type: str = None) -> str:
         emoji, strength = self._score_grade(score)
         sl_pct = self._calc_pct(entry, stop_loss)
 
@@ -304,10 +317,17 @@ class TelegramBot:
 
         # ✅ FIX: Для SHORT SL выше entry = убыток (знак -), TP ниже = прибыль (знак +)
         sl_sign = "-" if sl_pct > 0 else "+"
+        
+        # ✅ Честное отображение скора
+        score_line = f"<b>Score: {score:.0f}%</b>"
+        if base_score and base_score < score:
+            score_line += f" <i>(base: {base_score:.0f}%)</i>"
+        if override_used and override_type:
+            score_line += f"\n   <i>🎯 Override: {override_type}</i>"
 
         return (
             f"\n{emoji} <b>SHORT SIGNAL | {strength}</b>\n"
-            f"<b>Score: {score:.0f}%</b>\n\n"
+            f"{score_line}\n\n"
             f"<b>💎 SYMBOL:</b> <b>#{symbol}</b>\n"
             f"<b>📊 Pattern:</b> {pattern}\n\n"
             f"<b>📈 INDICATORS:</b>\n{ind_lines}\n\n"
