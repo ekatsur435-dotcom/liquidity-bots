@@ -293,23 +293,42 @@ class BinanceFuturesClient:
         await self._rate_limit()
         
         errors = []
-        # 🆕 FIX: Пробуем все прокси по очереди
-        for idx, proxy in enumerate(self._proxies):
+        
+        # 🆕 FIX: Сначала пробуем напрямую (быстрее, если нет геоблокировки)
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.BINANCE_URL}{endpoint}",
+                params=params or {},
+                timeout=aiohttp.ClientTimeout(total=8),
+                ssl=False
+            ) as resp:
+                if resp.status == 200:
+                    print(f"   ✅ [BINANCE] Direct connection success: {endpoint}")
+                    return await resp.json()
+                else:
+                    errors.append(f"direct:{resp.status}")
+        except Exception as e:
+            errors.append(f"direct:{type(e).__name__}")
+        
+        # 🆕 FIX: Если напрямую не работает (геоблокировка) → пробуем прокси
+        for idx, proxy in enumerate(self._proxies[:5]):  # Максимум 5 прокси
             try:
                 session = await self._get_session()
+                host = proxy.split('@')[-1] if '@' in proxy else proxy
                 async with session.get(
                     f"{self.BINANCE_URL}{endpoint}",
                     params=params or {},
                     proxy=proxy,
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=15),
                     ssl=False
                 ) as resp:
                     if resp.status == 200:
                         # ✅ Успех! Запоминаем рабочий прокси
                         if self._active_proxy != proxy:
                             self._active_proxy = proxy
-                            host = proxy.split('@')[-1] if '@' in proxy else proxy
                             print(f"🔄 [BINANCE] Switched to working proxy ({host})")
+                        print(f"   ✅ [BINANCE] Proxy success: {endpoint}")
                         return await resp.json()
                     else:
                         # HTTP ошибка (403, 429, etc)
@@ -319,9 +338,9 @@ class BinanceFuturesClient:
                 errors.append(f"proxy{idx+1}:{type(e).__name__}")
                 continue
         
-        # ❌ Все прокси упали
-        error_summary = ", ".join(errors[:3])  # Первые 3 ошибки
-        print(f"🔴 [BINANCE] All proxies failed for {endpoint}. Errors: {error_summary}")
+        # ❌ Все попытки упали
+        error_summary = ", ".join(errors[:4])  # Первые 4 ошибки
+        print(f"🔴 [BINANCE] All connections failed for {endpoint}. Errors: {error_summary}")
         return None
 
     async def _req(self, binance_ep: str, bybit_ep: str,
