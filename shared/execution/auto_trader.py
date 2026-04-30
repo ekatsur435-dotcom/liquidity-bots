@@ -465,6 +465,9 @@ class AutoTrader:
             confidence="HIGH" if signal_score >= 80 else ("MEDIUM" if signal_score >= 65 else "LOW")
         )
         
+        # 🔧 FIX: Расчёт sl_distance ДО использования в Kelly!
+        sl_distance = abs(entry_price - stop_loss) / entry_price
+        
         # Получаем капитал из equity
         self.kelly_rm.update_capital(equity)
         
@@ -487,7 +490,6 @@ class AutoTrader:
         risk_mult   = 1.5 if signal_score >= 85 else (1.2 if signal_score >= 75 else 1.0)
         actual_risk = self.config.risk_per_trade * risk_mult
         risk_amount = available * actual_risk
-        sl_distance = abs(entry_price - stop_loss) / entry_price
 
         print(f"{pfx} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
         print(f"{pfx} 🎯 Kelly: kelly_pct={kelly_result.kelly_pct:.1f}% | "

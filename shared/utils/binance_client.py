@@ -330,9 +330,14 @@ class BinanceFuturesClient:
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         """
-        ✅ v3.0 Отказоустойчивость: пробуем все прокси по очереди
-        Если все прокси упали → возвращаем None (вызывающий код попробует Bybit)
+        ✅ v3.1 Circuit Breaker + Отказоустойчивость
+        Если Circuit Breaker открыт — сразу возвращаем None (fallback на Bybit)
         """
+        # 🆕 CIRCUIT BREAKER: проверяем, не отключен ли эндпоинт
+        if self._is_circuit_open(endpoint):
+            print(f"⚡ [Circuit Breaker] {endpoint} skipped (circuit OPEN)")
+            return None
+        
         await self._rate_limit()
         
         errors = []
@@ -347,9 +352,13 @@ class BinanceFuturesClient:
                 ssl=False
             ) as resp:
                 if resp.status == 200:
+                    self._record_success(endpoint)
                     print(f"   ✅ [BINANCE] Direct connection success: {endpoint}")
                     return await resp.json()
                 else:
+                    # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
+                    if resp.status in (404, 418, 400):
+                        self._record_failure(endpoint, resp.status)
                     errors.append(f"direct:{resp.status}")
         except Exception as e:
             errors.append(f"direct:{type(e).__name__}")
@@ -367,6 +376,7 @@ class BinanceFuturesClient:
                     ssl=False
                 ) as resp:
                     if resp.status == 200:
+                        self._record_success(endpoint)
                         # ✅ Успех! Запоминаем рабочий прокси
                         if self._active_proxy != proxy:
                             self._active_proxy = proxy
@@ -375,13 +385,17 @@ class BinanceFuturesClient:
                         return await resp.json()
                     else:
                         # HTTP ошибка (403, 429, etc)
+                        # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
+                        if resp.status in (404, 418, 400):
+                            self._record_failure(endpoint, resp.status)
                         errors.append(f"proxy{idx+1}:{resp.status}")
                         
             except Exception as e:
                 errors.append(f"proxy{idx+1}:{type(e).__name__}")
                 continue
         
-        # ❌ Все попытки упали
+        # ❌ Все попытки упали — записываем общий failure
+        self._record_failure(endpoint, 0)
         error_summary = ", ".join(errors[:4])  # Первые 4 ошибки
         print(f"🔴 [BINANCE] All connections failed for {endpoint}. Errors: {error_summary}")
         return None
