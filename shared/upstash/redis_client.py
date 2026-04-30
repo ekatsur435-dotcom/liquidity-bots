@@ -32,7 +32,8 @@ class UpstashRedisClient:
         # TTL для разных типов данных (в секундах)
         self.TTL = {
             "signal": 86400,        # 24 часа для сигналов
-            "position": 604800,     # 7 дней для позиций
+            "position": 604800,     # 7 дней для подтвержденных позиций
+            "position_unconfirmed": 60,  # 🆕 60 сек для НЕподтвержденных позиций
             "state": 3600,          # 1 час для состояния
             "stats": 2592000,       # 30 дней для статистики
             "cache": 300            # 5 минут для кэша API
@@ -55,9 +56,22 @@ class UpstashRedisClient:
             key = f"{bot_type}:signals:{symbol}"
             if "timestamp" not in signal_data:
                 signal_data["timestamp"] = datetime.utcnow().isoformat()
+            
+            # 🆕 Динамический TTL: 60 сек для неподтвержденных, 7 дней для подтвержденных
+            confirmed = signal_data.get("confirmed", False)
+            if confirmed:
+                ttl = self.TTL["position"]  # 7 дней
+            else:
+                ttl = self.TTL["position_unconfirmed"]  # 60 сек
+            
             self.client.lpush(key, json.dumps(signal_data))
-            self.client.expire(key, self.TTL["signal"])
+            self.client.expire(key, ttl)
             self.client.ltrim(key, 0, 49)
+            
+            # 🆕 Логирование TTL для дебага
+            if not confirmed:
+                print(f"⏱️ [Redis] {symbol}: TTL=60s (unconfirmed), will auto-expire if not confirmed")
+            
             return True
         except Exception as e:
             print(f"Error saving signal: {e}")
@@ -366,113 +380,11 @@ class UpstashRedisClient:
             print(f'[Redis] delete error: {e}')
             return 0
 
-    # ✅ PROXY METHODS — совместимость с redis-py API и dashboard.execute() calls
-    # =========================================================================
-
-    def execute(self, cmd: list) -> any:
-        """Выполняет команду Redis по имени: execute(["LRANGE", key, 0, 9])"""
-        try:
-            command = cmd[0].upper() if cmd else ""
-            if command == "LRANGE":
-                key, start, end = cmd[1], int(cmd[2]), int(cmd[3])
-                return self.client.lrange(key, start, end) or []
-            elif command == "KEYS":
-                return self.client.keys(cmd[1]) or []
-            elif command == "GET":
-                return self.client.get(cmd[1])
-            elif command == "SET":
-                return self.client.set(cmd[1], cmd[2])
-            elif command == "DEL":
-                return self.client.delete(*cmd[1:])
-            elif command == "LPUSH":
-                return self.client.lpush(cmd[1], *cmd[2:])
-            elif command == "SCAN":
-                # Upstash scan: return [cursor, keys]
-                cursor = int(cmd[1]) if len(cmd) > 1 else 0
-                pattern = cmd[3] if len(cmd) > 3 else "*"
-                keys = self.client.keys(pattern) or []
-                return [0, keys]  # cursor=0 means done
-            elif command == "EXISTS":
-                return self.client.exists(cmd[1])
-            elif command == "EXPIRE":
-                return self.client.expire(cmd[1], int(cmd[2]))
-            else:
-                print(f"[Redis] Unknown execute command: {command}")
-                return None
-        except Exception as e:
-            print(f"[Redis] execute({cmd[0] if cmd else '?'}) error: {e}")
-            return None
-
-    def lrange(self, key: str, start: int, end: int) -> list:
-        """Direct lrange proxy"""
-        try:
-            return self.client.lrange(key, start, end) or []
-        except Exception as e:
-            print(f"[Redis] lrange error: {e}")
-            return []
-
-    def lpush(self, key: str, *values) -> int:
-        """Direct lpush proxy"""
-        try:
-            return self.client.lpush(key, *values) or 0
-        except Exception as e:
-            print(f"[Redis] lpush error: {e}")
-            return 0
-
-    def set(self, key: str, value: str, ex: int = None) -> bool:
-        """Direct set proxy"""
-        try:
-            if ex:
-                return bool(self.client.setex(key, ex, value))
-            return bool(self.client.set(key, value))
-        except Exception as e:
-            return False
-
-    def get(self, key: str):
-        """Direct get proxy"""
-        try:
-            return self.client.get(key)
-        except Exception as e:
-            return None
-
-    def keys(self, pattern: str = "*") -> list:
-        """Direct keys proxy"""
-        try:
-            return self.client.keys(pattern) or []
-        except Exception as e:
-            return []
-
-    def delete(self, *keys) -> int:
-        """Direct delete proxy"""
-        try:
-            return self.client.delete(*keys) if keys else 0
-        except Exception as e:
-            return 0
-
-    def exists(self, key: str) -> bool:
-        """Direct exists proxy"""
-        try:
-            return bool(self.client.exists(key))
-        except Exception:
-            return False
-
-    def expire(self, key: str, seconds: int) -> bool:
-        """Direct expire proxy"""
-        try:
-            return bool(self.client.expire(key, seconds))
-        except Exception:
-            return False
-
-
-
-_redis_client = None
-
-
-
 # SINGLETON INSTANCE
 # ============================================================================
 
-    # =========================================================================
+_redis_client = None
+
 def get_redis_client() -> UpstashRedisClient:
     global _redis_client
     if _redis_client is None:

@@ -28,7 +28,7 @@ services:
       - key: PROXY_LIST
         sync: false
       - key: MIN_SHORT_SCORE
-        value: "67"
+        value: "63"           # ✅ FIX v7: 67→63 меньше фильтрации в медвежьем рынке
       - key: SHORT_SL_BUFFER
         value: "1.5"
       - key: MAX_SHORT_POSITIONS
@@ -38,7 +38,7 @@ services:
       - key: MAX_WATCHLIST
         value: "300"
       - key: SCAN_INTERVAL
-        value: "120"
+        value: "90"           # ✅ FIX v7: 90s вместо 120s — быстрее реагируем на SHORT
       - key: AUTO_TRADING_ENABLED
         value: "true"
       - key: BINGX_DEMO_MODE
@@ -55,3 +55,9 @@ services:
         value: "0.010"
       - key: ENABLE_BTC_CORRELATION
         value: "true"
+      - key: BTC_BLOCK_SHORT_THRESHOLD
+        value: "4.0"          # BTC +4% за 1ч блокирует SHORT. Ставь 99 чтобы отключить
+      - key: SL_COOLDOWN_HOURS
+        value: "2.0"          # Часов cooldown после стоп-лосса по символу
+      - key: SL_COOLDOWN_HOURS
+        value: "2.0"

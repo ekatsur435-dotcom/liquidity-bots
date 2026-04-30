@@ -5,6 +5,7 @@ CoinMarketCap API Client
 
 import os
 import asyncio
+import time
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -56,7 +57,18 @@ class CoinMarketCapClient:
         self.last_request_time = 0
         self.min_interval = 1.0  # 1 запрос в секунду (бесплатный tier)
         
+        # ✅ Прокси поддержка
+        proxy_env = os.getenv("PROXY_LIST", "")
+        self._proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        self._proxy_idx = 0
+        self._active_proxy: Optional[str] = None
+        self._proxy_enabled = os.getenv("USE_PROXY_FOR_CMC", "true").lower() == "true"
+        
         print("🚀 CoinMarketCap Client initialized")
+        if self._proxies and self._proxy_enabled:
+            print(f"   🌐 Proxy rotation enabled: {len(self._proxies)} proxies")
+        elif self._proxies:
+            print(f"   ⚠️  Proxies available but USE_PROXY_FOR_CMC=false")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать сессию"""
@@ -65,12 +77,13 @@ class CoinMarketCapClient:
                 "Accepts": "application/json",
                 "X-CMC_PRO_API_KEY": self.api_key
             }
-            self.session = aiohttp.ClientSession(headers=headers)
+            connector = aiohttp.TCPConnector(ssl=False)
+            self.session = aiohttp.ClientSession(headers=headers, connector=connector)
         return self.session
     
     async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """
-        Выполнить запрос с rate limiting
+        Выполнить запрос с rate limiting и proxy rotation
         """
         import time
         
@@ -80,27 +93,54 @@ class CoinMarketCapClient:
         if elapsed < self.min_interval:
             await asyncio.sleep(self.min_interval - elapsed)
         
-        try:
-            url = f"{self.BASE_URL}{endpoint}"
-            session = await self._get_session()
+        url = f"{self.BASE_URL}{endpoint}"
+        
+        # 🔄 Пробуем с прокси если включено
+        if self._proxies and self._proxy_enabled:
+            errors = []
+            for idx, proxy in enumerate(self._proxies):
+                try:
+                    result = await self._try_request(url, params, proxy)
+                    if result is not None:
+                        if self._active_proxy != proxy:
+                            self._active_proxy = proxy
+                            host = proxy.split('@')[-1] if '@' in proxy else proxy
+                            print(f"🔄 [CMC] Switched to working proxy ({host})")
+                        return result
+                except Exception as e:
+                    errors.append(f"proxy{idx+1}:{type(e).__name__}")
+                    continue
             
-            async with session.get(url, params=params or {}, timeout=30) as response:
+            # Все прокси упали — пробуем напрямую
+            print(f"⚠️ [CMC] All proxies failed ({', '.join(errors)}), trying direct...")
+        
+        # Пробуем напрямую
+        return await self._try_request(url, params, None)
+    
+    async def _try_request(self, url: str, params: Optional[Dict], proxy: Optional[str]) -> Optional[Dict]:
+        """Выполнить один запрос с опциональным прокси"""
+        try:
+            session = await self._get_session()
+            proxy_kwargs = {"proxy": proxy} if proxy else {}
+            
+            async with session.get(url, params=params or {}, timeout=30, ssl=False, **proxy_kwargs) as response:
                 self.last_request_time = time.time()
                 
                 if response.status == 200:
                     return await response.json()
                 elif response.status == 429:
-                    print("CMC Rate limit hit, waiting...")
+                    print("⏱️ CMC Rate limit hit, waiting 60s...")
                     await asyncio.sleep(60)
-                    return await self._make_request(endpoint, params)
+                    return await self._try_request(url, params, proxy)
+                elif response.status == 403:
+                    raise Exception("Geo-block (403)")
                 else:
                     error_text = await response.text()
-                    print(f"CMC Error {response.status}: {error_text}")
+                    print(f"❌ CMC Error {response.status}: {error_text[:100]}")
                     return None
         
         except Exception as e:
-            print(f"CMC Request error: {e}")
-            return None
+            raise e  # Прокидываем для обработки
     
     async def close(self):
         """Закрыть сессию"""

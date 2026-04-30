@@ -1,135 +1,136 @@
-# Render.com Deploy — Liquidity Bots v5.1
-# ✅ All env var names verified against code
+# Render.com Deployment Configuration
+# v2.9 — Phase 2: Limit Executor, EQH/EQL Scanner, Micro-Step Trailing
 
 services:
-
-  # ═══════════════════════════ LONG BOT ═══════════════════════════
+  # LONG Bot Service
   - type: web
-    name: liq-longbot
+    name: liquidity-long-bot
     runtime: python
     plan: starter
-    rootDir: long-bot
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: |
+      cd long-bot && pip install -r requirements.txt
+    startCommand: |
+      cd long-bot && python -m src.main
     envVars:
-      # 🔑 API Keys
-      - key: BINGX_API_KEY
-        sync: false
-      - key: BINGX_API_SECRET
-        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: BINANCE_API_KEY
         sync: false
-      # 📱 Telegram
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINGX_API_KEY
+        sync: false
+      - key: BINGX_SECRET_KEY
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: TELEGRAM_TOPIC_ID
-        sync: false
-      # 🗄️ Redis (rediss:// URL для TCP подключения)
-      - key: REDIS_URL
-        sync: false
-      # ⚙️ Trading
-      - key: BINGX_DEMO_MODE
-        value: "true"
-      - key: AUTO_TRADING_ENABLED
-        value: "true"
-      - key: MIN_LONG_SCORE
-        value: "65"
-      - key: MAX_LONG_POSITIONS
-        value: "15"
-      - key: LONG_SL_BUFFER
-        value: "1.5"
-      - key: RISK_PER_TRADE
-        value: "0.005"
-      - key: SCAN_INTERVAL
-        value: "120"
-      - key: MAX_WATCHLIST
-        value: "500"
-      - key: MIN_VOLUME_USDT
-        value: "300000"
       - key: USE_SMC
         value: "true"
-      - key: BLOCK_ASIAN_SESSION
-        value: "false"
+      - key: USE_TBS
+        value: "true"
+      - key: USE_ENTRY_CONFIRMATION
+        value: "true"
+      # 🎯 Phase 2: Limit Executor
+      - key: LIMIT_ORDER_ENABLED
+        value: "true"
+      - key: LIMIT_FALLBACK_TIMEOUT
+        value: "300"
+      - key: LIMIT_MICRO_STEP_PCT
+        value: "0.02"
+      # 🌊 Phase 2: EQH/EQL Scanner
+      - key: USE_EQH_EQL_SCANNER
+        value: "true"
+      - key: EQH_EQL_TOLERANCE_PCT
+        value: "0.5"
+      # 🎢 Phase 2: Micro-Step Trailing
+      - key: TRAIL_TP1_LOCK
+        value: "0.3"
+      - key: TRAIL_TP2_LOCK
+        value: "0.8"
+      - key: TRAIL_TP3_LOCK
+        value: "1.5"
+      - key: TRAIL_MICRO_STEP_PCT
+        value: "0.3"
     healthCheckPath: /health
     autoDeploy: true
 
-  # ═══════════════════════════ SHORT BOT ═══════════════════════════
+  # SHORT Bot Service  
   - type: web
-    name: liq-shortbot
+    name: liquidity-short-bot
     runtime: python
     plan: starter
-    rootDir: short-bot
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: |
+      cd short-bot && pip install -r requirements.txt
+    startCommand: |
+      cd short-bot && python -m src.main
     envVars:
-      # 🔑 API Keys
-      - key: BINGX_API_KEY
-        sync: false
-      - key: BINGX_API_SECRET
-        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: BINANCE_API_KEY
         sync: false
-      # 📱 Telegram (можно тот же бот что и LONG, или отдельный)
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINGX_API_KEY
+        sync: false
+      - key: BINGX_SECRET_KEY
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: TELEGRAM_TOPIC_ID
-        sync: false
-      # 📱 Telegram SHORT (отдельный бот/чат для SHORT сигналов — опционально)
-      - key: SHORT_TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: SHORT_TELEGRAM_CHAT_ID
-        sync: false
-      # 🗄️ Redis
-      - key: REDIS_URL
-        sync: false
-      # ⚙️ Trading
-      - key: BINGX_DEMO_MODE
-        value: "true"
-      - key: AUTO_TRADING_ENABLED
-        value: "true"
-      - key: MIN_SHORT_SCORE
-        value: "65"
-      - key: MAX_SHORT_POSITIONS
-        value: "15"
-      - key: SHORT_SL_BUFFER
-        value: "1.5"
-      - key: RISK_PER_TRADE
-        value: "0.005"
-      - key: SCAN_INTERVAL
-        value: "120"
-      - key: MAX_WATCHLIST
-        value: "500"
-      - key: MIN_VOLUME_USDT
-        value: "300000"
       - key: USE_SMC
         value: "true"
-      - key: BLOCK_ASIAN_SESSION
-        value: "false"
+      - key: USE_TBS
+        value: "true"
+      - key: USE_ENTRY_CONFIRMATION
+        value: "true"
+      # 🎯 Phase 2: Limit Executor
+      - key: LIMIT_ORDER_ENABLED
+        value: "true"
+      - key: LIMIT_FALLBACK_TIMEOUT
+        value: "300"
+      - key: LIMIT_MICRO_STEP_PCT
+        value: "0.02"
+      # 🌊 Phase 2: EQH/EQL Scanner
+      - key: USE_EQH_EQL_SCANNER
+        value: "true"
+      - key: EQH_EQL_TOLERANCE_PCT
+        value: "0.5"
+      # 🎢 Phase 2: Micro-Step Trailing
+      - key: TRAIL_TP1_LOCK
+        value: "0.3"
+      - key: TRAIL_TP2_LOCK
+        value: "0.8"
+      - key: TRAIL_TP3_LOCK
+        value: "1.5"
+      - key: TRAIL_MICRO_STEP_PCT
+        value: "0.3"
     healthCheckPath: /health
     autoDeploy: true
 
-  # ═══════════════════════════ DASHBOARD ═══════════════════════════
+  # 🎯 Phase 3: Dashboard Web Service
   - type: web
     name: trading-dashboard
     runtime: python
     plan: free
     rootDir: dashboard
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -b 0.0.0.0:$PORT app:app
+    startCommand: gunicorn -b 0.0.0.0:10000 app:app
     envVars:
-      # Dashboard использует HTTPS REST API Upstash (НЕ rediss://)
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
       - key: UPSTASH_REDIS_REST_URL
-        sync: false
-      - key: UPSTASH_REDIS_REST_TOKEN
-        sync: false
-      # Если LONG и SHORT на разных Redis:
-      - key: UPSTASH_REDIS_LONG_URL
-        sync: false
-      - key: UPSTASH_REDIS_LONG_TOKEN
-        sync: false
+        fromDatabase:
+          name: liquidity-bot-db
+          property: connectionString
     healthCheckPath: /health
     autoDeploy: true
+
+databases:
+  - name: liquidity-bot-db
+    plan: free
+    ipAllowList: []

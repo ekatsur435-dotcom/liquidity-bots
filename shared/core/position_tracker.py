@@ -137,6 +137,14 @@ class PositionTracker:
             if not symbol:
                 continue
             try:
+                # 🆕 NEW: Проверяем только подтвержденные позиции (confirmed=True)
+                confirmed = sig.get('confirmed', False)
+                if not confirmed:
+                    # Позиция не подтверждена биржей - не проверяем ее статус
+                    # (экономим API запросы, не создаем ложных zombie)
+                    print(f"[ZOMBIE-SKIP] {symbol}: не подтверждена на бирже (confirmed=False), пропускаем проверку")
+                    continue
+
                 pos_side = 'LONG' if direction == 'long' else 'SHORT'
                 positions = await bingx.get_positions(symbol)
                 has_real_position = any(
@@ -146,33 +154,86 @@ class PositionTracker:
                 if not has_real_position:
                     # Позиция есть в Redis, нет на бирже — это zombie
                     entry = sig.get('entry_price', 0)
-                    current_price = sig.get('last_price', entry)
+                    redis_price = sig.get('last_price', entry)
+                    opened_at = sig.get('timestamp', '')
                     
-                    # Вычисляем P&L на момент закрытия
+                    # 🆕 NEW: Получаем АКТУАЛЬНУЮ рыночную цену для точного P&L
+                    market_price = None
+                    price_source = "redis"
+                    try:
+                        # Пробуем получить текущую цену с биржи
+                        ticker = await bingx.get_ticker(symbol)
+                        if ticker and 'lastPrice' in ticker:
+                            market_price = float(ticker['lastPrice'])
+                            price_source = "market"
+                        elif ticker and 'price' in ticker:
+                            market_price = float(ticker['price'])
+                            price_source = "market"
+                    except Exception as e:
+                        print(f"⚠️ [ZOMBIE] Could not fetch market price for {symbol}: {e}")
+                    
+                    # Используем лучшую доступную цену
+                    current_price = market_price if market_price else redis_price
+                    
+                    # Вычисляем P&L на основе актуальной цены
                     if entry and entry > 0:
                         # ✅ FIX v5: _pnl уже определена в этом модуле — убрал circular import
                         pnl = _pnl(direction, float(entry), float(current_price))
                     else:
                         pnl = 0.0
                     
+                    # Расчёт времени удержания
+                    duration_str = ""
+                    if opened_at:
+                        try:
+                            opened_dt = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                            duration = datetime.utcnow() - opened_dt.replace(tzinfo=None)
+                            hours = int(duration.total_seconds() / 3600)
+                            mins = int((duration.total_seconds() % 3600) / 60)
+                            duration_str = f"{hours}ч {mins}м" if hours > 0 else f"{mins}м"
+                        except:
+                            pass
+                    
+                    # Разница между ценой Redis и рынком
+                    price_diff = ""
+                    if market_price and redis_price and redis_price > 0:
+                        diff_pct = ((market_price - redis_price) / redis_price) * 100
+                        if abs(diff_pct) > 0.1:  # Показываем если разница > 0.1%
+                            price_diff = f"📊 Цена Redis→Рынок: {diff_pct:+.2f}%\n"
+                    
+                    # 🆕 Улучшенное сохранение с деталями
                     sig['status'] = 'closed_zombie'
                     sig['close_price'] = current_price
                     sig['close_time'] = datetime.utcnow().isoformat()
                     sig['pnl_pct'] = round(pnl, 4)
                     sig['tp_level'] = 'ZOMBIE'
+                    sig['price_source'] = price_source  # market или redis
+                    if market_price:
+                        sig['market_price_at_close'] = market_price
+                        sig['redis_price'] = redis_price
+                    if duration_str:
+                        sig['holding_duration'] = duration_str
                     self._save(symbol, sig)
                     self.micro_trailing.remove(symbol)
                     
-                    print(f"🧟 [ZOMBIE-CLEANUP] {symbol} {direction}: позиция в Redis но не на бирже → закрываем. P&L={pnl:.2f}%")
+                    # 🆕 Улучшенное логирование с деталями
+                    price_info = f"(рынок: {market_price:,.6f})" if market_price else f"(Redis: {redis_price:,.6f})"
+                    print(f"🧟 [ZOMBIE-CLEANUP] {symbol} {direction}: закрываем. "
+                          f"Вход: {entry:,.6f}, Выход: {current_price:,.6f} {price_info}, "
+                          f"P&L: {pnl:+.2f}%, Держали: {duration_str or 'N/A'}")
                     
-                    # Уведомление в Telegram
+                    # 🆕 Улучшенное уведомление с подробностями
                     d_emoji = '🟢' if direction == 'long' else '🔴'
+                    price_type = "📈 Рыночная" if market_price else "📋 Из Redis"
                     await self._notify(sig, (
                         f"🧟 <b>Zombie позиция закрыта</b>\n\n"
                         f"{d_emoji} <b>#{symbol}</b> {direction.upper()}\n"
                         f"📍 Вход: <b>${float(entry):,.6f}</b>\n"
+                        f"📍 Выход: <b>${float(current_price):,.6f}</b> ({price_type})\n"
                         f"📊 P&L: <b>{pnl:+.2f}%</b>\n"
-                        f"<i>Позиция не найдена на бирже — очищаем Redis</i>"
+                        f"⏱ Держали: <b>{duration_str or 'N/A'}</b>\n"
+                        f"{price_diff}"
+                        f"<i>⚠️ Позиция не найдена на бирже</i>"
                     ))
             except Exception as e:
                 print(f"⚠️ [ZOMBIE-CLEANUP] {symbol}: {e}")
@@ -375,6 +436,25 @@ class PositionTracker:
         entry     = _f(signal["entry_price"])
         position_side = "LONG" if direction == "long" else "SHORT"
 
+        # ✅ ШАГ 0: Проверяем что позиция ещё существует на бирже
+        position_exists = False
+        if self.auto_trader and self.auto_trader.bingx:
+            try:
+                all_positions = await self.auto_trader.bingx.get_positions()
+                clean_symbol = symbol.replace("-", "").replace("_", "").upper()
+                for pos in all_positions:
+                    pos_clean = pos.symbol.replace("-", "").replace("_", "").upper()
+                    if pos_clean == clean_symbol:
+                        position_exists = True
+                        break
+                if not position_exists:
+                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — возможно закрыта. Пропускаем обновление SL.")
+                    # Удаляем из Redis тоже
+                    self.redis.delete(f"{self.bot_type}:signal:{symbol}")
+                    return
+            except Exception as e:
+                print(f"⚠️  [PT] _move_sl: ошибка проверки позиции {symbol}: {e}")
+
         # ✅ ШАГ 1: Обновляем SL на бирже (если auto_trader доступен)
         exchange_updated = False
         if self.auto_trader and self.auto_trader.bingx:
@@ -470,6 +550,7 @@ class PositionTracker:
             signal["close_price"] = current_price
             signal["close_time"]  = datetime.utcnow().isoformat()
             signal["pnl_pct"]     = round(total_pnl, 4)
+            signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
             
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
@@ -595,6 +676,7 @@ class PositionTracker:
         signal["close_price"] = current_price
         signal["close_time"]  = datetime.utcnow().isoformat()
         signal["pnl_pct"]     = total_pnl
+        signal["pnl"]         = total_pnl  # ✅ FIX v6: dashboard compat
         # ✅ v2.5: Показываем "SL(после TP1)" если был взят TP
         max_tp_hit = signal.get("max_tp_reached", "")
         if max_tp_hit:
@@ -713,7 +795,8 @@ class PositionTracker:
                     "entry_price":  entry,
                     "close_price":  close_p,
                     "stop_loss":    sl_price,
-                    "pnl":          round(pnl_pct, 4),
+                    "pnl":          round(pnl_pct, 4),  # ✅ both fields
+                    "pnl_pct":      round(pnl_pct, 4),
                     "tp_level":     tp_level,
                     "close_type":   close_type,
                     "opened_at":    opened_at,
@@ -765,6 +848,90 @@ class PositionTracker:
 
         except Exception as e:
             print(f"[PT] _record_pnl: {e}")
+
+    # =========================================================================
+    # 🧟 ZOMBIE CLEANUP
+    # =========================================================================
+
+    async def cleanup_zombies(self) -> int:
+        """
+        🧹 Очистка zombie позиций (есть в Redis, но не на бирже)
+        
+        Returns:
+            int: Количество удаленных позиций
+        """
+        if not self.bingx:
+            print(f"[PT][ZOMBIE] ⚠️ Нет BingX клиента для проверки")
+            return 0
+            
+        removed_count = 0
+        try:
+            # Получаем все позиции из Redis
+            redis_positions = self.redis.get_all_positions(self.bot_type)
+            if not redis_positions:
+                print(f"[PT][ZOMBIE] ✅ Нет позиций в Redis для проверки")
+                return 0
+                
+            # Получаем позиции с биржи
+            try:
+                bingx_positions = await self.bingx.get_positions()
+            except Exception as e:
+                print(f"[PT][ZOMBIE] ⚠️ Ошибка получения позиций с биржи: {e}")
+                return 0
+                
+            # Создаем множество символов с позициями на бирже
+            bingx_symbols = set()
+            if isinstance(bingx_positions, list):
+                for pos in bingx_positions:
+                    symbol = pos.get("symbol", "")
+                    if symbol:
+                        # Нормализуем символ (убираем - если есть)
+                        bingx_symbols.add(symbol.replace("-", ""))
+                        bingx_symbols.add(symbol)  # И с дефисом тоже
+                        
+            print(f"[PT][ZOMBIE] 🔍 Проверяем {len(redis_positions)} позиций в Redis vs {len(bingx_symbols)} на бирже")
+            
+            # Проверяем каждую позицию из Redis
+            for symbol in list(redis_positions.keys()):
+                # Нормализуем символ для сравнения
+                normalized = symbol.replace("-", "")
+                
+                # Проверяем есть ли позиция на бирже
+                on_exchange = False
+                for bx_sym in bingx_symbols:
+                    if bx_sym.replace("-", "") == normalized:
+                        on_exchange = True
+                        break
+                        
+                if not on_exchange:
+                    # Проверяем можно ли получить цену (символ существует)
+                    try:
+                        ticker = await self.bingx.get_ticker(symbol)
+                        if ticker and ticker.get("price", 0) > 0:
+                            # Символ существует, но позиции нет - это zombie
+                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена доступна)")
+                            self.redis.remove_position(self.bot_type, symbol)
+                            removed_count += 1
+                        else:
+                            # Не можем получить цену - возможно символ делистед
+                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена недоступна - делист)")
+                            self.redis.remove_position(self.bot_type, symbol)
+                            removed_count += 1
+                    except Exception as e:
+                        print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (ошибка проверки: {e})")
+                        self.redis.remove_position(self.bot_type, symbol)
+                        removed_count += 1
+                        
+            if removed_count > 0:
+                print(f"[PT][ZOMBIE] ✅ Очищено {removed_count} zombie позиций")
+                await self._send(f"🧹 Очищено {removed_count} ghost-позиций из {self.bot_type.upper()}")
+            else:
+                print(f"[PT][ZOMBIE] ✅ Все позиции актуальны")
+                
+        except Exception as e:
+            print(f"[PT][ZOMBIE] 🔴 Ошибка cleanup: {e}")
+            
+        return removed_count
 
     # =========================================================================
     # HELPERS

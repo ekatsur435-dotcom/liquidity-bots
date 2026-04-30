@@ -14,10 +14,14 @@ from collections import defaultdict
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from api.binance_client import get_binance_client, MarketData as BinanceData
+from utils.binance_client import get_binance_client, MarketData as BinanceData
 from api.bybit_client import get_bybit_client, BybitMarketData
 from api.coinmarketcap_client import get_coinmarketcap_client, CMCMarketData
 from api.coinglass_client import get_coinglass_client, LiquidationData
+from api.coingecko_client import get_coingecko_client, CoinGeckoMarketData
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -55,6 +59,15 @@ class AggregatedMarketData:
     price_change_7d: Optional[float] = None
     price_change_30d: Optional[float] = None
     
+    # CoinGecko данные
+    cg_price_change_1h: Optional[float] = None
+    cg_price_change_24h: Optional[float] = None
+    cg_price_change_7d: Optional[float] = None
+    cg_ath: Optional[float] = None
+    cg_ath_change: Optional[float] = None
+    cg_market_cap_rank: Optional[int] = None
+    cg_is_trending: bool = False
+    
     # Coinglass данные
     liquidations_long: float = 0.0
     liquidations_short: float = 0.0
@@ -64,10 +77,14 @@ class AggregatedMarketData:
     funding_extreme: bool = False  # Экстремальный фандинг
     funding_direction: str = "neutral"  # shorts_pay, longs_pay, neutral
     
+    # API Source tracking
+    sources_available: Dict[str, bool] = field(default_factory=dict)
+    api_errors: List[str] = field(default_factory=list)
+    
     # Оценка качества данных
     data_quality_score: int = 0  # 0-100
     sources_used: int = 0
-    sources_total: int = 4
+    sources_total: int = 5  # Binance, Bybit, CMC, Coinglass, CoinGecko
     
     # Рекомендации
     confidence: str = "low"  # high, medium, low
@@ -86,12 +103,19 @@ class DataAggregator:
         self.bybit = get_bybit_client(testnet=True)  # Только для данных, не торговли
         self.cmc = get_coinmarketcap_client()
         self.coinglass = get_coinglass_client()
+        self.coingecko = get_coingecko_client()
         
         # Кэш
         self._cache = {}
         self._cache_ttl = 30  # 30 секунд кэш
         
-        print("🔄 DataAggregator initialized (Binance + Bybit + CMC + Coinglass)")
+        # Trending cache from CoinGecko
+        self._trending_cache: Optional[set] = None
+        self._trending_last_update: Optional[datetime] = None
+        
+        print("🔄 DataAggregator initialized (Binance + Bybit + CMC + Coinglass + CoinGecko)")
+        print("   Sources: 5 total, fallback chain enabled")
+        print("   Priority: Bybit → Binance → CoinGecko → CMC → Coinglass")
     
     async def get_aggregated_data(self, 
                                   symbol: str,
@@ -121,36 +145,55 @@ class DataAggregator:
         cmc_symbol = symbol.replace('USDT', '')  # BTC
         coinglass_symbol = symbol.replace('USDT', '')  # BTC
         
-        # Собираем данные параллельно
+        # Получаем trending symbols от CoinGecko (для бонуса)
+        trending_symbols = await self._get_trending_symbols()
+        
+        # Собираем данные параллельно с таймаутом и логированием
+        print(f"🔍 [DataAggregator] Fetching data for {symbol} from 5 sources...")
+        
         tasks = [
-            self._get_binance_data(binance_symbol),
-            self._get_bybit_data(symbol),  # Bybit использует полный символ
-            self._get_cmc_data(cmc_symbol),
-            self._get_coinglass_data(coinglass_symbol)
+            self._get_binance_data_with_log(binance_symbol),
+            self._get_bybit_data_with_log(symbol),  # Bybit использует полный символ
+            self._get_cmc_data_with_log(cmc_symbol),
+            self._get_coinglass_data_with_log(coinglass_symbol),
+            self._get_coingecko_data_with_log(cmc_symbol, trending_symbols)
         ]
         
-        binance_data, bybit_data, cmc_data, coinglass_data = await asyncio.gather(
-            *tasks, return_exceptions=True
-        )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Обрабатываем ошибки
-        if isinstance(binance_data, Exception):
-            print(f"Binance error for {symbol}: {binance_data}")
-            binance_data = None
-        if isinstance(bybit_data, Exception):
-            print(f"Bybit error for {symbol}: {bybit_data}")
-            bybit_data = None
-        if isinstance(cmc_data, Exception):
-            print(f"CMC error for {symbol}: {cmc_data}")
-            cmc_data = None
-        if isinstance(coinglass_data, Exception):
-            print(f"Coinglass error for {symbol}: {coinglass_data}")
-            coinglass_data = None
+        binance_data = results[0] if not isinstance(results[0], Exception) else None
+        bybit_data = results[1] if not isinstance(results[1], Exception) else None
+        cmc_data = results[2] if not isinstance(results[2], Exception) else None
+        coinglass_data = results[3] if not isinstance(results[3], Exception) else None
+        coingecko_data = results[4] if not isinstance(results[4], Exception) else None
+        
+        # Логируем доступность источников
+        sources_ok = {
+            'binance': binance_data is not None,
+            'bybit': bybit_data is not None,
+            'cmc': cmc_data is not None,
+            'coinglass': coinglass_data is not None,
+            'coingecko': coingecko_data is not None
+        }
+        
+        ok_count = sum(sources_ok.values())
+        print(f"✅ [DataAggregator] {symbol}: {ok_count}/5 sources OK")
+        print(f"   Sources: " + ", ".join([f"{k}={'✅' if v else '❌'}" for k, v in sources_ok.items()]))
         
         # Агрегируем данные
         aggregated = self._aggregate_data(
-            symbol, binance_data, bybit_data, cmc_data, coinglass_data
+            symbol, binance_data, bybit_data, cmc_data, coinglass_data, coingecko_data
         )
+        
+        # Добавляем информацию об источниках
+        aggregated.sources_available = sources_ok
+        
+        # Если мало источников — предупреждаем
+        if ok_count < 3:
+            print(f"⚠️ [DataAggregator] {symbol}: LOW DATA QUALITY ({ok_count}/5 sources)")
+            aggregated.confidence = "low"
+        elif ok_count >= 4:
+            aggregated.confidence = "high"
         
         # Сохраняем в кэш
         self._cache[cache_key] = (datetime.utcnow(), aggregated)
@@ -161,35 +204,77 @@ class DataAggregator:
         
         return aggregated
     
-    async def _get_binance_data(self, symbol: str) -> Optional[BinanceData]:
-        """Получить данные с Binance"""
+    # =========================================================================
+    # TRENDING SYMBOLS (CoinGecko)
+    # =========================================================================
+    
+    async def _get_trending_symbols(self) -> set:
+        """Получить трендовые символы от CoinGecko с кэшированием"""
+        if self._trending_cache and self._trending_last_update:
+            if (datetime.utcnow() - self._trending_last_update).total_seconds() < 300:  # 5 min cache
+                return self._trending_cache
+        
         try:
-            return await self.binance.get_complete_market_data(symbol)
+            trending = await self.coingecko.get_trending_symbols()
+            self._trending_cache = trending
+            self._trending_last_update = datetime.utcnow()
+            return trending
         except Exception as e:
-            print(f"Binance data fetch error: {e}")
+            logger.debug(f"CoinGecko trending fetch error: {e}")
+            return set()
+    
+    # =========================================================================
+    # API FETCH METHODS WITH LOGGING
+    # =========================================================================
+    
+    async def _get_binance_data_with_log(self, symbol: str) -> Optional[BinanceData]:
+        """Получить данные с Binance с логированием"""
+        try:
+            data = await self.binance.get_complete_market_data(symbol)
+            if data:
+                logger.debug(f"✅ Binance: {symbol} OK (price={data.price:.2f}, OI={data.open_interest:.0f})")
+            return data
+        except Exception as e:
+            logger.warning(f"❌ Binance: {symbol} failed - {type(e).__name__}: {str(e)[:50]}")
             return None
     
-    async def _get_bybit_data(self, symbol: str) -> Optional[BybitMarketData]:
-        """Получить данные с Bybit"""
+    async def _get_bybit_data_with_log(self, symbol: str) -> Optional[BybitMarketData]:
+        """Получить данные с Bybit с логированием"""
         try:
-            return await self.bybit.get_complete_market_data(symbol)
+            data = await self.bybit.get_complete_market_data(symbol)
+            if data:
+                logger.debug(f"✅ Bybit: {symbol} OK (price={data.price:.2f}, OI={data.oi_change_24h:.2f}%)")
+            return data
         except Exception as e:
-            print(f"Bybit data fetch error: {e}")
+            # Проверяем на geo-blocking
+            if "403" in str(e) or "Forbidden" in str(e) or "access denied" in str(e).lower():
+                logger.error(f"🚫 Bybit: {symbol} GEO-BLOCKED or access denied")
+            else:
+                logger.warning(f"❌ Bybit: {symbol} failed - {type(e).__name__}: {str(e)[:50]}")
             return None
     
-    async def _get_cmc_data(self, symbol: str) -> Optional[CMCMarketData]:
-        """Получить данные с CoinMarketCap"""
+    async def _get_cmc_data_with_log(self, symbol: str) -> Optional[CMCMarketData]:
+        """Получить данные с CoinMarketCap с логированием"""
         try:
             quotes = await self.cmc.get_quotes_latest([symbol])
             if quotes and symbol in quotes:
-                return quotes[symbol]
+                data = quotes[symbol]
+                logger.debug(f"✅ CMC: {symbol} OK (price={data.price:.2f}, rank=#{data.cmc_rank})")
+                return data
+            logger.debug(f"⚠️ CMC: {symbol} not found in quotes")
             return None
         except Exception as e:
-            print(f"CMC data fetch error: {e}")
+            error_str = str(e)
+            if "429" in error_str:
+                logger.warning(f"⏱️ CMC: {symbol} RATE LIMITED")
+            elif "401" in error_str or "403" in error_str:
+                logger.error(f"🔑 CMC: {symbol} API KEY INVALID")
+            else:
+                logger.warning(f"❌ CMC: {symbol} failed - {type(e).__name__}: {error_str[:50]}")
             return None
     
-    async def _get_coinglass_data(self, symbol: str) -> Optional[Dict]:
-        """Получить данные с Coinglass"""
+    async def _get_coinglass_data_with_log(self, symbol: str) -> Optional[Dict]:
+        """Получить данные с Coinglass с логированием"""
         try:
             data = {}
             
@@ -197,6 +282,7 @@ class DataAggregator:
             liq = await self.coinglass.get_liquidation_data(symbol, time_type="1h", limit=4)
             if liq:
                 data['liquidations'] = liq
+                logger.debug(f"✅ Coinglass: {symbol} liquidations OK (${liq.total_liquidations:,.0f})")
             
             # Фандинг
             funding = await self.coinglass.get_funding_rate(symbol)
@@ -210,19 +296,66 @@ class DataAggregator:
             
             return data if data else None
         except Exception as e:
-            print(f"Coinglass data fetch error: {e}")
+            error_str = str(e)
+            if "401" in error_str:
+                logger.error(f"🔑 Coinglass: API KEY INVALID or missing")
+            elif "429" in error_str:
+                logger.warning(f"⏱️ Coinglass: {symbol} RATE LIMITED")
+            else:
+                logger.debug(f"⚠️ Coinglass: {symbol} - {error_str[:50]}")
             return None
+    
+    async def _get_coingecko_data_with_log(self, symbol: str, trending_symbols: set) -> Optional[CoinGeckoMarketData]:
+        """Получить данные с CoinGecko с логированием"""
+        try:
+            data = await self.coingecko.get_coin_data(symbol)
+            if data:
+                # Проверяем trending
+                is_trending = symbol.upper() in trending_symbols
+                logger.debug(f"✅ CoinGecko: {symbol} OK (price={data.price:.2f}, 24h={data.price_change_24h:.2f}%, trending={is_trending})")
+                return data
+            return None
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str:
+                logger.warning(f"⏱️ CoinGecko: {symbol} RATE LIMITED (slow down)")
+            elif "403" in error_str or "access denied" in error_str.lower():
+                logger.warning(f"🚫 CoinGecko: {symbol} access denied (geo-block?)")
+            else:
+                logger.debug(f"⚠️ CoinGecko: {symbol} - {error_str[:50]}")
+            return None
+    
+    # =========================================================================
+    # LEGACY METHODS (для обратной совместимости)
+    # =========================================================================
+    
+    async def _get_binance_data(self, symbol: str) -> Optional[BinanceData]:
+        """Получить данные с Binance (legacy)"""
+        return await self._get_binance_data_with_log(symbol)
+    
+    async def _get_bybit_data(self, symbol: str) -> Optional[BybitMarketData]:
+        """Получить данные с Bybit (legacy)"""
+        return await self._get_bybit_data_with_log(symbol)
+    
+    async def _get_cmc_data(self, symbol: str) -> Optional[CMCMarketData]:
+        """Получить данные с CoinMarketCap (legacy)"""
+        return await self._get_cmc_data_with_log(symbol)
+    
+    async def _get_coinglass_data(self, symbol: str) -> Optional[Dict]:
+        """Получить данные с Coinglass (legacy)"""
+        return await self._get_coinglass_data_with_log(symbol)
     
     def _aggregate_data(self,
                        symbol: str,
                        binance_data: Optional[BinanceData],
                        bybit_data: Optional[BybitMarketData],
                        cmc_data: Optional[CMCMarketData],
-                       coinglass_data: Optional[Dict]) -> AggregatedMarketData:
+                       coinglass_data: Optional[Dict],
+                       coingecko_data: Optional[CoinGeckoMarketData] = None) -> AggregatedMarketData:
         """
-        Агрегирует данные из всех источников
+        Агрегирует данные из всех источников включая CoinGecko
         """
-        # Собираем цены из доступных источников
+        # Собираем цены из доступных источников (включая CoinGecko)
         prices = []
         if binance_data:
             prices.append(("binance", binance_data.price))
@@ -230,6 +363,8 @@ class DataAggregator:
             prices.append(("bybit", bybit_data.price))
         if cmc_data:
             prices.append(("cmc", cmc_data.price))
+        if coingecko_data:
+            prices.append(("coingecko", coingecko_data.price))
         
         # Рассчитываем среднюю цену и спред
         if prices:
@@ -299,7 +434,7 @@ class DataAggregator:
         
         max_volume = max(volumes) if volumes else 0.0
         
-        # Изменение цены (среднее)
+        # Изменение цены (среднее) - включаем CoinGecko
         price_changes = []
         if binance_data:
             price_changes.append(binance_data.price_change_24h)
@@ -307,8 +442,16 @@ class DataAggregator:
             price_changes.append(bybit_data.price_change_24h)
         if cmc_data:
             price_changes.append(cmc_data.price_change_24h)
+        if coingecko_data:
+            price_changes.append(coingecko_data.price_change_24h)
         
         avg_price_change = sum(price_changes) / len(price_changes) if price_changes else 0.0
+        
+        # Проверяем trending статус от CoinGecko
+        is_trending = False
+        if coingecko_data:
+            # CoinGecko trending проверяется отдельно в _get_coingecko_data_with_log
+            pass  # trending status tracked separately
         
         # Coinglass данные
         liq_long = 0.0
@@ -336,14 +479,14 @@ class DataAggregator:
                 funding_extreme = f.extreme_positive or f.extreme_negative
                 funding_dir = "shorts_pay" if f.current_funding > 0 else "longs_pay" if f.current_funding < 0 else "neutral"
         
-        # Оценка качества данных
-        sources_used = sum([1 for d in [binance_data, bybit_data, cmc_data, coinglass_data] if d])
-        data_quality = int((sources_used / 4) * 100)
+        # Оценка качества данных (теперь 5 источников)
+        sources_used = sum([1 for d in [binance_data, bybit_data, cmc_data, coinglass_data, coingecko_data] if d])
+        data_quality = int((sources_used / 5) * 100)
         
         # Уверенность на основе качества и согласия
-        if sources_used >= 3 and price_spread < 0.5:
+        if sources_used >= 4 and price_spread < 0.5:
             confidence = "high"
-        elif sources_used >= 2 and price_spread < 1.0:
+        elif sources_used >= 3 and price_spread < 1.0:
             confidence = "medium"
         else:
             confidence = "low"
@@ -376,9 +519,18 @@ class DataAggregator:
             liquidation_signal=liq_signal,
             funding_extreme=funding_extreme,
             funding_direction=funding_dir,
+            # CoinGecko данные
+            cg_price_change_1h=coingecko_data.price_change_1h if coingecko_data else None,
+            cg_price_change_24h=coingecko_data.price_change_24h if coingecko_data else None,
+            cg_price_change_7d=coingecko_data.price_change_7d if coingecko_data else None,
+            cg_ath=coingecko_data.ath if coingecko_data else None,
+            cg_ath_change=coingecko_data.ath_change_percentage if coingecko_data else None,
+            cg_market_cap_rank=coingecko_data.market_cap_rank if coingecko_data else None,
+            cg_is_trending=is_trending,
+            
             data_quality_score=data_quality,
             sources_used=sources_used,
-            sources_total=4,
+            sources_total=5,
             confidence=confidence,
             data_age_seconds=0.0
         )
