@@ -167,12 +167,16 @@ class BinanceFuturesClient:
     """
     Клиент рыночных данных.
     USE_BINANCE=false (default) → Bybit, без прокси
-    USE_BINANCE=true            → Binance через прокси
+    USE_BINANCE=true → Binance, с прокси (если заданы)
+    
+    🆕 v2.0: Circuit Breaker — отключает мертвые эндпоинты на 1 час
     """
-
+    
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
-
+    CIRCUIT_BREAKER_DURATION = 3600  # 1 час в секундах
+    CIRCUIT_BREAKER_THRESHOLD = 3     # 3 ошибки подряд = отключение
+    
     def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.session: Optional[aiohttp.ClientSession] = None
@@ -187,8 +191,47 @@ class BinanceFuturesClient:
         self._proxies     = [p.strip() for p in proxy_env.split(",") if p.strip()]
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
+        
+        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool}
+        self._circuit_breaker: Dict[str, Dict] = {}
 
         print(f"🔧 Market client: {'Binance+proxy' if self._try_binance else 'Bybit'} mode")
+    
+    def _is_circuit_open(self, endpoint: str) -> bool:
+        """Проверяет, открыт ли Circuit Breaker для эндпоинта"""
+        if endpoint not in self._circuit_breaker:
+            return False
+        cb = self._circuit_breaker[endpoint]
+        if cb.get("open", False):
+            # Проверяем, не пора ли закрыть
+            elapsed = time.time() - cb.get("last_failure", 0)
+            if elapsed > self.CIRCUIT_BREAKER_DURATION:
+                # Закрываем circuit
+                cb["open"] = False
+                cb["failures"] = 0
+                print(f"🔓 [Circuit Breaker] {endpoint}: CLOSED (timeout)")
+                return False
+            return True
+        return False
+    
+    def _record_failure(self, endpoint: str, status: int = 0):
+        """Записывает ошибку для Circuit Breaker"""
+        if endpoint not in self._circuit_breaker:
+            self._circuit_breaker[endpoint] = {"failures": 0, "last_failure": 0, "open": False}
+        
+        cb = self._circuit_breaker[endpoint]
+        cb["failures"] += 1
+        cb["last_failure"] = time.time()
+        
+        # Открываем circuit если слишком много ошибок 404/418
+        if status in (404, 418) or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
+            cb["open"] = True
+            print(f"🔒 [Circuit Breaker] {endpoint}: OPENED ({cb['failures']} failures, status={status})")
+    
+    def _record_success(self, endpoint: str):
+        """Сбрасывает счетчик ошибок при успехе"""
+        if endpoint in self._circuit_breaker:
+            self._circuit_breaker[endpoint]["failures"] = 0
 
     def _next_proxy(self) -> Optional[str]:
         if not self._proxies:
