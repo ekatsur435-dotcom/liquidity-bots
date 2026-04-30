@@ -167,16 +167,16 @@ class BinanceFuturesClient:
     """
     Клиент рыночных данных.
     USE_BINANCE=false (default) → Bybit, без прокси
-    USE_BINANCE=true → Binance, с прокси (если заданы)
-    
-    🆕 v2.0: Circuit Breaker — отключает мертвые эндпоинты на 1 час
+    USE_BINANCE=true            → Binance через прокси
     """
-    
+
+    # ✅ FIX #4: Class-level flag — allForceOrders заблокирован Binance для Singapore
+    # После первого 400/418 выключается на весь runtime, экономит 200 calls/scan
+    _allForceOrders_disabled: bool = False
+
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
-    CIRCUIT_BREAKER_DURATION = 3600  # 1 час в секундах
-    CIRCUIT_BREAKER_THRESHOLD = 3     # 3 ошибки подряд = отключение
-    
+
     def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.session: Optional[aiohttp.ClientSession] = None
@@ -191,47 +191,8 @@ class BinanceFuturesClient:
         self._proxies     = [p.strip() for p in proxy_env.split(",") if p.strip()]
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
-        
-        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool}
-        self._circuit_breaker: Dict[str, Dict] = {}
 
         print(f"🔧 Market client: {'Binance+proxy' if self._try_binance else 'Bybit'} mode")
-    
-    def _is_circuit_open(self, endpoint: str) -> bool:
-        """Проверяет, открыт ли Circuit Breaker для эндпоинта"""
-        if endpoint not in self._circuit_breaker:
-            return False
-        cb = self._circuit_breaker[endpoint]
-        if cb.get("open", False):
-            # Проверяем, не пора ли закрыть
-            elapsed = time.time() - cb.get("last_failure", 0)
-            if elapsed > self.CIRCUIT_BREAKER_DURATION:
-                # Закрываем circuit
-                cb["open"] = False
-                cb["failures"] = 0
-                print(f"🔓 [Circuit Breaker] {endpoint}: CLOSED (timeout)")
-                return False
-            return True
-        return False
-    
-    def _record_failure(self, endpoint: str, status: int = 0):
-        """Записывает ошибку для Circuit Breaker"""
-        if endpoint not in self._circuit_breaker:
-            self._circuit_breaker[endpoint] = {"failures": 0, "last_failure": 0, "open": False}
-        
-        cb = self._circuit_breaker[endpoint]
-        cb["failures"] += 1
-        cb["last_failure"] = time.time()
-        
-        # Открываем circuit если слишком много ошибок 404/418
-        if status in (404, 418) or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
-            cb["open"] = True
-            print(f"🔒 [Circuit Breaker] {endpoint}: OPENED ({cb['failures']} failures, status={status})")
-    
-    def _record_success(self, endpoint: str):
-        """Сбрасывает счетчик ошибок при успехе"""
-        if endpoint in self._circuit_breaker:
-            self._circuit_breaker[endpoint]["failures"] = 0
 
     def _next_proxy(self) -> Optional[str]:
         if not self._proxies:
@@ -330,14 +291,9 @@ class BinanceFuturesClient:
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         """
-        ✅ v3.1 Circuit Breaker + Отказоустойчивость
-        Если Circuit Breaker открыт — сразу возвращаем None (fallback на Bybit)
+        ✅ v3.0 Отказоустойчивость: пробуем все прокси по очереди
+        Если все прокси упали → возвращаем None (вызывающий код попробует Bybit)
         """
-        # 🆕 CIRCUIT BREAKER: проверяем, не отключен ли эндпоинт
-        if self._is_circuit_open(endpoint):
-            print(f"⚡ [Circuit Breaker] {endpoint} skipped (circuit OPEN)")
-            return None
-        
         await self._rate_limit()
         
         errors = []
@@ -352,13 +308,9 @@ class BinanceFuturesClient:
                 ssl=False
             ) as resp:
                 if resp.status == 200:
-                    self._record_success(endpoint)
                     print(f"   ✅ [BINANCE] Direct connection success: {endpoint}")
                     return await resp.json()
                 else:
-                    # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
-                    if resp.status in (404, 418, 400):
-                        self._record_failure(endpoint, resp.status)
                     errors.append(f"direct:{resp.status}")
         except Exception as e:
             errors.append(f"direct:{type(e).__name__}")
@@ -376,7 +328,6 @@ class BinanceFuturesClient:
                     ssl=False
                 ) as resp:
                     if resp.status == 200:
-                        self._record_success(endpoint)
                         # ✅ Успех! Запоминаем рабочий прокси
                         if self._active_proxy != proxy:
                             self._active_proxy = proxy
@@ -385,17 +336,13 @@ class BinanceFuturesClient:
                         return await resp.json()
                     else:
                         # HTTP ошибка (403, 429, etc)
-                        # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
-                        if resp.status in (404, 418, 400):
-                            self._record_failure(endpoint, resp.status)
                         errors.append(f"proxy{idx+1}:{resp.status}")
                         
             except Exception as e:
                 errors.append(f"proxy{idx+1}:{type(e).__name__}")
                 continue
         
-        # ❌ Все попытки упали — записываем общий failure
-        self._record_failure(endpoint, 0)
+        # ❌ Все попытки упали
         error_summary = ", ".join(errors[:4])  # Первые 4 ошибки
         print(f"🔴 [BINANCE] All connections failed for {endpoint}. Errors: {error_summary}")
         return None
@@ -814,10 +761,40 @@ class BinanceFuturesClient:
         except Exception:
             pass
         
-        # 🔴 REMOVED: Binance /fapi/v1/allForceOrders — эндпоинт удалён Binance (HTTP 418/400)
-        # Используем OKX и Coinglass как единственные источники
+        # Level 3 — Binance allForceOrders
+        # ✅ FIX #4: Этот endpoint заблокирован Binance для Singapore/proxy (всегда 400/418)
+        # Используем class-level флаг чтобы не тратить 4 попытки × 50 символов = 200 вызовов/цикл
+        if self._use_binance and not BinanceFuturesClient._allForceOrders_disabled:
+            try:
+                d = await self._binance("/fapi/v1/allForceOrders",
+                                        {"symbol": symbol, "limit": limit})
+                if d:
+                    long_liq = 0.0
+                    short_liq = 0.0
+                    for order in d:
+                        qty = float(order.get("origQty", 0))
+                        price = float(order.get("avgPrice", 0))
+                        side = order.get("side", "").upper()
+                        usd = qty * price
+                        if side == "SELL":
+                            long_liq += usd
+                        else:
+                            short_liq += usd
+                    total = long_liq + short_liq
+                    print(f"   ✅ Liquidations from Binance: ${total:,.0f}")
+                    return {
+                        "total_usd": total,
+                        "long_liq_usd": long_liq,
+                        "short_liq_usd": short_liq,
+                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT" if short_liq > long_liq else None
+                    }
+            except Exception as e:
+                err_str = str(e)
+                if any(code in err_str for code in ["400", "418", "403"]):
+                    BinanceFuturesClient._allForceOrders_disabled = True
+                    print("⛔ [FIX#4] allForceOrders: permanently disabled (Binance 400/418 — Singapore blocked)")
         
-        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance API disabled, OKX/Coinglass only)")
+        print(f"   ⚠️ Liquidation data unavailable for {symbol}")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
@@ -1011,8 +988,8 @@ class BinanceFuturesClient:
                 self.get_open_interest(symbol),
                 self.get_long_short_ratio(symbol),
                 self.get_24h_ticker(symbol),
-                self.get_klines(symbol, "1h", 200),
-                self.get_klines(symbol, "15m", 200),   # ← NEW: 15м данные (увеличили до 200)
+                self.get_klines(symbol, "1h", 100),
+                self.get_klines(symbol, "15m", 50),   # ← NEW: 15м данные
                 return_exceptions=True
             )
 

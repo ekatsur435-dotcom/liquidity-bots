@@ -125,7 +125,6 @@ class Config:
     # SHORT_TRAIL_ACTIVATION - Активация trailing SL (default: 0.030)
     # BTC_BLOCK_SHORT_THRESHOLD - Блокировка при пампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
-    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_SHORT_SCORE → MIN_SCORE_SHORT для соответствия Render
@@ -142,9 +141,7 @@ class Config:
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
-    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
-    
+
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
     TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
@@ -573,7 +570,6 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
-                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -717,15 +713,6 @@ async def lifespan(app: FastAPI):
         redis_client=state.redis, binance_client=state.binance,
         config=Config, auto_trader=state.auto_trader,
     )
-
-    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
-    print("🧹 [STARTUP] Проверка zombie позиций...")
-    try:
-        cleaned = await state.tracker.cleanup_zombies()
-        if cleaned > 0:
-            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
-    except Exception as e:
-        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
 
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
@@ -940,19 +927,30 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-SHORT] {symbol}: {w}")
 
+        # ✅ FIX #3: RSI GUARD — шорты только в зонах перекупленности/нейтрали
+        # Не открываем шорты когда RSI < 42 (рынок уже перепродан — рискованно шортить)
+        rsi_guard = md.rsi_1h or 50
+        rsi_min_short = float(os.getenv("SHORT_RSI_MIN", "42"))
+        if rsi_guard < rsi_min_short:
+            print(f"⛔ [RSI-GUARD-SHORT] {symbol}: RSI={rsi_guard:.1f} < {rsi_min_short} — перепроданность, не зона для шорта")
+            return None
+
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # Увеличили до 200
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
-        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
-        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
-        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 14)
-        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
-            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
+        # ✅ Multi-TF загрузка: 15m + 30m + 2h + 4h
+        # ✅ FIX #8: Убираем дублирующий запрос 1h (уже есть в md через get_complete_market_data)
+        # ✅ FIX кол-во свечей: 100→200 для надёжного AMD/OB детектора
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 120)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 150)
+        ohlcv_2h_task  = state.binance.get_klines(symbol, "2h",  50)
+        ohlcv_4h_task  = state.binance.get_klines(symbol, "4h",  40)
+        ohlcv_15m, ohlcv_30m, ohlcv_2h, ohlcv_4h = await asyncio.gather(
+            ohlcv_15m_task, ohlcv_30m_task, ohlcv_2h_task, ohlcv_4h_task
         )
+        # Используем klines из MarketData для 1h вместо нового запроса
+        ohlcv_1h = getattr(md, 'klines_1h', None) or await state.binance.get_klines(symbol, "1h", 100)
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
         if hasattr(state, 'candle_manager') and state.candle_manager:
@@ -973,19 +971,12 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
                 if insufficient:
                     print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
-                    
-                    # 🆕 TF FALLBACK: если 1h/30m нет данных, используем 15m
-                    if '30m' in insufficient or '1h' in insufficient:
-                        try:
-                            ohlcv_15m_fallback = await state.binance.get_klines(symbol, "15m", 200)
-                            if ohlcv_15m_fallback and len(ohlcv_15m_fallback) >= 50:
-                                state.candle_manager.update_candles(symbol, "15m", ohlcv_15m_fallback)
-                                print(f"   📊 [TF-FALLBACK] {symbol}: Using 15m data instead of {insufficient}")
-                                # Обновляем insufficient - 15m теперь есть
-                                quality = state.candle_manager.get_all_data_quality(symbol)
-                                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
-                        except Exception as e:
-                            print(f"   ⚠️ [TF-FALLBACK] {symbol}: Failed to get 15m: {e}")
+                    # ✅ FIX #5: Добавляем в skip-лист если много TF без данных
+                    if len(insufficient) >= 3:
+                        if not hasattr(state, '_insufficient_symbols'):
+                            state._insufficient_symbols = set()
+                        state._insufficient_symbols.add(symbol)
+                        print(f"⛔ [DATA-SKIP] {symbol}: добавлен в skip-лист ({len(insufficient)} TF без данных)")
             except Exception as e:
                 print(f"[CandleHistory] {symbol} error: {e}")
 
@@ -1021,7 +1012,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != primary_tf and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
@@ -1314,21 +1305,10 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # FIX v7: Bear Market Pass — score >= MIN-20 -> pass with LOW confidence
-                bear_threshold = max(35, Config.MIN_SCORE - 20)
-                if score_result.total_score >= bear_threshold:
-                    print(f"\U0001f7e1 [FILTER0-SCORE] {symbol}: score={score_result.total_score} BEAR PASS")
-                    from core.scorer import ScoreResult, Confidence
-                    score_result = ScoreResult(
-                        total_score=score_result.total_score, max_possible=score_result.max_possible,
-                        direction=score_result.direction, is_valid=True,
-                        confidence=Confidence.LOW, grade="C",
-                        components=score_result.components,
-                        reasons=score_result.reasons + ["Bear market pass"],
-                    )
-                else:
-                    print(f"\U0001f534 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{bear_threshold} skip")
-                    return None
+                # ✅ FIX #2: Убираем Bear Pass — строгий порог MIN_SCORE
+                # Было: bear_threshold = max(35, Config.MIN_SCORE - 20) — пропускало мусор
+                print(f"🔴 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{Config.MIN_SCORE} skip")
+                return None
 
         price       = md.price
         base_score_before_override = score_result.total_score  # Сохраняем базовый скор
@@ -1364,7 +1344,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     return None
                 
                 # Применяем корректировку
-                final_score += market_context_adjustment
+                final_score = min(100, max(0, final_score + market_context_adjustment))  # ✅ FIX #1: Score Cap
                 
                 print(f"📊 [MARKET-INTEGRATOR] {symbol}: score adjusted by {market_context_adjustment:+d} "
                       f"(quality: {ctx.data_quality_score}%, confidence: {adjustment['confidence']})")
@@ -1460,7 +1440,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
                 wave_boost = 10 if wave_result.confidence > 0.75 else 5
-                final_score += wave_boost
+                final_score = min(100, final_score + wave_boost)  # ✅ FIX #1: Score Cap
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
                 print(f"🎯 [ELLIOTT-BOOST-SHORT] {symbol}: Идеальная волна {wave_result.wave}! "
@@ -1468,7 +1448,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             
             # 📈 ТРЕНД (Волна 3) — небольшой бонус
             elif wave_result.position == WavePosition.TREND:
-                final_score += 3
+                final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
                 reasons.append(f"🌊 Elliott Wave 3 (trend) +3")
                 print(f"📈 [ELLIOTT-TREND-SHORT] {symbol}: Волна 3 тренда")
             
@@ -1543,7 +1523,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 smc = get_smc_result(_ohlcv(ohlcv_primary), "short",
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
-                    final_score += smc.score_bonus
+                    final_score = min(100, final_score + smc.score_bonus)  # ✅ FIX #1: Score Cap
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl > price:
                     stop_loss = smc.refined_sl
@@ -1615,6 +1595,23 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         if (stop_loss - price) / price < min_sl_dist:
             stop_loss = price * (1 + Config.SL_BUFFER / 100)
 
+        # ✅ FIX #10: ATR-валидация минимального SL — SL не может быть меньше ATR×1.5
+        atr_pct_val = getattr(md, 'atr_pct', 0.0) or 0.0
+        if atr_pct_val > 0:
+            min_sl_pct = max(Config.SL_BUFFER, atr_pct_val * 1.5)
+            actual_sl_pct = (stop_loss - price) / price * 100
+            if actual_sl_pct < min_sl_pct:
+                stop_loss = price * (1 + min_sl_pct / 100)
+                print(f"📐 [ATR-SL-SHORT] {symbol}: SL расширен {actual_sl_pct:.2f}%→{min_sl_pct:.2f}% (ATR={atr_pct_val:.2f}%)")
+
+        # ✅ FIX R:R: TP1 должен быть минимум в 1.3× от SL
+        if stop_loss > price:
+            sl_pct_check = (stop_loss - price) / price * 100
+            tp1_pct_check = Config.TP_LEVELS[0] if Config.TP_LEVELS else 2.5
+            if tp1_pct_check / max(sl_pct_check, 0.01) < 1.3:
+                print(f"🔴 [RR-FILTER-SHORT] {symbol}: R:R={tp1_pct_check/sl_pct_check:.2f} < 1.3 — плохое соотношение, skip")
+                return None
+
         # TP НИЖЕ входа для SHORT
         take_profits = [
             (round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
@@ -1660,6 +1657,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 best_pattern = "SMC_STRUCTURE"
         
         print(f"🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
+        # ✅ FIX #1: ФИНАЛЬНЫЙ HARD CAP — скор никогда не превышает 100%
+        final_score = max(0, min(100, final_score))
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
@@ -1774,6 +1773,10 @@ async def scan_market():
 
     for symbol in state.watchlist:
         try:
+            # ✅ FIX #5: Пропускаем символы с хронически недостаточными данными
+            if hasattr(state, '_insufficient_symbols') and symbol in state._insufficient_symbols:
+                continue
+
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 

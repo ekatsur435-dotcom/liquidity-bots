@@ -32,8 +32,7 @@ class UpstashRedisClient:
         # TTL для разных типов данных (в секундах)
         self.TTL = {
             "signal": 86400,        # 24 часа для сигналов
-            "position": 604800,     # 7 дней для подтвержденных позиций
-            "position_unconfirmed": 60,  # 🆕 60 сек для НЕподтвержденных позиций
+            "position": 604800,     # 7 дней для позиций
             "state": 3600,          # 1 час для состояния
             "stats": 2592000,       # 30 дней для статистики
             "cache": 300            # 5 минут для кэша API
@@ -56,22 +55,9 @@ class UpstashRedisClient:
             key = f"{bot_type}:signals:{symbol}"
             if "timestamp" not in signal_data:
                 signal_data["timestamp"] = datetime.utcnow().isoformat()
-            
-            # 🆕 Динамический TTL: 60 сек для неподтвержденных, 7 дней для подтвержденных
-            confirmed = signal_data.get("confirmed", False)
-            if confirmed:
-                ttl = self.TTL["position"]  # 7 дней
-            else:
-                ttl = self.TTL["position_unconfirmed"]  # 60 сек
-            
             self.client.lpush(key, json.dumps(signal_data))
-            self.client.expire(key, ttl)
+            self.client.expire(key, self.TTL["signal"])
             self.client.ltrim(key, 0, 49)
-            
-            # 🆕 Логирование TTL для дебага
-            if not confirmed:
-                print(f"⏱️ [Redis] {symbol}: TTL=60s (unconfirmed), will auto-expire if not confirmed")
-            
             return True
         except Exception as e:
             print(f"Error saving signal: {e}")

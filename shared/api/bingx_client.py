@@ -12,7 +12,6 @@ BingX Futures API Client  v2.7
 """
 
 import os, json, hmac, hashlib, time
-import asyncio
 from typing import Optional, Dict, List, Any, Set, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -86,12 +85,9 @@ class BingXClient:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
         self._time_offset: int = 0   # ✅ FIX: server time offset
-        # ✅ RATE LIMITING: минимум 500ms между запросами (избегаем 109429)
+        # ✅ RATE LIMITING: минимум 300ms между запросами (избегаем 109429)
         self._last_request_time: float = 0
-        self._rate_limit_delay: float = 0.5  # 500ms (was 300ms)
-        # 🆕 Семафор для предотвращения параллельных запросов к klines
-        import asyncio
-        self._klines_semaphore = asyncio.Semaphore(3)  # Макс 3 параллельных запроса
+        self._rate_limit_delay: float = 0.3  # 300ms
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -254,25 +250,14 @@ class BingXClient:
         })
 
     async def is_symbol_active(self, symbol: str) -> bool:
-        """Проверяет активен ли символ на BingX. Ищет в обоих форматах: XXXUSDT и XXX-USDT."""
-        symbol_normalized = self._normalize_symbol(symbol)  # XXXUSDT
-        symbol_with_dash = f"{symbol_normalized[:-4]}-{symbol_normalized[-4:]}" if symbol_normalized.endswith('USDT') else symbol_normalized
-        
+        symbol = self._normalize_symbol(symbol)
         await self._load_contracts()
-        
-        # Ищем в обоих форматах
-        info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
-        
+        info = self._symbol_info_cache.get(symbol)
         if info is None:
-            print(f"⚠️ [BingX] {symbol} (форматы: {symbol_normalized}/{symbol_with_dash}) не найден в кэше ({len(self._symbol_info_cache)} контрактов), обновляем список...")
+            # ✅ FIX: символ не найден в кэше — пробуем обновить список контрактов
+            print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
             await self._load_contracts(force_refresh=True)
-            info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
-            
-        if info is None:
-            # Показываем примеры символов из кэша для отладки
-            sample_keys = list(self._symbol_info_cache.keys())[:5]
-            print(f"   📋 Примеры контрактов в кэше: {sample_keys}")
-            
+            info = self._symbol_info_cache.get(symbol)
         return info.get("online", True) if info else False
 
     async def _round_price(self, symbol: str, price: float) -> float:
@@ -636,66 +621,30 @@ class BingXClient:
         Returns:
             List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
         """
-        # 🆕 Семафор: ограничиваем параллельные запросы к klines
-        async with self._klines_semaphore:
-            try:
-                symbol_api = self._normalize_symbol(symbol)
-                result = await self._make_request(
-                    "GET", "/openApi/swap/v3/quote/klines",
-                    params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
-                )
-                
-                if result and result.get("code") == 0:
-                    data = result.get("data", [])
-                    klines = []
-                    for item in data:
-                        klines.append({
-                            'time': item[0],      # Open time
-                            'open': float(item[1]),
-                            'high': float(item[2]),
-                            'low': float(item[3]),
-                            'close': float(item[4]),
-                            'volume': float(item[5])
-                        })
-                    return klines
-                return []
-            except Exception as e:
-                print(f"⚠️  get_klines {symbol}: {e}")
-                return []
-
-    async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """
-        💰 Получить текущую цену тикера (для zombie cleanup)
-        
-        Args:
-            symbol: Торговая пара (BTC-USDT)
-        
-        Returns:
-            Dict: {'price': float, 'symbol': str} или None
-        """
         try:
             symbol_api = self._normalize_symbol(symbol)
             result = await self._make_request(
-                "GET", "/openApi/swap/v2/quote/ticker",
-                params={"symbol": symbol_api}
+                "GET", "/openApi/swap/v3/quote/klines",
+                params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
             )
             
             if result and result.get("code") == 0:
                 data = result.get("data", [])
-                if data and len(data) > 0:
-                    ticker = data[0]
-                    return {
-                        'symbol': symbol,
-                        'price': float(ticker.get('lastPrice', 0)),
-                        'bid': float(ticker.get('bidPrice', 0)),
-                        'ask': float(ticker.get('askPrice', 0)),
-                        'volume24h': float(ticker.get('volume', 0)),
-                        'change24h': float(ticker.get('priceChangePercent', 0))
-                    }
-            return None
+                klines = []
+                for item in data:
+                    klines.append({
+                        'time': item[0],      # Open time
+                        'open': float(item[1]),
+                        'high': float(item[2]),
+                        'low': float(item[3]),
+                        'close': float(item[4]),
+                        'volume': float(item[5])
+                    })
+                return klines
+            return []
         except Exception as e:
-            print(f"⚠️  get_ticker {symbol}: {e}")
-            return None
+            print(f"⚠️  get_klines {symbol}: {e}")
+            return []
 
     async def check_trend(self, symbol: str, direction: str) -> Tuple[bool, str]:
         """
@@ -706,7 +655,7 @@ class BingXClient:
         """
         try:
             # Получаем свечи 1H
-            klines = await self.get_klines(symbol, interval="1h", limit=200)  # Увеличили до 200
+            klines = await self.get_klines(symbol, interval="1h", limit=100)
             if len(klines) < 50:
                 return True, "Недостаточно данных для анализа тренда"
             
