@@ -973,6 +973,19 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
                 if insufficient:
                     print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
+                    
+                    # 🆕 TF FALLBACK: если 1h/30m нет данных, используем 15m
+                    if '30m' in insufficient or '1h' in insufficient:
+                        try:
+                            ohlcv_15m_fallback = await state.binance.get_klines(symbol, "15m", 200)
+                            if ohlcv_15m_fallback and len(ohlcv_15m_fallback) >= 50:
+                                state.candle_manager.update_candles(symbol, "15m", ohlcv_15m_fallback)
+                                print(f"   📊 [TF-FALLBACK] {symbol}: Using 15m data instead of {insufficient}")
+                                # Обновляем insufficient - 15m теперь есть
+                                quality = state.candle_manager.get_all_data_quality(symbol)
+                                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
+                        except Exception as e:
+                            print(f"   ⚠️ [TF-FALLBACK] {symbol}: Failed to get 15m: {e}")
             except Exception as e:
                 print(f"[CandleHistory] {symbol} error: {e}")
 
