@@ -979,8 +979,8 @@ class BinanceFuturesClient:
                 self.get_open_interest(symbol),
                 self.get_long_short_ratio(symbol),
                 self.get_24h_ticker(symbol),
-                self.get_klines(symbol, "1h", 100),
-                self.get_klines(symbol, "15m", 50),   # ← NEW: 15м данные
+                self.get_klines(symbol, "1h", 200),
+                self.get_klines(symbol, "15m", 200),   # ← NEW: 15м данные (увеличили до 200)
                 return_exceptions=True
             )
 

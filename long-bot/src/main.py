@@ -707,6 +707,15 @@ async def lifespan(app: FastAPI):
         config=Config, auto_trader=state.auto_trader,
     )
 
+    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
+    print("🧹 [STARTUP] Проверка zombie позиций...")
+    try:
+        cleaned = await state.tracker.cleanup_zombies()
+        if cleaned > 0:
+            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
+    except Exception as e:
+        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
+
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
 
@@ -912,7 +921,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         _rsi_tracker.update(symbol, rsi_current)
 
         # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 100)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)  # Увеличили до 200
         ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
         ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
 
@@ -950,7 +959,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != "30m" and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf

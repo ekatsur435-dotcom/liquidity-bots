@@ -137,6 +137,14 @@ class PositionTracker:
             if not symbol:
                 continue
             try:
+                # 🆕 NEW: Проверяем только подтвержденные позиции (confirmed=True)
+                confirmed = sig.get('confirmed', False)
+                if not confirmed:
+                    # Позиция не подтверждена биржей - не проверяем ее статус
+                    # (экономим API запросы, не создаем ложных zombie)
+                    print(f"[ZOMBIE-SKIP] {symbol}: не подтверждена на бирже (confirmed=False), пропускаем проверку")
+                    continue
+
                 pos_side = 'LONG' if direction == 'long' else 'SHORT'
                 positions = await bingx.get_positions(symbol)
                 has_real_position = any(
@@ -840,6 +848,90 @@ class PositionTracker:
 
         except Exception as e:
             print(f"[PT] _record_pnl: {e}")
+
+    # =========================================================================
+    # 🧟 ZOMBIE CLEANUP
+    # =========================================================================
+
+    async def cleanup_zombies(self) -> int:
+        """
+        🧹 Очистка zombie позиций (есть в Redis, но не на бирже)
+        
+        Returns:
+            int: Количество удаленных позиций
+        """
+        if not self.bingx:
+            print(f"[PT][ZOMBIE] ⚠️ Нет BingX клиента для проверки")
+            return 0
+            
+        removed_count = 0
+        try:
+            # Получаем все позиции из Redis
+            redis_positions = self.redis.get_all_positions(self.bot_type)
+            if not redis_positions:
+                print(f"[PT][ZOMBIE] ✅ Нет позиций в Redis для проверки")
+                return 0
+                
+            # Получаем позиции с биржи
+            try:
+                bingx_positions = await self.bingx.get_positions()
+            except Exception as e:
+                print(f"[PT][ZOMBIE] ⚠️ Ошибка получения позиций с биржи: {e}")
+                return 0
+                
+            # Создаем множество символов с позициями на бирже
+            bingx_symbols = set()
+            if isinstance(bingx_positions, list):
+                for pos in bingx_positions:
+                    symbol = pos.get("symbol", "")
+                    if symbol:
+                        # Нормализуем символ (убираем - если есть)
+                        bingx_symbols.add(symbol.replace("-", ""))
+                        bingx_symbols.add(symbol)  # И с дефисом тоже
+                        
+            print(f"[PT][ZOMBIE] 🔍 Проверяем {len(redis_positions)} позиций в Redis vs {len(bingx_symbols)} на бирже")
+            
+            # Проверяем каждую позицию из Redis
+            for symbol in list(redis_positions.keys()):
+                # Нормализуем символ для сравнения
+                normalized = symbol.replace("-", "")
+                
+                # Проверяем есть ли позиция на бирже
+                on_exchange = False
+                for bx_sym in bingx_symbols:
+                    if bx_sym.replace("-", "") == normalized:
+                        on_exchange = True
+                        break
+                        
+                if not on_exchange:
+                    # Проверяем можно ли получить цену (символ существует)
+                    try:
+                        ticker = await self.bingx.get_ticker(symbol)
+                        if ticker and ticker.get("price", 0) > 0:
+                            # Символ существует, но позиции нет - это zombie
+                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена доступна)")
+                            self.redis.remove_position(self.bot_type, symbol)
+                            removed_count += 1
+                        else:
+                            # Не можем получить цену - возможно символ делистед
+                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена недоступна - делист)")
+                            self.redis.remove_position(self.bot_type, symbol)
+                            removed_count += 1
+                    except Exception as e:
+                        print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (ошибка проверки: {e})")
+                        self.redis.remove_position(self.bot_type, symbol)
+                        removed_count += 1
+                        
+            if removed_count > 0:
+                print(f"[PT][ZOMBIE] ✅ Очищено {removed_count} zombie позиций")
+                await self._send(f"🧹 Очищено {removed_count} ghost-позиций из {self.bot_type.upper()}")
+            else:
+                print(f"[PT][ZOMBIE] ✅ Все позиции актуальны")
+                
+        except Exception as e:
+            print(f"[PT][ZOMBIE] 🔴 Ошибка cleanup: {e}")
+            
+        return removed_count
 
     # =========================================================================
     # HELPERS

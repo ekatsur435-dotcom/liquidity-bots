@@ -53,7 +53,7 @@ class TradeConfig:
     demo_mode:           bool  = True
     max_positions:       int   = 30        # увеличили для 200K депо
     risk_per_trade:      float = 0.0005     # 0.05% на сделку!
-    max_daily_risk:      float = 10.0        # 5% (в %, не дробях!)
+    max_daily_risk:      float = 5.0        # 5% (в %, не дробях!)
     default_leverage:    int   = 20
     min_leverage:        int   = 5
     max_leverage:        int   = 50
@@ -356,7 +356,9 @@ class AutoTrader:
         # ── 1. Daily risk ─────────────────────────────────────────────────────
         self._check_daily_reset()
         if self.daily_pnl <= -self.config.max_daily_risk:
-            print(f"{pfx} ⏸ SKIP — daily risk limit {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%")
+            reason = f"DAILY_LIMIT: {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%"
+            print(f"{pfx} ⏸ SKIP — {reason}")
+            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
             await self._tg(
                 f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: "
                 f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
@@ -383,7 +385,9 @@ class AutoTrader:
             print(f"{pfx} 📋 {pos_list}")
 
         if n_pos >= self.config.max_positions:
-            print(f"{pfx} ⏸ SKIP — max {expected_side} positions")
+            reason = f"MAX_POSITIONS: {n_pos}/{self.config.max_positions}"
+            print(f"{pfx} ⏸ SKIP — {reason}")
+            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
             await self._tg_reply(
                 f"⏸ <b>{expected_side} лимит достигнут</b> ({n_pos}/{self.config.max_positions})\n"
                 f"<b>#{symbol}</b> — сигнал пропущен", tg_msg_id
@@ -395,7 +399,9 @@ class AutoTrader:
         existing = [p for p in current_positions
                     if p.symbol.replace("-", "") == symbol.replace("-", "")]
         if existing:
-            print(f"{pfx} ⏸ SKIP — already open ({existing[0].side})")
+            reason = f"DUPLICATE: already open ({existing[0].side})"
+            print(f"{pfx} ⏸ SKIP — {reason}")
+            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
             await self._tg_reply(
                 f"ℹ️ <b>Позиция уже открыта</b>\n"
                 f"<b>#{symbol}</b> — {existing[0].side} уже активен", tg_msg_id
@@ -415,7 +421,9 @@ class AutoTrader:
             MAX_PER_SECTOR = int(os.getenv("MAX_POSITIONS_PER_SECTOR", "5"))
             
             if sector_count >= MAX_PER_SECTOR:
-                print(f"{pfx} ⏸ SKIP — sector {sector} limit ({sector_count}/{MAX_PER_SECTOR})")
+                reason = f"SECTOR_LIMIT: {sector} ({sector_count}/{MAX_PER_SECTOR})"
+                print(f"{pfx} ⏸ SKIP — {reason}")
+                print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
                 await self._tg_reply(
                     f"⏸ <b>Лимит сектора {sector}</b> ({sector_count}/{MAX_PER_SECTOR})\n"
                     f"<b>#{symbol}</b> — пропущен", tg_msg_id
@@ -620,6 +628,8 @@ class AutoTrader:
             "tg_msg_id":    tg_msg_id,
             "taken_tps":    [],
             "be_done":      False,
+            "confirmed":    True,  # ✅ Позиция подтверждена открытием на бирже
+            "skip_reason":  None,  # Причина пропуска (если не открыли)
         }
         bot_type = "long" if direction == "long" else "short"
         self.redis.save_signal(bot_type, symbol, position_data)

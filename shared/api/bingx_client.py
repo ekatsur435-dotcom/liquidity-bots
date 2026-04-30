@@ -646,6 +646,40 @@ class BingXClient:
             print(f"⚠️  get_klines {symbol}: {e}")
             return []
 
+    async def get_ticker(self, symbol: str) -> Optional[Dict]:
+        """
+        💰 Получить текущую цену тикера (для zombie cleanup)
+        
+        Args:
+            symbol: Торговая пара (BTC-USDT)
+        
+        Returns:
+            Dict: {'price': float, 'symbol': str} или None
+        """
+        try:
+            symbol_api = self._normalize_symbol(symbol)
+            result = await self._make_request(
+                "GET", "/openApi/swap/v2/quote/ticker",
+                params={"symbol": symbol_api}
+            )
+            
+            if result and result.get("code") == 0:
+                data = result.get("data", [])
+                if data and len(data) > 0:
+                    ticker = data[0]
+                    return {
+                        'symbol': symbol,
+                        'price': float(ticker.get('lastPrice', 0)),
+                        'bid': float(ticker.get('bidPrice', 0)),
+                        'ask': float(ticker.get('askPrice', 0)),
+                        'volume24h': float(ticker.get('volume', 0)),
+                        'change24h': float(ticker.get('priceChangePercent', 0))
+                    }
+            return None
+        except Exception as e:
+            print(f"⚠️  get_ticker {symbol}: {e}")
+            return None
+
     async def check_trend(self, symbol: str, direction: str) -> Tuple[bool, str]:
         """
         📈 Проверить соответствие направления сделки тренду
@@ -655,7 +689,7 @@ class BingXClient:
         """
         try:
             # Получаем свечи 1H
-            klines = await self.get_klines(symbol, interval="1h", limit=100)
+            klines = await self.get_klines(symbol, interval="1h", limit=200)  # Увеличили до 200
             if len(klines) < 50:
                 return True, "Недостаточно данных для анализа тренда"
             
