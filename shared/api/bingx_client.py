@@ -251,14 +251,25 @@ class BingXClient:
         })
 
     async def is_symbol_active(self, symbol: str) -> bool:
-        symbol = self._normalize_symbol(symbol)
+        """Проверяет активен ли символ на BingX. Ищет в обоих форматах: XXXUSDT и XXX-USDT."""
+        symbol_normalized = self._normalize_symbol(symbol)  # XXXUSDT
+        symbol_with_dash = f"{symbol_normalized[:-4]}-{symbol_normalized[-4:]}" if symbol_normalized.endswith('USDT') else symbol_normalized
+        
         await self._load_contracts()
-        info = self._symbol_info_cache.get(symbol)
+        
+        # Ищем в обоих форматах
+        info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
+        
         if info is None:
-            # ✅ FIX: символ не найден в кэше — пробуем обновить список контрактов
-            print(f"⚠️ [BingX] {symbol} не найден в кэше, обновляем список контрактов...")
+            print(f"⚠️ [BingX] {symbol} (форматы: {symbol_normalized}/{symbol_with_dash}) не найден в кэше ({len(self._symbol_info_cache)} контрактов), обновляем список...")
             await self._load_contracts(force_refresh=True)
-            info = self._symbol_info_cache.get(symbol)
+            info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
+            
+        if info is None:
+            # Показываем примеры символов из кэша для отладки
+            sample_keys = list(self._symbol_info_cache.keys())[:5]
+            print(f"   📋 Примеры контрактов в кэше: {sample_keys}")
+            
         return info.get("online", True) if info else False
 
     async def _round_price(self, symbol: str, price: float) -> float:
