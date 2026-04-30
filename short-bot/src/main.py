@@ -125,6 +125,7 @@ class Config:
     # SHORT_TRAIL_ACTIVATION - Активация trailing SL (default: 0.030)
     # BTC_BLOCK_SHORT_THRESHOLD - Блокировка при пампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_SHORT_SCORE → MIN_SCORE_SHORT для соответствия Render
@@ -141,7 +142,9 @@ class Config:
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
-
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
+    
     # TP динамические — short_filter.get_short_tp_config выбирает профиль
     # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
     TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
@@ -570,6 +573,7 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
+                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
