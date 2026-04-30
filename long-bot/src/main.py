@@ -115,14 +115,15 @@ class Config:
     # ============================================================================
     # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
     # ============================================================================
-    # MIN_SCORE_LONG       - Минимальный score для входа (default: 75) ⭐ КЛЮЧЕВОЙ
+    # MIN_SCORE_LONG       - Минимальный score для входа (default: 65) ⭐ КЛЮЧЕВОЙ
     # MAX_LONG_POSITIONS   - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
     # LONG_SL_BUFFER       - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
-    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 120)
+    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 180)
     # LONG_LEVERAGE        - Плечо (default: "5-50")
     # LONG_TRAIL_ACTIVATION - Активация trailing SL (default: 0.025)
     # BTC_BLOCK_LONG_THRESHOLD - Блокировка при дампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
@@ -140,6 +141,7 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
@@ -557,6 +559,7 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
+                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -703,6 +706,15 @@ async def lifespan(app: FastAPI):
         redis_client=state.redis, binance_client=state.binance,
         config=Config, auto_trader=state.auto_trader,
     )
+
+    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
+    print("🧹 [STARTUP] Проверка zombie позиций...")
+    try:
+        cleaned = await state.tracker.cleanup_zombies()
+        if cleaned > 0:
+            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
+    except Exception as e:
+        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
 
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
@@ -904,30 +916,30 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
 
-        # ✅ FIX #3: RSI GUARD — лонги только в зонах перепроданности/нейтрали
-        # Не открываем лонги когда RSI > 60 (рынок уже перегрет для покупки)
-        rsi_guard = md.rsi_1h or 50
-        rsi_max_long = float(os.getenv("LONG_RSI_MAX", "58"))
-        if rsi_guard > rsi_max_long:
-            print(f"⛔ [RSI-GUARD-LONG] {symbol}: RSI={rsi_guard:.1f} > {rsi_max_long} — перекупленность, не зона для лонга")
-            return None
-
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: только 30m (1h уже есть в md.klines из get_complete_market_data)
-        # ✅ FIX #8: Убираем дублирующий запрос klines(1h) — экономим 50 API calls/scan
-        ohlcv_30m = await state.binance.get_klines(symbol, "30m", 100)
-        # Используем klines из MarketData для 1h вместо нового запроса
-        ohlcv_1h = getattr(md, 'klines_1h', None) or await state.binance.get_klines(symbol, "1h", 50)
+        # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
+        # ✅ FIX MTF: Full multi-timeframe loading (15m, 30m, 1h, 2h, 4h) — same as short-bot
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)
+        ohlcv_1h_task  = state.binance.get_klines(symbol, "1h", 50)
+        ohlcv_2h_task  = state.binance.get_klines(symbol, "2h", 20)
+        ohlcv_4h_task  = state.binance.get_klines(symbol, "4h", 14)
+        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
+            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
+        )
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
         if hasattr(state, 'candle_manager') and state.candle_manager:
             try:
                 tf_data = {
+                    "15m": ohlcv_15m,
                     "30m": ohlcv_30m,
-                    "1h": ohlcv_1h
+                    "1h": ohlcv_1h,
+                    "2h": ohlcv_2h,
+                    "4h": ohlcv_4h,
                 }
                 for tf, data in tf_data.items():
                     if data:
@@ -938,19 +950,18 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
                 if insufficient:
                     print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
-                    # ✅ FIX #5: Добавляем в skip-лист если много TF без данных
-                    if len(insufficient) >= 3:
-                        if not hasattr(state, '_insufficient_symbols'):
-                            state._insufficient_symbols = set()
-                        state._insufficient_symbols.add(symbol)
-                        print(f"⛔ [DATA-SKIP] {symbol}: добавлен в skip-лист ({len(insufficient)} TF без данных)")
             except Exception as e:
                 print(f"[CandleHistory] {symbol} error: {e}")
 
-        # Используем 30m как основной ТФ для анализа (вместо 15m)
-        ohlcv_15m = ohlcv_30m  # совместимость с existing code
+        # ✅ FIX MTF: Use real 15m data; smart TF priority (4h > 2h > 1h > 30m > 15m)
+        tf_priority = {"4h": 5, "2h": 4, "1h": 3, "30m": 2, "15m": 1}
         primary_tf = "30m"
         ohlcv_primary = ohlcv_30m
+        for tf_name, tf_ohlcv in [("4h", ohlcv_4h), ("2h", ohlcv_2h), ("1h", ohlcv_1h), ("30m", ohlcv_30m), ("15m", ohlcv_15m)]:
+            if tf_ohlcv and len(tf_ohlcv) >= 20:
+                primary_tf = tf_name
+                ohlcv_primary = tf_ohlcv
+                break
         
         # =========================================================================
         # ✅ v2.8: SYMBOL PROFILER — индивидуальный профиль монеты
@@ -962,7 +973,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != "30m" and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
@@ -1000,8 +1011,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if sweep and sweep["found"]:
                 # 2. Подтверждение фильтрами
                 tf_data_v26 = {}
+                if ohlcv_15m: tf_data_v26["15m"] = ohlcv_15m
                 if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
-                
+                if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
+                if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
                 confirmation = EntryConfirmation.comprehensive_check(
                     ohlcv_primary,
                     tf_data=tf_data_v26 if len(tf_data_v26) >= 1 else None,
@@ -1047,7 +1060,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 3. Нет sweep — проверяем обычные фильтры (v2.9: бонусы, не блок)
             tf_data_v26 = {}
+            if ohlcv_15m: tf_data_v26["15m"] = ohlcv_15m
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
+            if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
+            if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
             
             confirmation = EntryConfirmation.comprehensive_check(
                 ohlcv_primary,
@@ -1105,7 +1121,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
         rsi_4h_adj = 0
         try:
-            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            # ohlcv_4h already loaded in parallel MTF block above
             if ohlcv_4h and len(ohlcv_4h) >= 14:
                 closes_4h = [c.close for c in ohlcv_4h[-14:]]
                 gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
@@ -1226,30 +1242,24 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             override_reason = None
             boost = 0
             
-            # Уровень 1: TBS + OB >= 70 — сильный оверрайд (было единственным условием)
+            # ✅ TIGHT v3.2: Only override with STRONG multi-factor confluence
+            # Уровень 1: TBS + OB >= 70 — максимальный оверрайд
             if tbs_found and ob_q_high:
                 override_reason = f"TBS+OB_Q{ob_quality}"
                 boost = 15
-            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд  
+            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд
             elif tbs_found and ob_quality_ok:
                 override_reason = f"TBS+OB_Q{ob_quality}"
                 boost = 10
-            # Уровень 3: только TBS без OB (риск выше)
-            elif tbs_found and base_score_bonus >= 5:
+            # Уровень 3: TBS + сильное подтверждение (base_score_bonus >= 8, был >= 5)
+            elif tbs_found and base_score_bonus >= 8:
                 override_reason = f"TBS+confirmation"
                 boost = 8
-            # Уровень 4: OB >= 70 без TBS (институциональная зона)
-            elif ob_q_high and base_score_bonus >= 3:
-                override_reason = f"OB_Q{ob_quality}+confirmation"
-                boost = 5
-            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
-            elif ob_q_high:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 12  # Сильный буст для институционального OB
-            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
-            elif ob_quality_ok:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
+            # Уровень 4: OB >= 70 + подтверждение (убрано standalone без confirmation)
+            elif ob_q_high and base_score_bonus >= 8:
+                override_reason = f"OB_Q{ob_quality}+strong_confirmation"
                 boost = 8
+            # ❌ REMOVED: standalone OB override without confirmation — слишком много ложных входов
             
             if override_reason:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
@@ -1268,10 +1278,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # ✅ FIX #2: Убираем Bear Pass — больше не снижаем порог входа
-                # Было: bear_threshold = max(40, Config.MIN_SCORE - 20) — пропускало мусор с 52%
-                # Теперь: строгий порог = MIN_SCORE
-                print(f"🔴 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{Config.MIN_SCORE} skip")
+                # ✅ FIX v3.2: Bear Market Pass DISABLED — produces low quality trades
+                # Score must legitimately pass MIN_SCORE or override conditions above
+                print(f"🔴 [FILTER0-LONG] {symbol}: score={score_result.total_score:.1f} < MIN, no override → skip")
                 return None
         
         reasons     = list(score_result.reasons)
@@ -1333,7 +1342,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # 🆕 Бонус если RSI восстанавливается от низов (LONG сигнал)
         rsi_now = md.rsi_1h or 0
         if 30 <= rsi_now <= 50 and rsi_current > 0:
-            final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
+            final_score += 3
             reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
         
         # 🌊 ELLIOTT WAVE v3.0: Детекция волн для точных входов
@@ -1381,7 +1390,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
                 wave_boost = 10 if wave_result.confidence > 0.75 else 5
-                final_score = min(100, final_score + wave_boost)  # ✅ FIX #1: Score Cap
+                final_score += wave_boost
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
                 print(f"🎯 [ELLIOTT-BOOST-LONG] {symbol}: Идеальная волна {wave_result.wave}! "
@@ -1389,7 +1398,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 📈 ТРЕНД (Волна 3) — небольшой бонус
             elif wave_result.position == WavePosition.TREND:
-                final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
+                final_score += 3
                 reasons.append(f"🌊 Elliott Wave 3 (trend) +3")
                 print(f"📈 [ELLIOTT-TREND-LONG] {symbol}: Волна 3 тренда")
             
@@ -1475,7 +1484,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 smc = get_smc_result(_ohlcv(ohlcv_15m), "long",    # ✅ FIX: "long" not "short"
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
-                    final_score = min(100, final_score + smc.score_bonus)  # ✅ FIX #1: Score Cap
+                    final_score += smc.score_bonus
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl < price:      # ✅ FIX: SL must be below
                     stop_loss = smc.refined_sl
@@ -1562,23 +1571,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if (price - stop_loss) / price < 0.005:       # минимум 0.5% SL
             stop_loss = price * (1 - Config.SL_BUFFER / 100)
 
-        # ✅ FIX #10: ATR-валидация минимального SL — SL не может быть меньше ATR×1.5
-        atr_pct_val = getattr(md, 'atr_pct', 0.0) or 0.0
-        if atr_pct_val > 0:
-            min_sl_pct = max(Config.SL_BUFFER, atr_pct_val * 1.5)
-            actual_sl_pct = (price - stop_loss) / price * 100
-            if actual_sl_pct < min_sl_pct:
-                stop_loss = price * (1 - min_sl_pct / 100)
-                print(f"📐 [ATR-SL-LONG] {symbol}: SL расширен {actual_sl_pct:.2f}%→{min_sl_pct:.2f}% (ATR={atr_pct_val:.2f}%)")
-
-        # ✅ FIX: R:R валидация — TP1 должен быть минимум в 1.3× от SL
-        if stop_loss > 0 and price > stop_loss:
-            sl_pct_check = (price - stop_loss) / price * 100
-            tp1_pct_check = Config.TP_LEVELS[0] if Config.TP_LEVELS else 2.5
-            if tp1_pct_check / max(sl_pct_check, 0.01) < 1.3:
-                print(f"🔴 [RR-FILTER-LONG] {symbol}: R:R={tp1_pct_check/sl_pct_check:.2f} < 1.3 — плохое соотношение, skip")
-                return None
-
         # ✅ FIX: TP ВЫШЕ входа для LONG
         take_profits = [
             (round(price * (1 + tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
@@ -1621,9 +1613,22 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             else:
                 best_pattern = "SMC_STRUCTURE"
         
+        # ✅ FIX v3.2: HTF (4h) bias filter — don't long into a confirmed 4h downtrend
+        if ohlcv_4h and len(ohlcv_4h) >= 14:
+            try:
+                closes_4h_bias = [c.close for c in ohlcv_4h[-14:]]
+                ema9_4h  = sum(closes_4h_bias[-9:]) / 9
+                ema21_4h = sum(closes_4h_bias[-21:]) / 21 if len(closes_4h_bias) >= 21 else sum(closes_4h_bias) / len(closes_4h_bias)
+                if ema9_4h < ema21_4h * 0.995:  # 4h downtrend — allow only score >= 90
+                    if final_score < 90:
+                        print(f"🚫 [HTF-FILTER-LONG] {symbol}: 4h downtrend (EMA9={ema9_4h:.4f} < EMA21={ema21_4h:.4f}), score={final_score} < 90 → skip")
+                        return None
+                    else:
+                        print(f"⚠️ [HTF-WARN-LONG] {symbol}: 4h downtrend but score={final_score} >= 90, allowing")
+            except Exception:
+                pass
+
         print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
-        # ✅ FIX #1: ФИНАЛЬНЫЙ HARD CAP — скор никогда не превышает 100%
-        final_score = max(0, min(100, final_score))
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
@@ -1734,10 +1739,6 @@ async def scan_market():
 
     for symbol in state.watchlist:
         try:
-            # ✅ FIX #5: Пропускаем символы с хронически недостаточными данными
-            if hasattr(state, '_insufficient_symbols') and symbol in state._insufficient_symbols:
-                continue
-
             # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
@@ -1794,16 +1795,7 @@ async def scan_market():
             print(f"Error {symbol}: {e}")
 
     # 🆕 NEW: Momentum Scanning (Trend Following)
-    # ✅ FIX #9: Momentum scanner throttle — не чаще 1 раза в 180 сек
-    # Было: вызывался на каждом scan_market (каждые 240s) + отдельный 1m цикл → 3000 calls/час
-    _momentum_interval = int(os.getenv("SCAN_1M_INTERVAL", "180"))  # повышаем с 30 до 180
-    _momentum_enabled  = os.getenv("ENABLE_1M_SCANNER", "false").lower() == "true"  # OFF по умолчанию
-    _now_ts = time.time()
-    _last_mom_ts = getattr(state, '_last_momentum_scan_ts', 0)
-
-    if _momentum_enabled and Config.ENABLE_MOMENTUM_LONG and hasattr(state, 'momentum_detector') \
-            and (_now_ts - _last_mom_ts) >= _momentum_interval:
-        state._last_momentum_scan_ts = _now_ts
+    if Config.ENABLE_MOMENTUM_LONG and hasattr(state, 'momentum_detector'):
         try:
             print(f"\n🚀 [MOMENTUM-LONG] Scanning {len(state.watchlist)} symbols for velocity...")
             

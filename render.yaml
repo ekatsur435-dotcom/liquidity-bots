@@ -20,7 +20,7 @@ services:
         sync: false
       - key: BINGX_API_KEY
         sync: false
-      - key: BINGX_SECRET_KEY
+      - key: BINGX_API_SECRET
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -74,7 +74,7 @@ services:
         sync: false
       - key: BINGX_API_KEY
         sync: false
-      - key: BINGX_SECRET_KEY
+      - key: BINGX_API_SECRET
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false

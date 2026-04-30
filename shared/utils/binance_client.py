@@ -170,10 +170,6 @@ class BinanceFuturesClient:
     USE_BINANCE=true            → Binance через прокси
     """
 
-    # ✅ FIX #4: Class-level flag — allForceOrders заблокирован Binance для Singapore
-    # После первого 400/418 выключается на весь runtime, экономит 200 calls/scan
-    _allForceOrders_disabled: bool = False
-
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
 
@@ -761,10 +757,8 @@ class BinanceFuturesClient:
         except Exception:
             pass
         
-        # Level 3 — Binance allForceOrders
-        # ✅ FIX #4: Этот endpoint заблокирован Binance для Singapore/proxy (всегда 400/418)
-        # Используем class-level флаг чтобы не тратить 4 попытки × 50 символов = 200 вызовов/цикл
-        if self._use_binance and not BinanceFuturesClient._allForceOrders_disabled:
+        # Level 3 — Binance (часто не работает /fapi/v1/allForceOrders)
+        if self._use_binance:
             try:
                 d = await self._binance("/fapi/v1/allForceOrders",
                                         {"symbol": symbol, "limit": limit})
@@ -788,11 +782,8 @@ class BinanceFuturesClient:
                         "short_liq_usd": short_liq,
                         "dominant_side": "LONG" if long_liq > short_liq else "SHORT" if short_liq > long_liq else None
                     }
-            except Exception as e:
-                err_str = str(e)
-                if any(code in err_str for code in ["400", "418", "403"]):
-                    BinanceFuturesClient._allForceOrders_disabled = True
-                    print("⛔ [FIX#4] allForceOrders: permanently disabled (Binance 400/418 — Singapore blocked)")
+            except Exception:
+                pass
         
         print(f"   ⚠️ Liquidation data unavailable for {symbol}")
         return None
@@ -988,8 +979,8 @@ class BinanceFuturesClient:
                 self.get_open_interest(symbol),
                 self.get_long_short_ratio(symbol),
                 self.get_24h_ticker(symbol),
-                self.get_klines(symbol, "1h", 100),
-                self.get_klines(symbol, "15m", 50),   # ← NEW: 15м данные
+                self.get_klines(symbol, "1h", 200),
+                self.get_klines(symbol, "15m", 200),   # ← NEW: 15м данные (увеличили до 200)
                 return_exceptions=True
             )
 
