@@ -757,35 +757,10 @@ class BinanceFuturesClient:
         except Exception:
             pass
         
-        # Level 3 — Binance (часто не работает /fapi/v1/allForceOrders)
-        if self._use_binance:
-            try:
-                d = await self._binance("/fapi/v1/allForceOrders",
-                                        {"symbol": symbol, "limit": limit})
-                if d:
-                    long_liq = 0.0
-                    short_liq = 0.0
-                    for order in d:
-                        qty = float(order.get("origQty", 0))
-                        price = float(order.get("avgPrice", 0))
-                        side = order.get("side", "").upper()
-                        usd = qty * price
-                        if side == "SELL":
-                            long_liq += usd
-                        else:
-                            short_liq += usd
-                    total = long_liq + short_liq
-                    print(f"   ✅ Liquidations from Binance: ${total:,.0f}")
-                    return {
-                        "total_usd": total,
-                        "long_liq_usd": long_liq,
-                        "short_liq_usd": short_liq,
-                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT" if short_liq > long_liq else None
-                    }
-            except Exception:
-                pass
+        # 🔴 REMOVED: Binance /fapi/v1/allForceOrders — эндпоинт удалён Binance (HTTP 418/400)
+        # Используем OKX и Coinglass как единственные источники
         
-        print(f"   ⚠️ Liquidation data unavailable for {symbol}")
+        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance API disabled, OKX/Coinglass only)")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
