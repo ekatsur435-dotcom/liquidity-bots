@@ -16,7 +16,6 @@
 import os
 import time
 import asyncio
-import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
@@ -26,27 +25,6 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 import sys
-
-# =============================================================================
-# LOGGING CONFIGURATION
-# =============================================================================
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_FORMAT = "%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s"
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format=LOG_FORMAT,
-    handlers=[
-        logging.StreamHandler()  # Вывод в консоль (Render берёт отсюда)
-    ]
-)
-
-# Уменьшаем шум от сторонних библиотек
-logging.getLogger("aiohttp").setLevel(logging.WARNING)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-
-logger = logging.getLogger("long_bot")
-logger.info(f"📝 Logging initialized (level={LOG_LEVEL})")
 
 def _find_shared() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -71,8 +49,6 @@ print(f"📁 shared path: {_SHARED}")
 
 from upstash.redis_client import get_redis_client
 from utils.binance_client import get_binance_client
-from api.okx_client import get_okx_client  # 🆕 NEW: OKX fallback client
-from core.market_data_integrator import get_market_data_integrator  # 🆕 NEW: Market Data Integrator
 from core.scorer import get_long_scorer
 from core.pattern_detector import LongPatternDetector   # ← единый файл
 from core.position_tracker import PositionTracker
@@ -85,24 +61,6 @@ from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
 from bot.telegram import TelegramBot, TelegramCommandHandler
 from core.market_context import get_market_context, MarketContextFilter  # ✅ v4.0: Market Context Filter
-# 🆕 Aegis components
-from core.pump_detector import detect_pump, PumpDetectionResult  # ✅ NEW: Z-Score detector
-from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality  # ✅ NEW: Kelly sizing
-from core.delta_analyzer import analyze_delta  # ✅ NEW: CVD/Order Flow analyzer
-
-# 🆕 NEW: Advanced trading modules
-from core.smart_dca import get_smart_dca, SmartDCA, DCAStrength  # ✅ NEW: Smart DCA
-from core.grid_dca import get_grid_dca, GridDCA  # ✅ NEW: Grid DCA
-from core.amd_detector import get_amd_detector, AMDDetector, AMDPhase  # ✅ NEW: AMD Detector
-from core.xvp import get_xvp_analyzer, XVPAnalyzer  # ✅ NEW: Extended Volume Profile
-from core.grid_entry import get_grid_entry, GridEntry  # ✅ NEW: Grid Entry System
-from core.smart_sl_detector import get_smart_sl_detector, SmartSLDetector  # ✅ NEW: Smart Multi-TF SL
-from core.dump_detector import get_dump_detector, DumpDetector, DumpType  # ✅ NEW: Dump Detector
-from core.momentum_detector import get_momentum_detector, MomentumDetector  # ✅ NEW: Momentum Detector
-from core.candle_history_manager import (
-    get_candle_manager, CandleHistoryManager, TFConfig,
-    fetch_and_store_candles, prefetch_all_tfs, check_data_ready
-)  # ✅ NEW: Candle History for accurate analysis
 
 
 # ============================================================================
@@ -111,87 +69,19 @@ from core.candle_history_manager import (
 
 class Config:
     BOT_TYPE      = "long"
-    
-    # ============================================================================
-    # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
-    # ============================================================================
-    # MIN_SCORE_LONG       - Минимальный score для входа (default: 65) ⭐ КЛЮЧЕВОЙ
-    # MAX_LONG_POSITIONS   - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
-    # LONG_SL_BUFFER       - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
-    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 180)
-    # LONG_LEVERAGE        - Плечо (default: "5-50")
-    # LONG_TRAIL_ACTIVATION - Активация trailing SL (default: 0.025)
-    # BTC_BLOCK_LONG_THRESHOLD - Блокировка при дампе BTC (default: 4.0)
-    # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
-    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
-    # ============================================================================
-    
-    # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
-    # ✅ REDUCED: default 75 → 65 (больше сигналов на медвежьем рынке)
-    MIN_SCORE     = int(os.getenv("MIN_SCORE_LONG", "65"))  # ⭐ Снижен для активности
-    
-    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))  # ✅ 3 минуты для снижения нагрузки API
-    
-    # ✅ FIX: Уменьшено default с 20 до 10 (меньше позиций = меньше риск)
-    MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "10"))  # ⭐ ИЗМЕНИТЬ на Render!
-    
+    # ✅ FIX: MIN_LONG_SCORE default = 70
+    # ✅ v2.5 BACKTEST: Медвежий рынок. Score 75+ → PF 2.07x
+    # 🔥 FIX v3.0.3: Снижаем MIN_SCORE с 70 до 60 (слишком много фильтрации!)
+    MIN_SCORE     = int(os.getenv("MIN_LONG_SCORE", "65"))  # ✅ FIX v5: 60→65 лучший баланс качество/частота
+    # ✅ FIX: SCAN_INTERVAL default = 200
+    SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "120"))  # BACKTEST: 120с
+    # ✅ FIX: MAX_WATCHLIST default = 300
+    MAX_POSITIONS = int(os.getenv("MAX_LONG_POSITIONS", "20"))
     LEVERAGE      = os.getenv("LONG_LEVERAGE", "5-50")
 
     # LONG: SL НИЖЕ входа, TP ВЫШЕ входа
-    # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
-    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
-    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
-
-    # 🆕 NEW: Advanced modules configuration
-    # Smart DCA
-    ENABLE_SMART_DCA = os.getenv("ENABLE_SMART_DCA", "true").lower() == "true"
-    DCA_MAX_ADDITIONS = int(os.getenv("DCA_MAX_ADDITIONS", "3"))
-    DCA_MAX_PORTFOLIO_RISK = float(os.getenv("DCA_MAX_PORTFOLIO_RISK", "3.0"))
-    
-    # Grid DCA
-    ENABLE_GRID_DCA = os.getenv("ENABLE_GRID_DCA", "true").lower() == "true"
-    GRID_DCA_MAX_LEVELS = int(os.getenv("GRID_DCA_MAX_LEVELS", "5"))
-    
-    # AMD Detector
-    ENABLE_AMD = os.getenv("ENABLE_AMD_DETECTOR", "true").lower() == "true"
-    
-    # XVP
-    ENABLE_XVP = os.getenv("ENABLE_XVP", "true").lower() == "true"
-    
-    # Grid Entry
-    ENABLE_GRID_ENTRY = os.getenv("ENABLE_GRID_ENTRY", "true").lower() == "true"
-    
-    # Smart SL
-    ENABLE_SMART_SL = os.getenv("ENABLE_SMART_SL", "true").lower() == "true"
-    SMART_SL_MIN_PCT = float(os.getenv("SMART_SL_MIN_PCT", "0.8"))
-    SMART_SL_MAX_PCT = float(os.getenv("SMART_SL_MAX_PCT", "4.0"))
-    
-    # Dump Detector
-    ENABLE_DUMP_DETECTOR = os.getenv("ENABLE_DUMP_DETECTOR", "true").lower() == "true"
-    
-    # 🆕 NEW: Momentum Detector (Trend Following)
-    ENABLE_MOMENTUM_LONG = os.getenv("ENABLE_MOMENTUM_LONG", "true").lower() == "true"
-    MOMENTUM_LONG_MIN_1MIN_CHANGE = float(os.getenv("MOMENTUM_LONG_MIN_1MIN_CHANGE", "0.8"))
-    MOMENTUM_LONG_MIN_5MIN_CHANGE = float(os.getenv("MOMENTUM_LONG_MIN_5MIN_CHANGE", "2.0"))
-    MOMENTUM_LONG_VOLUME_SPIKE = float(os.getenv("MOMENTUM_LONG_VOLUME_SPIKE", "2.5"))
-    MOMENTUM_LONG_RSI_MIN = float(os.getenv("MOMENTUM_LONG_RSI_MIN", "40"))
-    MOMENTUM_LONG_RSI_MAX = float(os.getenv("MOMENTUM_LONG_RSI_MAX", "75"))
-    MOMENTUM_LONG_SCORE_MIN = float(os.getenv("MOMENTUM_LONG_SCORE_MIN", "50"))
-    MOMENTUM_LONG_MAX_POSITIONS = int(os.getenv("MOMENTUM_LONG_MAX_POSITIONS", "5"))
-    MOMENTUM_LONG_RISK_PER_TRADE = float(os.getenv("MOMENTUM_LONG_RISK_PER_TRADE", "0.0003"))
-    MOMENTUM_LONG_SL_BUFFER = float(os.getenv("MOMENTUM_LONG_SL_BUFFER", "1.0"))
-    MOMENTUM_LONG_TRAIL_START = float(os.getenv("MOMENTUM_LONG_TRAIL_START", "0.5"))
-    
-    # 🆕 NEW: Candle History Manager
-    ENABLE_CANDLE_HISTORY = os.getenv("ENABLE_CANDLE_HISTORY", "true").lower() == "true"
-    CANDLE_4H_COUNT = int(os.getenv("CANDLE_4H_COUNT", "30"))
-    CANDLE_2H_COUNT = int(os.getenv("CANDLE_2H_COUNT", "50"))
-    CANDLE_1H_COUNT = int(os.getenv("CANDLE_1H_COUNT", "80"))
-    CANDLE_30M_COUNT = int(os.getenv("CANDLE_30M_COUNT", "120"))
-    CANDLE_15M_COUNT = int(os.getenv("CANDLE_15M_COUNT", "150"))
-    CANDLE_5M_COUNT = int(os.getenv("CANDLE_5M_COUNT", "300"))
-    CANDLE_MIN_REQUIRED = int(os.getenv("CANDLE_MIN_REQUIRED", "20"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
+    # ✅ v2.5: Уменьшен SL с 1.5% до 1.2% для лучшего R:R
+    SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "1.5"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
 
     # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
     TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX v5: TP1=2.5% → R:R=1.67:1 (математически прибыльно)
@@ -209,15 +99,11 @@ class Config:
 
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
-    USE_COINMARKETCAP = bool(os.getenv("COINMARKETCAP_API_KEY", ""))
-    USE_COINGECKO  = os.getenv("USE_COINGECKO", "true").lower() == "true"  # Работает и без API ключа
 
-    # ✅ REDUCED: 300 → 80 монет (меньше запросов к API)
-    # ✅ INCREASED: 300K → 1M (только ликвидные монеты, меньше ошибок)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))  # $1M минимум
-    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "80"))  # 80 монет max
-    # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
-    MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
+    # ✅ FIX: default MAX_WATCHLIST = 300
+    # LONG: 1M$ min объём — фильтр мусора вроде BANANA, DENT, AIA
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "300000"))  # ✅ 1M$ фильтр мусора
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "300"))
 
 
 # ============================================================================
@@ -402,100 +288,13 @@ async def _build_combined_watchlist(binance_client, min_vol: float, max_count: i
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting LONG Bot v6.0...")
+    print("🚀 Starting LONG Bot v5.0...")
     state.start_time = datetime.utcnow()
 
     state.redis            = get_redis_client()
     state.binance          = get_binance_client()
-    state.okx              = get_okx_client()  # 🆕 NEW: OKX fallback for OI, funding, liquidations
-    state.market_integrator = get_market_data_integrator(state.okx, state.binance)  # 🆕 NEW: Full market context
     state.scorer           = get_long_scorer(Config.MIN_SCORE)
     state.pattern_detector = LongPatternDetector()
-    
-    # 🆕 NEW: Initialize advanced trading modules
-    print("🔄 Initializing advanced modules...")
-    
-    # Smart DCA
-    if Config.ENABLE_SMART_DCA:
-        state.smart_dca = get_smart_dca()
-        print(f"✅ Smart DCA: max {Config.DCA_MAX_ADDITIONS} additions, {Config.DCA_MAX_PORTFOLIO_RISK}% risk")
-    
-    # Grid DCA
-    if Config.ENABLE_GRID_DCA:
-        state.grid_dca = get_grid_dca()
-        print(f"✅ Grid DCA: {Config.GRID_DCA_MAX_LEVELS} levels")
-    
-    # AMD Detector
-    if Config.ENABLE_AMD:
-        state.amd_detector = get_amd_detector()
-        print("✅ AMD Detector: Accumulation/Manipulation/Distribution phases")
-    
-    # XVP
-    if Config.ENABLE_XVP:
-        state.xvp = get_xvp_analyzer()
-        print("✅ XVP: Extended Volume Profile (POC, VAH/VAL, Single Prints)")
-    
-    # Grid Entry
-    if Config.ENABLE_GRID_ENTRY:
-        state.grid_entry = get_grid_entry()
-        print("✅ Grid Entry: Multi-level entry system")
-    
-    # Smart SL Detector
-    if Config.ENABLE_SMART_SL:
-        from core.smart_sl_detector import SLConfig
-        sl_config = SLConfig(
-            min_sl_pct=Config.SMART_SL_MIN_PCT,
-            max_sl_pct=Config.SMART_SL_MAX_PCT
-        )
-        state.smart_sl = get_smart_sl_detector(sl_config)
-        print(f"✅ Smart SL: {Config.SMART_SL_MIN_PCT}%-{Config.SMART_SL_MAX_PCT}% range, multi-TF analysis")
-    
-    # Dump Detector
-    if Config.ENABLE_DUMP_DETECTOR:
-        state.dump_detector = get_dump_detector()
-        print("✅ Dump Detector: Flash crash & panic sell detection")
-    
-    # 🆕 NEW: Momentum Detector (Trend Following)
-    print(f"\n{'='*60}")
-    print(f"🔥 MOMENTUM DETECTOR INITIALIZATION 🔥")
-    print(f"{'='*60}")
-    print(f"ENABLE_MOMENTUM_LONG = {Config.ENABLE_MOMENTUM_LONG}")
-    print(f"{'='*60}\n")
-    
-    if Config.ENABLE_MOMENTUM_LONG:
-        try:
-            print("[MOMENTUM] Creating detector instance...")
-            state.momentum_detector = get_momentum_detector(direction="long")
-            print(f"[MOMENTUM] ✅ Detector created: {state.momentum_detector is not None}")
-            print(f"[MOMENTUM] ✅ Direction: {state.momentum_detector.direction if state.momentum_detector else 'N/A'}")
-            print("[MOMENTUM] ✅ Trend following mode ACTIVE (velocity + volume spike)")
-        except Exception as e:
-            print(f"[MOMENTUM] ❌ FAILED to create detector: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("[MOMENTUM] ⚠️ DISABLED in config")
-    
-    # 🆕 NEW: Candle History Manager
-    if Config.ENABLE_CANDLE_HISTORY:
-        from core.candle_history_manager import CandleHistoryManager, TFConfig
-        tf_configs = {
-            "4h": TFConfig("4h", Config.CANDLE_4H_COUNT, 240, 1),
-            "2h": TFConfig("2h", Config.CANDLE_2H_COUNT, 120, 2),
-            "1h": TFConfig("1h", Config.CANDLE_1H_COUNT, 60, 3),
-            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 4),
-            "15m": TFConfig("15m", Config.CANDLE_15M_COUNT, 15, 5),
-            "5m": TFConfig("5m", Config.CANDLE_5M_COUNT, 5, 6),
-        }
-        state.candle_manager = CandleHistoryManager(tf_configs)
-        print(f"✅ Candle History: {Config.CANDLE_4H_COUNT}/{Config.CANDLE_1H_COUNT}/{Config.CANDLE_30M_COUNT}/"
-              f"{Config.CANDLE_15M_COUNT}/{Config.CANDLE_5M_COUNT} candles per TF")
-    
-    # Pump Detector (CVD уже в delta_analyzer)
-    state.pump_detector_enabled = True
-    print("✅ Pump Detector: Z-Score based detection")
-    print("✅ CVD Analyzer: Cumulative Volume Delta")
-    
     # ✅ FIX v2.4: LONG бот использовал SHORT_TELEGRAM_BOT_TOKEN → crash!
     state.telegram = TelegramBot(
         bot_token=os.getenv("LONG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN"),
@@ -536,7 +335,7 @@ async def lifespan(app: FastAPI):
 
             # 🆕 DEBUG: Check API keys
             api_key = os.getenv("BINGX_API_KEY")
-            api_secret = os.getenv("BINGX_API_SECRET")
+            api_secret = os.getenv("BINGX_API_SECRET") or os.getenv("BINGX_SECRET_KEY")
             print(f"🔑 API Key present: {'✅' if api_key else '❌'} (len={len(api_key) if api_key else 0})")
             print(f"🔑 API Secret present: {'✅' if api_secret else '❌'} (len={len(api_secret) if api_secret else 0})")
 
@@ -559,7 +358,6 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
-                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -576,85 +374,15 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️ AUTO_TRADING is disabled — AutoTrader not initialized")
 
-    # =============================================================================
-    # EXTERNAL API CLIENTS INITIALIZATION
-    # =============================================================================
-    logger.info("🔌 Initializing external API clients...")
-    
     # CoinGlass
     if Config.USE_COINGLASS:
         try:
-            from api.coinglass_client import CoinglassClient
-            cg_key = os.getenv("COINGLASS_API_KEY", "")
-            logger.info(f"🔑 CoinGlass API key: {'✅ Set' if cg_key else '❌ Not set'}")
-            state.coinglass = CoinglassClient(api_key=cg_key)
-            logger.info("✅ CoinGlass: Client initialized successfully")
-            # Test connection
-            test_data = await state.coinglass.get_liquidation_data("BTC", "1h", 1)
-            if test_data:
-                logger.info(f"✅ CoinGlass: Connection test passed (liquidations API working)")
-            else:
-                logger.warning("⚠️ CoinGlass: Connection test returned empty data")
+            from utils.coinglass_client import CoinglassClient
+            state.coinglass = CoinglassClient(api_key=os.getenv("COINGLASS_API_KEY"))
+            print("✅ CoinGlass connected")
         except Exception as e:
-            logger.error(f"❌ CoinGlass: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
+            print(f"⚠️ CoinGlass: {e}")
             Config.USE_COINGLASS = False
-            state.coinglass = None
-    else:
-        logger.info("⚠️ CoinGlass: Disabled (COINGLASS_API_KEY not set)")
-    
-    # CoinMarketCap
-    if Config.USE_COINMARKETCAP:
-        try:
-            from api.coinmarketcap_client import get_coinmarketcap_client
-            cmc_key = os.getenv("COINMARKETCAP_API_KEY", "")
-            logger.info(f"🔑 CoinMarketCap API key: {'✅ Set' if cmc_key else '❌ Not set'}")
-            state.cmc = get_coinmarketcap_client()
-            logger.info("✅ CoinMarketCap: Client initialized successfully")
-            # Test connection
-            test_data = await state.cmc.get_quotes_latest(["BTC"])
-            if test_data:
-                logger.info(f"✅ CoinMarketCap: Connection test passed (quotes API working)")
-            else:
-                logger.warning("⚠️ CoinMarketCap: Connection test returned empty data")
-        except Exception as e:
-            logger.error(f"❌ CoinMarketCap: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
-            Config.USE_COINMARKETCAP = False
-            state.cmc = None
-    else:
-        logger.info("⚠️ CoinMarketCap: Disabled (COINMARKETCAP_API_KEY not set)")
-    
-    # CoinGecko (работает без ключа!)
-    if Config.USE_COINGECKO:
-        try:
-            from api.coingecko_client import get_coingecko_client
-            cg_key = os.getenv("COINGECKO_API_KEY", "")
-            logger.info(f"🔑 CoinGecko API key: {'✅ Set (PRO tier)' if cg_key else '⚠️ Not set (free tier - 30 req/min)'}")
-            state.coingecko = get_coingecko_client()
-            logger.info("✅ CoinGecko: Client initialized successfully")
-            # Test connection
-            test_data = await state.coingecko.get_coin_data("BTC")
-            if test_data:
-                logger.info(f"✅ CoinGecko: Connection test passed (price: ${test_data.price:,.2f})")
-            else:
-                logger.warning("⚠️ CoinGecko: Connection test returned empty data")
-        except Exception as e:
-            logger.error(f"❌ CoinGecko: Initialization failed - {type(e).__name__}: {str(e)[:100]}")
-            Config.USE_COINGECKO = False
-            state.coingecko = None
-    else:
-        logger.info("⚠️ CoinGecko: Disabled by configuration")
-    
-    # Summary of available data sources
-    available_sources = []
-    if Config.USE_COINGLASS and state.coinglass:
-        available_sources.append("CoinGlass")
-    if Config.USE_COINMARKETCAP and state.cmc:
-        available_sources.append("CoinMarketCap")
-    if Config.USE_COINGECKO and state.coingecko:
-        available_sources.append("CoinGecko")
-    available_sources.extend(["Bybit", "Binance"])  # Always available
-    
-    logger.info(f"📊 Available data sources: {', '.join(available_sources)} ({len(available_sources)}/5)")
 
 
     # ✅ FIX v5: Инициализируем Market Context Filter (было None — весь v4.0 функционал не работал!)
@@ -684,6 +412,23 @@ async def lifespan(app: FastAPI):
             state.watchlist = []
 
     print(f"📊 Watchlist: {len(state.watchlist)} symbols")
+    
+    # ✅ FIX v5.1: Фильтруем watchlist — оставляем только символы доступные на BingX
+    # Это устраняет постоянные ошибки 109425 (LIGHT-USDT, MON-USDT не листингованы)
+    if state.auto_trader and state.auto_trader.bingx:
+        try:
+            await state.auto_trader.bingx._load_contracts()
+            bingx_symbols = set(state.auto_trader.bingx._symbol_info_cache.keys())
+            before = len(state.watchlist)
+            state.watchlist = [
+                s for s in state.watchlist
+                if state.auto_trader.bingx._normalize_symbol(s) in bingx_symbols
+                   or state.auto_trader.bingx._normalize_symbol(s.replace('-USDT','') + 'USDT') in bingx_symbols
+            ]
+            removed = before - len(state.watchlist)
+            print(f"📋 BingX whitelist filter: {before} → {len(state.watchlist)} symbols ({removed} not on BingX removed)")
+        except Exception as e:
+            print(f"⚠️ BingX whitelist filter error: {e} — using full watchlist")
 
     state.is_running = True
     state.last_scan  = datetime.utcnow()
@@ -706,15 +451,6 @@ async def lifespan(app: FastAPI):
         redis_client=state.redis, binance_client=state.binance,
         config=Config, auto_trader=state.auto_trader,
     )
-
-    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
-    print("🧹 [STARTUP] Проверка zombie позиций...")
-    try:
-        cleaned = await state.tracker.cleanup_zombies()
-        if cleaned > 0:
-            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
-    except Exception as e:
-        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
 
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
@@ -747,7 +483,7 @@ async def health():
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return JSONResponse({"bot": "LONG Bot v6.0", "status": "running" if state.is_running else "stopped"})
+    return JSONResponse({"bot": "LONG Bot v2.9", "status": "running" if state.is_running else "stopped"})
 
 @app.get("/status")
 async def status():
@@ -870,48 +606,24 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
-        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
-        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
-        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: get_complete_market_data returned: {type(md)}")  # DEBUG
         if not md:
-            print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: NO market data")
             return None
-        print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: got market data, price={md.price}")  # DEBUG
         
         # ✅ FIX: Определяем price сразу, чтобы избежать UnboundLocalError
         price = md.price
-
-        # 🆕 Aegis: Фильтр минимальной капитализации ($900k)
-        market_cap = getattr(md, 'market_cap', 0) or 0
-        if market_cap and market_cap < Config.MIN_MARKET_CAP:
-            print(f"🔴 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} < ${Config.MIN_MARKET_CAP:,.0f} — skip")
-            return None
-        elif market_cap:
-            print(f"💰 [MARKET-CAP-LONG] {symbol}: cap=${market_cap:,.0f} ✅")
 
         # ✅ v4.0: MARKET CONTEXT FILTER — BTC корреляция, сессия, дневной стоп
         if hasattr(state, 'market_ctx') and state.market_ctx:
             ctx = await state.market_ctx.check(
                 direction="long",
                 symbol=symbol,
-                block_asian_session=False,  # ✅ FIX: Asian session OFF
+                block_asian_session=True,
                 allow_decoupled_alts=True
             )
             if not ctx.allowed:
                 # Логируем блокировку только 1 раз в минуту чтобы не спамить
                 print(f"⛔ [CTX-LONG] {symbol}: {ctx.block_reason}")
-                # 🆕 NEW: Telegram уведомление о блокировке (1 раз в 15 минут для BTC блока)
-                if hasattr(state, 'telegram') and state.telegram and 'BTC' in ctx.block_reason:
-                    try:
-                        cache_key = f"btc_block_long:{symbol}:{int(time.time() / 900)}"  # 15 минут
-                        if not state.redis.get(cache_key):
-                            block_alert = f"🔴 <b>BTC БЛОКИРОВКА LONG</b>\n\n{ctx.block_reason}\n\n📍 Символ: <b>#{symbol}</b>\n\n<i>Ждём стабилизации BTC...</i>"
-                            await state.telegram.send_message(block_alert)
-                            state.redis.set(cache_key, "1", 900)
-                            print(f"   📨 BTC block alert for LONG sent to Telegram")
-                    except Exception as e:
-                        print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 return None
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
@@ -921,47 +633,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         _rsi_tracker.update(symbol, rsi_current)
 
         # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
-        # ✅ FIX MTF: Full multi-timeframe loading (15m, 30m, 1h, 2h, 4h) — same as short-bot
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)
-        ohlcv_1h_task  = state.binance.get_klines(symbol, "1h", 50)
-        ohlcv_2h_task  = state.binance.get_klines(symbol, "2h", 20)
-        ohlcv_4h_task  = state.binance.get_klines(symbol, "4h", 14)
-        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
-            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
-        )
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 100)
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
+        ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
 
-        # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
-        if hasattr(state, 'candle_manager') and state.candle_manager:
-            try:
-                tf_data = {
-                    "15m": ohlcv_15m,
-                    "30m": ohlcv_30m,
-                    "1h": ohlcv_1h,
-                    "2h": ohlcv_2h,
-                    "4h": ohlcv_4h,
-                }
-                for tf, data in tf_data.items():
-                    if data:
-                        state.candle_manager.update_candles(symbol, tf, data)
-                
-                # Проверяем качество данных
-                quality = state.candle_manager.get_all_data_quality(symbol)
-                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
-                if insufficient:
-                    print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
-            except Exception as e:
-                print(f"[CandleHistory] {symbol} error: {e}")
-
-        # ✅ FIX MTF: Use real 15m data; smart TF priority (4h > 2h > 1h > 30m > 15m)
-        tf_priority = {"4h": 5, "2h": 4, "1h": 3, "30m": 2, "15m": 1}
+        # Используем 30m как основной ТФ для анализа (вместо 15m)
+        ohlcv_15m = ohlcv_30m  # совместимость с existing code
         primary_tf = "30m"
         ohlcv_primary = ohlcv_30m
-        for tf_name, tf_ohlcv in [("4h", ohlcv_4h), ("2h", ohlcv_2h), ("1h", ohlcv_1h), ("30m", ohlcv_30m), ("15m", ohlcv_15m)]:
-            if tf_ohlcv and len(tf_ohlcv) >= 20:
-                primary_tf = tf_name
-                ohlcv_primary = tf_ohlcv
-                break
         
         # =========================================================================
         # ✅ v2.8: SYMBOL PROFILER — индивидуальный профиль монеты
@@ -973,7 +652,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != "30m" and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
@@ -1011,10 +690,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if sweep and sweep["found"]:
                 # 2. Подтверждение фильтрами
                 tf_data_v26 = {}
-                if ohlcv_15m: tf_data_v26["15m"] = ohlcv_15m
                 if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
-                if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
-                if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
+                
                 confirmation = EntryConfirmation.comprehensive_check(
                     ohlcv_primary,
                     tf_data=tf_data_v26 if len(tf_data_v26) >= 1 else None,
@@ -1060,10 +737,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 3. Нет sweep — проверяем обычные фильтры (v2.9: бонусы, не блок)
             tf_data_v26 = {}
-            if ohlcv_15m: tf_data_v26["15m"] = ohlcv_15m
             if ohlcv_1h: tf_data_v26["1h"] = ohlcv_1h
-            if ohlcv_2h: tf_data_v26["2h"] = ohlcv_2h
-            if ohlcv_4h: tf_data_v26["4h"] = ohlcv_4h
             
             confirmation = EntryConfirmation.comprehensive_check(
                 ohlcv_primary,
@@ -1121,7 +795,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
         rsi_4h_adj = 0
         try:
-            # ohlcv_4h already loaded in parallel MTF block above
+            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
             if ohlcv_4h and len(ohlcv_4h) >= 14:
                 closes_4h = [c.close for c in ohlcv_4h[-14:]]
                 gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
@@ -1151,11 +825,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         oi_accumulation  = False
         oi_weakness_long = False
         oi_score_adj     = 0.0
-        
-        # ── Override tracking (для честного отображения скора) ──────────────────
-        override_used = False
-        override_type = None
-        base_score_before_override = 0
 
         try:
             oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
@@ -1233,40 +902,30 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
-        # ✅ FIX v7: Детальные логи score breakdown
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
-
         if not score_result.is_valid:
             override_reason = None
             boost = 0
             
-            # ✅ TIGHT v3.2: Only override with STRONG multi-factor confluence
-            # Уровень 1: TBS + OB >= 70 — максимальный оверрайд
+            # Уровень 1: TBS + OB >= 70 — сильный оверрайд (было единственным условием)
             if tbs_found and ob_q_high:
                 override_reason = f"TBS+OB_Q{ob_quality}"
                 boost = 15
-            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд
+            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд  
             elif tbs_found and ob_quality_ok:
                 override_reason = f"TBS+OB_Q{ob_quality}"
                 boost = 10
-            # Уровень 3: TBS + сильное подтверждение (base_score_bonus >= 8, был >= 5)
-            elif tbs_found and base_score_bonus >= 8:
+            # Уровень 3: только TBS без OB (риск выше)
+            elif tbs_found and base_score_bonus >= 5:
                 override_reason = f"TBS+confirmation"
                 boost = 8
-            # Уровень 4: OB >= 70 + подтверждение (убрано standalone без confirmation)
-            elif ob_q_high and base_score_bonus >= 8:
-                override_reason = f"OB_Q{ob_quality}+strong_confirmation"
-                boost = 8
-            # ❌ REMOVED: standalone OB override without confirmation — слишком много ложных входов
+            # Уровень 4: OB >= 70 без TBS (институциональная зона)
+            elif ob_q_high and base_score_bonus >= 3:
+                override_reason = f"OB_Q{ob_quality}+confirmation"
+                boost = 5
             
             if override_reason:
                 print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
                 from core.scorer import ScoreResult, Confidence
-                # Помечаем что использован оверрайд
-                override_used = True
-                override_type = override_reason
                 score_result = ScoreResult(
                     total_score=max(70, score_result.total_score + boost),
                     max_possible=score_result.max_possible,
@@ -1278,46 +937,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
                 )
             else:
-                # ✅ FIX v3.2: Bear Market Pass DISABLED — produces low quality trades
-                # Score must legitimately pass MIN_SCORE or override conditions above
-                print(f"🔴 [FILTER0-LONG] {symbol}: score={score_result.total_score:.1f} < MIN, no override → skip")
+                print(f"🔴 [FILTER0-LONG] {symbol}: score_result.is_valid=False — отфильтрован! (нет TBS/OB70)")
                 return None
         
         reasons     = list(score_result.reasons)
-        base_score_before_override = score_result.total_score  # Сохраняем базовый скор
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
-        
-        # 🆕 NEW: Market Data Integrator — полный рыночный контекст
-        market_context_adjustment = 0
-        if hasattr(state, 'market_integrator') and state.market_integrator:
-            try:
-                # Получаем полный контекст
-                ctx = await state.market_integrator.get_full_context(symbol)
-                
-                # Логируем контекст
-                await state.market_integrator.log_context(symbol, ctx, "long")
-                
-                # Рассчитываем корректировку
-                adjustment = state.market_integrator.calculate_score_adjustment(ctx, "long")
-                market_context_adjustment = adjustment["score_delta"]
-                
-                # Добавляем причины
-                reasons.extend(adjustment["reasons"])
-                
-                # Блокировка если нужно
-                if adjustment["should_block"]:
-                    print(f"🔴 [MARKET-INTEGRATOR-LONG] {symbol}: BLOCKED — {adjustment['reasons'][:2]}")
-                    return None
-                
-                # Применяем корректировку
-                final_score += market_context_adjustment
-                final_score = min(100, final_score)  # Cap at 100
-                
-                print(f"📊 [MARKET-INTEGRATOR-LONG] {symbol}: score adjusted by {market_context_adjustment:+d} "
-                      f"(quality: {ctx.data_quality_score}%, confidence: {adjustment['confidence']})")
-                
-            except Exception as e:
-                print(f"⚠️ [MARKET-INTEGRATOR-LONG] {symbol}: Error — {e}")
 
         # ── Realtime scorer ───────────────────────────────────────────────────
         rt = get_realtime_scorer()
@@ -1511,58 +1135,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception as e:
             print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
 
-        # 🆕 Aegis: Z-Score Pump/Dump Detection
-        try:
-            pump_result = detect_pump(_ohlcv(ohlcv_15m), direction="long")
-            if pump_result.detected and pump_result.signal_type == "dump":
-                # Для LONG: дамп (Z < -2) = хороший вход
-                z_bonus = min(15, int(abs(pump_result.z_score) * 3))  # Z=-3 → +9
-                final_score = min(100, final_score + z_bonus)
-                reasons.append(f"📉 Z-Score Dump: {pump_result.z_score:.1f}σ (RSI {pump_result.rsi:.0f}) +{z_bonus}")
-                print(f"🎯 [AEGIS-Z] {symbol}: DUMP detected Z={pump_result.z_score:.2f}, +{z_bonus} to score")
-            elif pump_result.z_score > 2.0:
-                # Для LONG: памп (Z > 2) = плохой вход, штраф
-                z_penalty = min(10, int(pump_result.z_score * 2))
-                final_score = max(0, final_score - z_penalty)
-                reasons.append(f"⚠️ Z-Score Pump: +{pump_result.z_score:.1f}σ — штраф -{z_penalty}")
-        except Exception as e:
-            print(f"[AEGIS-Z] {symbol} error: {e}")
-
-        # 🆕 Aegis: Delta Analyzer (CVD + Order Flow)
-        try:
-            delta_result = analyze_delta(_ohlcv(ohlcv_15m), direction="long")
-            if delta_result.score >= 30:
-                # Для LONG: bullish divergence или buy imbalance
-                delta_bonus = min(15, int(delta_result.score * 0.25))  # max +15
-                final_score = min(100, final_score + delta_bonus)
-                reasons.append(f"🌊 Delta/CVD: {delta_result.reasons[0][:50]}... +{delta_bonus}")
-                print(f"🎯 [AEGIS-Δ] {symbol}: CVD score={delta_result.score:.0f}, +{delta_bonus}")
-        except Exception as e:
-            print(f"[AEGIS-Δ] {symbol} error: {e}")
-
-        # 🆕 NEW: Dump Detector (Flash Crash Detection)
-        try:
-            if hasattr(state, 'dump_detector') and state.dump_detector:
-                dump_result = state.dump_detector.analyze(
-                    _ohlcv(ohlcv_15m),
-                    cvd_value=delta_result.cvd_pressure if 'delta_result' in locals() else None
-                )
-                if dump_result.detected:
-                    if dump_result.is_bottoming:
-                        # Для LONG: дамп + дно = отличный вход
-                        bottom_bonus = min(20, int(dump_result.confidence / 5))
-                        final_score = min(100, final_score + bottom_bonus)
-                        reasons.append(f"📈 Dump Bottoming: {dump_result.dump_type.value} +{bottom_bonus}")
-                        print(f"🎯 [DUMP-LONG] {symbol}: BOTTOM detected after {dump_result.dump_type.value}, +{bottom_bonus}")
-                    else:
-                        # Для LONG: дамп без дна = опасно, штраф
-                        dump_penalty = min(15, int(dump_result.confidence / 6))
-                        final_score = max(0, final_score - dump_penalty)
-                        reasons.append(f"⚠️ Active Dump: {dump_result.dump_type.value} -{dump_penalty}")
-                        print(f"⚠️ [DUMP-LONG] {symbol}: Active dump {dump_result.dump_type.value}, -{dump_penalty}")
-        except Exception as e:
-            print(f"[DUMP-LONG] {symbol} error: {e}")
-
         if final_score < Config.MIN_SCORE:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
@@ -1578,70 +1150,16 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ]
 
         sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
-        
-        # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
-        # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
-        has_smc_pattern = (
-            patterns or  # Есть паттерн от pattern_detector
-            (ob_quality >= 60) or  # Есть качественный Order Block
-            tbs_found or  # Есть TBS (Test Before Strike)
-            (pool_data.get("active_sweeps", 0) > 0) or  # Есть активный sweep ликвидности
-            # 🆕 Aegis: Сильный Z-Score дамп тоже паттерн!
-            (pump_result.detected if 'pump_result' in locals() else False) or
-            # 🆕 Aegis: Сильная дивергенция CVD тоже паттерн!
-            (delta_result.score >= 40 if 'delta_result' in locals() else False)
-        )
-        
-        if not has_smc_pattern:
-            print(f"🔴 [FILTER-SMC-LONG] {symbol}: Нет SMC паттерна — сигнал отменён!")
-            return None
-        
-        # Определяем лучший паттерн для отображения
-        if not best_pattern:
-            if ob_quality >= 60:
-                best_pattern = f"OB_Q{ob_quality}"
-            elif tbs_found:
-                best_pattern = "TBS"
-            elif pool_data.get("active_sweeps", 0) > 0:
-                best_pattern = "LIQUIDITY_SWEEP"
-            # 🆕 Aegis: Z-Score паттерны
-            elif 'pump_result' in locals() and pump_result.detected:
-                best_pattern = f"Z-SCORE_{pump_result.signal_type.upper()}"
-            # 🆕 Aegis: Delta/CVD паттерны
-            elif 'delta_result' in locals() and delta_result.score >= 40:
-                best_pattern = f"CVD_{delta_result.divergence.upper()}"
-            else:
-                best_pattern = "SMC_STRUCTURE"
-        
-        # ✅ FIX v3.2: HTF (4h) bias filter — don't long into a confirmed 4h downtrend
-        if ohlcv_4h and len(ohlcv_4h) >= 14:
-            try:
-                closes_4h_bias = [c.close for c in ohlcv_4h[-14:]]
-                ema9_4h  = sum(closes_4h_bias[-9:]) / 9
-                ema21_4h = sum(closes_4h_bias[-21:]) / 21 if len(closes_4h_bias) >= 21 else sum(closes_4h_bias) / len(closes_4h_bias)
-                if ema9_4h < ema21_4h * 0.995:  # 4h downtrend — allow only score >= 90
-                    if final_score < 90:
-                        print(f"🚫 [HTF-FILTER-LONG] {symbol}: 4h downtrend (EMA9={ema9_4h:.4f} < EMA21={ema21_4h:.4f}), score={final_score} < 90 → skip")
-                        return None
-                    else:
-                        print(f"⚠️ [HTF-WARN-LONG] {symbol}: 4h downtrend but score={final_score} >= 90, allowing")
-            except Exception:
-                pass
-
-        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
+        print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} — сигнал создан!")
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
             "confidence": score_result.confidence.value,
-            # ✅ Честное отображение скора
-            "base_score": base_score_before_override,
-            "override_used": override_used,
-            "override_type": override_type,
             "price": price, "entry_price": entry_price,
             "stop_loss": round(stop_loss, 8), "sl_pct": sl_pct,
             "take_profits": take_profits,
             "patterns": [p.name for p in patterns],
-            "best_pattern": best_pattern,
+            "best_pattern": patterns[0].name if patterns else None,
             "elliott_wave": elliott_data if 'elliott_data' in locals() else None,
             "indicators": {
                 "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
@@ -1682,9 +1200,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "status": "active", "taken_tps": [],
         }
     except Exception as e:
-        import traceback
-        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {e}")
-        print(f"🔴 [SCAN-LONG-ERROR] {symbol}: {traceback.format_exc()[:500]}")
+        print(f"Error scanning {symbol}: {e}")
         return None
 
 
@@ -1719,9 +1235,7 @@ async def scan_market():
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - Единственный блокер: команда /pause
     """
-    print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
-        print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
         return
 
     print(f"\n🔍 LONG scan at {datetime.utcnow().strftime('%H:%M:%S UTC')}")
@@ -1750,14 +1264,11 @@ async def scan_market():
             except Exception:
                 pass
 
-            print(f"🔍 [DEBUG-LONG] {symbol}: calling scan_symbol...")  # DEBUG
             signal = await scan_symbol(symbol)
             if not signal:
-                print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned None")  # DEBUG
                 continue
-            print(f"🔍 [DEBUG-LONG] {symbol}: scan_symbol returned signal! score={signal.get('score', 0)}")  # DEBUG
 
-            # ✅ ВСЕГДА: Telegram сигнал (с честным отображением скора)
+            # ✅ ВСЕГДА: Telegram сигнал (независимо от состояния биржи)
             tg_msg_id = await state.telegram.send_signal(
                 direction="long", symbol=signal["symbol"],
                 score=signal["score"], price=signal["price"],
@@ -1767,9 +1278,6 @@ async def scan_market():
                 stop_loss=signal["stop_loss"],
                 take_profits=signal["take_profits"],
                 leverage=Config.LEVERAGE, risk="≤1% deposit",
-                base_score=signal.get("base_score"),
-                override_used=signal.get("override_used", False),
-                override_type=signal.get("override_type"),
             )
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
@@ -1794,92 +1302,6 @@ async def scan_market():
         except Exception as e:
             print(f"Error {symbol}: {e}")
 
-    # 🆕 NEW: Momentum Scanning (Trend Following)
-    if Config.ENABLE_MOMENTUM_LONG and hasattr(state, 'momentum_detector'):
-        try:
-            print(f"\n🚀 [MOMENTUM-LONG] Scanning {len(state.watchlist)} symbols for velocity...")
-            
-            async def get_1m_candles(symbol, tf, limit):
-                return await state.binance.get_recent_candles(symbol, timeframe="1m", limit=30)
-            
-            momentum_signals = await state.momentum_detector.scan_watchlist(
-                state.watchlist,
-                get_1m_candles,
-                min_volume_usdt=100000,  # Ниже порог для мемов
-                debug=True  # 🔍 DEBUG: показывать почему отсеиваются монеты
-            )
-            
-            if momentum_signals:
-                print(f"🎯 [MOMENTUM-LONG] Found {len(momentum_signals)} momentum signals")
-                
-                for mom_sig in momentum_signals:
-                    try:
-                        symbol = mom_sig.symbol
-                        
-                        # Дедупликация: не повторяем недавний сигнал
-                        if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
-                            continue
-                        
-                        # Преобразуем momentum signal в формат обычного сигнала
-                        signal = {
-                            "symbol": symbol,
-                            "direction": "long",
-                            "score": mom_sig.score,
-                            "price": mom_sig.entry_price,
-                            "entry_price": mom_sig.entry_price,
-                            "stop_loss": round(mom_sig.entry_price * (1 - Config.MOMENTUM_LONG_SL_BUFFER/100), 6),
-                            "take_profits": [
-                                round(mom_sig.entry_price * 1.015, 6),  # TP1 1.5%
-                                round(mom_sig.entry_price * 1.03, 6),   # TP2 3%
-                            ],
-                            "sl_pct": Config.MOMENTUM_LONG_SL_BUFFER,
-                            "best_pattern": "momentum_velocity",
-                            "indicators": {
-                                "rsi": round(mom_sig.rsi, 1),
-                                "volume_spike": round(mom_sig.volume_spike, 1),
-                                "velocity_1m": round(mom_sig.change_1m, 2),
-                                "factors": mom_sig.factors
-                            },
-                            "signal_type": "momentum",
-                            "risk_per_trade": Config.MOMENTUM_LONG_RISK_PER_TRADE,
-                        }
-                        
-                        # Telegram сигнал
-                        tg_msg_id = await state.telegram.send_signal(
-                            direction="long", symbol=symbol,
-                            score=signal["score"], price=signal["price"],
-                            pattern="🚀 MOMENTUM",
-                            indicators=signal["indicators"],
-                            entry=signal["entry_price"],
-                            stop_loss=signal["stop_loss"],
-                            take_profits=signal["take_profits"],
-                            leverage=Config.LEVERAGE, risk="≤0.5% deposit",
-                        )
-                        signal["tg_msg_id"] = tg_msg_id
-                        state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-                        
-                        # Биржевое исполнение momentum сигналов (только если есть слоты)
-                        if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
-                            if state.auto_trader:
-                                try:
-                                    # Momentum использует отдельный риск!
-                                    await state.auto_trader.execute_momentum_signal(signal)
-                                    active_count += 1
-                                    exchange_full = active_count >= Config.MAX_POSITIONS
-                                    new_signals += 1
-                                    print(f"✅ [MOMENTUM-LONG] Executed: {symbol} Score={signal['score']:.0f}%")
-                                except Exception as e:
-                                    print(f"❌ [MOMENTUM-LONG] Error {symbol}: {e}")
-                        else:
-                            tg_only_count += 1
-                            print(f"📡 [MOMENTUM-LONG] TG-only: {symbol}")
-                            
-                    except Exception as e:
-                        print(f"❌ [MOMENTUM-LONG] Signal error: {e}")
-                        
-        except Exception as e:
-            print(f"❌ [MOMENTUM-LONG] Scanner error: {e}")
-    
     state.daily_signals += new_signals + tg_only_count
     state.last_scan      = datetime.utcnow()
     state.active_signals = len(state.redis.get_active_signals(Config.BOT_TYPE))

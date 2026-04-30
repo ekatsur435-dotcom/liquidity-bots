@@ -1,20 +1,18 @@
 """
-Market Data Client v3.0 — Multi-Source Fallback Architecture
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ИСТОЧНИКИ ДАННЫХ (приоритет от высокого к низкому):
-  1️⃣ OKX        — OI, фандинг, ликвидации, taker volume (публичные, работают!)
-  2️⃣ Bybit      — основной источник цен, watchlist (работает без прокси)
-  3️⃣ Binance    — fallback через прокси (часть endpoints не работает)
-  4️⃣ Coinglass  — ликвидации, funding heatmap (нужен API ключ)
-  5️⃣ Estimation — расчёт из свечей если все API недоступны
+Market Data Client v2.7 — Bybit (основной) + Binance через прокси
 
-ИЗМЕНЕНИЯ v3.0:
-  ✅ OKX Client integration — полный fallback для всех broken Binance endpoints
-  ✅ get_open_interest_history — OKX → Bybit → Binance → estimation
-  ✅ get_taker_buy_sell_ratio — OKX taker volume → estimation from klines
-  ✅ get_liquidations — OKX → Coinglass → estimation
-  ✅ get_funding_rate — OKX → Bybit → Binance
-  ✅ Автоматический source switching при ошибках API
+ИЗМЕНЕНИЯ v2.7:
+  ✅ get_all_symbols: default min_volume снижен 5M → 300K (было 50 монет, стало 150-200)
+  ✅ MarketData: добавлены поля для breakout/momentum анализа:
+       volume_spike_ratio  — объём последней 15м свечи / средний объём (20 свечей)
+       price_change_1h     — изменение цены за последний час %
+       atr_14_pct          — ATR(14) на 15м как % от цены (волатильность)
+       candle_body_pct     — тело последней свечи как % от ATR (сила свечи)
+       volume_15m_candles  — последние 20 объёмов на 15м (для паттерн-детектора)
+       high_24h / low_24h  — хай/лоу за сутки (для breakout зон)
+  ✅ get_breakout_data()   — быстрый метод только для breakout проверки
+  ✅ get_volume_spike_ratio() — отдельный метод для volume spike
+  ✅ _symbols_bybit: возвращает до MAX_WATCHLIST символов (не ограничено 200)
 """
 
 import os
@@ -25,11 +23,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import time
 import statistics
-
-# ✅ NEW: OKX Client для fallback данных
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from api.okx_client import get_okx_client, OKXClient
 
 
 @dataclass
@@ -88,9 +81,6 @@ class MarketData:
 
     # Расстояние до 24h low в %
     pct_from_low_24h:     float = 5.0
-
-    # Breakout score (0-1) — сила пробоя уровней
-    breakout_score:       float = 0.0
 
     # ── Realtime метрики (из Pump Detector) ──────────────────────────────────
     # Taker buy/sell ratio: 0.0 = все продают, 1.0 = все покупают
@@ -210,21 +200,28 @@ class BinanceFuturesClient:
         self.last_request_time = time.time()
 
     async def close(self):
-        # 🆕 FIX: Не закрываем сессию если это singleton и другие боты могут использовать
-        # Сбрасываем флаг чтобы следующий бот переинициализировал прокси при необходимости
-        if hasattr(self, '_source_ready'):
-            self._source_ready = False
-        # Сессия остаётся открытой для других ботов (singleton)
-        # await self.session.close()  # ← Отключено: shared между ботами
+        """✅ FIX v5.1: close session but DON'T reset _source_ready.
+        Setting _source_ready=False would force re-init which can cause issues.
+        Instead we rely on _get_session() to recreate closed sessions.
+        """
+        if self.session and not self.session.closed:
+            await self.session.close()
+            # Do NOT reset _source_ready - just let _get_session handle reconnect
 
     async def _init_source(self):
-        # 🆕 FIX: Проверяем что сессия живая, иначе переинициализируем
+        """✅ FIX v5.1: Check session health before skipping re-init.
+        Previously: closed session + _source_ready=True → NO market data forever
+        Now: if session is dead, force re-init of connection.
+        """
+        # If already initialized AND session is alive → skip
         if hasattr(self, '_source_ready') and self._source_ready:
+            # Verify session is actually usable
             if self.session and not self.session.closed:
-                return  # Всё ок, сессия жива
-            # Сессия закрыта — нужно переинициализировать
-            print("⚠️ [BINANCE] Session closed, reinitializing...")
-            self._source_ready = False
+                return
+            # Session died → force re-initialization
+            print("⚠️ [BinanceClient] Session dead, re-initializing...")
+            del self._source_ready
+        self._source_ready = True
 
         if not self._try_binance:
             self._use_binance = False
@@ -286,92 +283,30 @@ class BinanceFuturesClient:
             return None
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
-        """
-        ✅ v3.0 Отказоустойчивость: пробуем все прокси по очереди
-        Если все прокси упали → возвращаем None (вызывающий код попробует Bybit)
-        """
         await self._rate_limit()
-        
-        errors = []
-        
-        # 🆕 FIX: Сначала пробуем напрямую (быстрее, если нет геоблокировки)
+        proxy = self._active_proxy or self._next_proxy()
         try:
             session = await self._get_session()
             async with session.get(
                 f"{self.BINANCE_URL}{endpoint}",
                 params=params or {},
-                timeout=aiohttp.ClientTimeout(total=8),
+                proxy=proxy,
+                timeout=aiohttp.ClientTimeout(total=10),
                 ssl=False
             ) as resp:
                 if resp.status == 200:
-                    print(f"   ✅ [BINANCE] Direct connection success: {endpoint}")
                     return await resp.json()
-                else:
-                    errors.append(f"direct:{resp.status}")
-        except Exception as e:
-            errors.append(f"direct:{type(e).__name__}")
-        
-        # 🆕 FIX: Если напрямую не работает (геоблокировка) → пробуем прокси
-        for idx, proxy in enumerate(self._proxies[:5]):  # Максимум 5 прокси
-            try:
-                session = await self._get_session()
-                host = proxy.split('@')[-1] if '@' in proxy else proxy
-                async with session.get(
-                    f"{self.BINANCE_URL}{endpoint}",
-                    params=params or {},
-                    proxy=proxy,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                    ssl=False
-                ) as resp:
-                    if resp.status == 200:
-                        # ✅ Успех! Запоминаем рабочий прокси
-                        if self._active_proxy != proxy:
-                            self._active_proxy = proxy
-                            print(f"🔄 [BINANCE] Switched to working proxy ({host})")
-                        print(f"   ✅ [BINANCE] Proxy success: {endpoint}")
-                        return await resp.json()
-                    else:
-                        # HTTP ошибка (403, 429, etc)
-                        errors.append(f"proxy{idx+1}:{resp.status}")
-                        
-            except Exception as e:
-                errors.append(f"proxy{idx+1}:{type(e).__name__}")
-                continue
-        
-        # ❌ Все попытки упали
-        error_summary = ", ".join(errors[:4])  # Первые 4 ошибки
-        print(f"🔴 [BINANCE] All connections failed for {endpoint}. Errors: {error_summary}")
-        return None
+                return None
+        except Exception:
+            return None
 
     async def _req(self, binance_ep: str, bybit_ep: str,
                    binance_params: Dict = None,
                    bybit_params: Dict = None) -> Optional[Any]:
-        """
-        ✅ v3.1 Отказоустойчивость: авто-переключение Binance ↔ Bybit
-        """
         await self._init_source()
-        
-        # Пробуем основной источник
         if self._use_binance:
-            result = await self._binance(binance_ep, binance_params)
-            if result is not None:
-                return result
-            # ❌ Binance упал → пробуем Bybit
-            print(f"⚠️ [FALLBACK] Binance failed for {binance_ep}, trying Bybit...")
-            result = await self._bybit(bybit_ep, bybit_params)
-            if result is not None:
-                print(f"✅ [FALLBACK] Bybit success for {bybit_ep}")
-            return result
-        else:
-            result = await self._bybit(bybit_ep, bybit_params)
-            if result is not None:
-                return result
-            # ❌ Bybit упал → пробуем Binance
-            print(f"⚠️ [FALLBACK] Bybit failed for {bybit_ep}, trying Binance...")
-            result = await self._binance(binance_ep, binance_params)
-            if result is not None:
-                print(f"✅ [FALLBACK] Binance success for {binance_ep}")
-            return result
+            return await self._binance(binance_ep, binance_params)
+        return await self._bybit(bybit_ep, bybit_params)
 
     # =========================================================================
     # SYMBOLS
@@ -588,59 +523,35 @@ class BinanceFuturesClient:
 
     async def get_open_interest(self, symbol: str) -> Optional[float]:
         await self._init_source()
-        # ✅ FIX: Try Bybit FIRST (works without proxies), then Binance
+        if self._use_binance:
+            d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
+            if d:
+                return float(d.get("openInterest", 0))
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
             items = result.get("list", [])
             if items:
                 oi = items[0].get("openInterest")
-                if oi:
-                    return float(oi)
-        # Fallback to Binance
-        if self._use_binance:
-            d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
-            if d:
-                return float(d.get("openInterest", 0))
+                return float(oi) if oi else None
         return None
 
     async def get_open_interest_history(self, symbol: str,
                                          period: str = "1h", limit: int = 5) -> List[Dict]:
-        """
-        Получить историю Open Interest с многоуровневым fallback:
-        OKX → Bybit → Binance → empty list
-        """
         await self._init_source()
-        
-        # 🆕 NEW: Level 1 — OKX (работает без прокси!)
-        okx = get_okx_client()
-        okx_data = await okx.get_open_interest_history(symbol, period, limit)
-        if okx_data:
-            print(f"   ✅ OI from OKX: {len(okx_data)} points")
-            return okx_data
-        
-        # Level 2 — Bybit
+        if self._use_binance:
+            d = await self._binance("/fapi/v1/openInterestHist",
+                                    {"symbol": symbol, "period": period, "limit": limit})
+            return d or []
         imap = {"5m": "5min", "15m": "15min", "30m": "30min",
                 "1h": "1h", "4h": "4h", "1d": "1d"}
         result = await self._bybit("/v5/market/open-interest",
                                    {"category": "linear", "symbol": symbol,
                                     "intervalTime": imap.get(period, "1h"),
                                     "limit": limit})
-        if result and result.get("list"):
-            print(f"   ✅ OI from Bybit: {len(result.get('list', []))} points")
-            return [{"sumOpenInterest": item.get("openInterest", 0), 
-                     "timestamp": int(item.get("ts", 0))}
+        if result:
+            return [{"sumOpenInterest": item.get("openInterest", 0)}
                     for item in result.get("list", [])]
-        
-        # Level 3 — Binance (часто не работает /fapi/v1/openInterestHist)
-        if self._use_binance:
-            d = await self._binance("/fapi/v1/openInterestHist",
-                                    {"symbol": symbol, "period": period, "limit": limit})
-            if d:
-                print(f"   ✅ OI from Binance: {len(d)} points")
-                return d
-        
-        print(f"   ⚠️ OI data unavailable for {symbol}")
         return []
 
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
@@ -677,19 +588,8 @@ class BinanceFuturesClient:
         """
         Получить Taker Buy/Sell Volume Ratio.
         0.0 = все продают агрессивно, 1.0 = все покупают агрессивно.
-        
-        Fallback: OKX taker volume → estimation from klines
         """
         await self._init_source()
-        
-        # 🆕 NEW: Level 1 — OKX taker volume (альтернатива taker ratio)
-        okx = get_okx_client()
-        okx_taker = await okx.get_taker_volume(symbol, period)
-        if okx_taker:
-            print(f"   ✅ Taker ratio from OKX: {okx_taker.ratio:.2f}")
-            return okx_taker.ratio
-        
-        # Level 2 — Binance (часто не работает /futures/data/takerBuySellVolRatio)
         if self._use_binance:
             d = await self._binance("/futures/data/takerBuySellVolRatio",
                                     {"symbol": symbol, "period": period, "limit": 1})
@@ -697,67 +597,16 @@ class BinanceFuturesClient:
                 buy_vol = float(d[0].get("buyVol", 0))
                 sell_vol = float(d[0].get("sellVol", 0))
                 total = buy_vol + sell_vol
-                if total > 0:
-                    ratio = buy_vol / total
-                    print(f"   ✅ Taker ratio from Binance: {ratio:.2f}")
-                    return ratio
-        
-        # Level 3 — Estimation from klines (close vs open)
-        try:
-            klines = await self.get_klines(symbol, period, 10)
-            if klines:
-                buy_vol = 0
-                total_vol = 0
-                for c in klines:
-                    vol = getattr(c, 'volume', 0)
-                    total_vol += vol
-                    if getattr(c, 'close', 0) > getattr(c, 'open', 0):
-                        buy_vol += vol
-                if total_vol > 0:
-                    estimated = buy_vol / total_vol
-                    print(f"   ⚠️ Estimated taker ratio from klines: {estimated:.2f}")
-                    return estimated
-        except Exception:
-            pass
-        
+                return buy_vol / total if total > 0 else None
         return None
 
     async def get_liquidations(self, symbol: str,
                                 limit: int = 100) -> Optional[Dict]:
         """
-        Получить данные о ликвидациях.
-        Fallback: OKX → Coinglass → estimation from volume spikes
+        Получить данные о ликвидациях за последние сделки.
+        Возвращает сумму в USD и доминирующую сторону.
         """
         await self._init_source()
-        
-        # 🆕 NEW: Level 1 — OKX liquidations (работает без прокси!)
-        okx = get_okx_client()
-        okx_liq = await okx.get_liquidations(symbol, limit)
-        if okx_liq:
-            print(f"   ✅ Liquidations from OKX: ${okx_liq.get('total_usd', 0):,.0f}")
-            return okx_liq
-        
-        # Level 2 — Coinglass (если есть API ключ)
-        try:
-            from api.coinglass_client import get_coinglass_client
-            cg = get_coinglass_client()
-            if cg.api_key:  # Только если ключ настроен
-                cg_liq = await cg.get_liquidations(symbol, hours=1)
-                if cg_liq and cg_liq.get('total_1h'):
-                    total = cg_liq.get('total_1h', 0)
-                    long_liq = cg_liq.get('long_liq_1h', total * 0.5)
-                    short_liq = cg_liq.get('short_liq_1h', total * 0.5)
-                    print(f"   ✅ Liquidations from Coinglass: ${total:,.0f}")
-                    return {
-                        "total_usd": total,
-                        "long_liq_usd": long_liq,
-                        "short_liq_usd": short_liq,
-                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT"
-                    }
-        except Exception:
-            pass
-        
-        # Level 3 — Binance (часто не работает /fapi/v1/allForceOrders)
         if self._use_binance:
             try:
                 d = await self._binance("/fapi/v1/allForceOrders",
@@ -771,11 +620,12 @@ class BinanceFuturesClient:
                         side = order.get("side", "").upper()
                         usd = qty * price
                         if side == "SELL":
+                            # SELL liquidation = LONG position liquidated
                             long_liq += usd
                         else:
+                            # BUY liquidation = SHORT position liquidated
                             short_liq += usd
                     total = long_liq + short_liq
-                    print(f"   ✅ Liquidations from Binance: ${total:,.0f}")
                     return {
                         "total_usd": total,
                         "long_liq_usd": long_liq,
@@ -784,8 +634,6 @@ class BinanceFuturesClient:
                     }
             except Exception:
                 pass
-        
-        print(f"   ⚠️ Liquidation data unavailable for {symbol}")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
@@ -838,8 +686,7 @@ class BinanceFuturesClient:
     @staticmethod
     def _calc_atr(candles: List[CandleData], period: int = 14) -> float:
         """ATR(14) — Average True Range."""
-        # ✅ FIX: защита от одиночного CandleData вместо списка
-        if not isinstance(candles, list) or len(candles) < period + 1:
+        if len(candles) < period + 1:
             return 0.0
         trs = []
         for i in range(1, len(candles)):
@@ -858,8 +705,7 @@ class BinanceFuturesClient:
         Отношение объёма последней свечи к среднему за lookback свечей.
         >2.0 = volume spike, >5.0 = экстремальный spike.
         """
-        # ✅ FIX: защита от одиночного CandleData вместо списка
-        if not isinstance(candles, list) or len(candles) < lookback + 1:
+        if len(candles) < lookback + 1:
             return 1.0
         vols = [c.quote_volume for c in candles[-(lookback+1):-1]]
         if not vols:
@@ -968,10 +814,8 @@ class BinanceFuturesClient:
         Полные рыночные данные.
         v2.1: добавлены breakout поля из 15м свечей.
         """
-        print(f"🔍 [API-CALL] get_complete_market_data({symbol}) called")  # DEBUG ENTRY
         try:
             await self._init_source()
-            print(f"🔍 [API-CALL] {symbol}: _init_source passed")  # DEBUG
 
             results = await asyncio.gather(
                 self.get_price(symbol),
@@ -979,27 +823,17 @@ class BinanceFuturesClient:
                 self.get_open_interest(symbol),
                 self.get_long_short_ratio(symbol),
                 self.get_24h_ticker(symbol),
-                self.get_klines(symbol, "1h", 200),
-                self.get_klines(symbol, "15m", 200),   # ← NEW: 15м данные (увеличили до 200)
+                self.get_klines(symbol, "1h", 100),
+                self.get_klines(symbol, "15m", 50),   # ← NEW: 15м данные
                 return_exceptions=True
             )
 
             price, funding, oi, ratio, ticker, klines_1h, klines_15m = results
 
-            # 🆕 DEBUG: Логируем что именно падает
-            if isinstance(price, Exception):
-                print(f"🔴 [API-DEBUG] {symbol}: get_price ERROR: {price}")
+            if isinstance(price, Exception) or not price:
                 return None
-            if not price:
-                print(f"🔴 [API-DEBUG] {symbol}: get_price returned None")
+            if isinstance(klines_1h, Exception) or not klines_1h or len(klines_1h) < 20:
                 return None
-            if isinstance(klines_1h, Exception):
-                print(f"🔴 [API-DEBUG] {symbol}: get_klines(1h) ERROR: {klines_1h}")
-                return None
-            if not klines_1h or len(klines_1h) < 20:
-                print(f"🔴 [API-DEBUG] {symbol}: get_klines(1h) returned {len(klines_1h) if klines_1h else 0} candles")
-                return None
-            print(f"✅ [API-DEBUG] {symbol}: data OK price={price}, klines={len(klines_1h)}")  # DEBUG
 
             funding   = None if isinstance(funding,   Exception) else funding
             oi        = None if isinstance(oi,        Exception) else oi
@@ -1040,7 +874,6 @@ class BinanceFuturesClient:
             vol_15m_list   = []
             high_24h       = 0.0
             low_24h        = 0.0
-            breakout_score = 0.0
             pct_from_high  = 5.0
             pct_from_low   = 5.0
 
@@ -1071,33 +904,39 @@ class BinanceFuturesClient:
                 rsi_1h=rsi,
                 funding_rate=round(float(funding) * 100, 4) if funding else 0.0,
                 funding_accumulated=funding_acc,
-                price_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
-                price_change_1h=price_chg_1h,
-                volume_24h=float(ticker.get("volume", 0)) * price if ticker else 0.0,
-                volume_change_24h=float(ticker.get("priceChangePercent", 0)) * 0.5 if ticker else 0.0,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
-                long_short_ratio=float(ratio) if isinstance(ratio, (int, float)) else (ratio.get("longShortRatio", 1.0) if isinstance(ratio, dict) else 1.0),
+                # ✅ FIX L/S: санитарная проверка — если ratio вне 25-75% → 50 (API баг)
+                long_short_ratio=float(ratio) if ratio and 10 <= float(ratio) <= 90 else 50.0,
+                volume_24h=float(ticker.get("quoteVolume", 0)) if isinstance(ticker, dict) else 0.0,
+                volume_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
+                price_change_24h=float(ticker.get("priceChangePercent", 0)) if isinstance(ticker, dict) else 0.0,
                 hourly_deltas=hourly_vols,
+                last_updated=datetime.utcnow(),
+                # ── Breakout поля ────────────────────────────────────────────
+                volume_spike_ratio=round(vol_spike, 2),
+                price_change_1h=round(price_chg_1h, 3),
+                atr_14_pct=round(atr_pct, 3),
+                candle_body_pct=round(body_pct, 3),
+                volume_15m_candles=vol_15m_list,
+                high_24h=high_24h,
+                low_24h=low_24h,
+                pct_from_high_24h=round(pct_from_high, 3),
+                pct_from_low_24h=round(pct_from_low, 3),
+                # ── Realtime метрики ───────────────────────────────────────
                 taker_buy_sell_ratio=taker_buy_sell_ratio,
                 recent_liquidations_usd=recent_liquidations_usd,
                 liq_side=liq_side,
                 top_trader_long_short_ratio=top_trader_long_short_ratio,
-                last_updated=datetime.utcnow(),
-                breakout_score=breakout_score,
-                volume_spike_ratio=vol_spike,
-                atr_14_pct=atr_pct,
-                candle_body_pct=body_pct,
-                high_24h=high_24h,
-                low_24h=low_24h,
             )
         except Exception as e:
-            import traceback
-            err_msg = str(e)[:100]
-            print(f"🔴 [API-CRASH] {symbol}: MarketData failed: {err_msg}")
-            print(f"🔴 [API-CRASH] {symbol}: {traceback.format_exc()[:200]}")
+            print(f"Market data error {symbol}: {e}")
             return None
-    
+
+    # =========================================================================
+    # RSI
+    # =========================================================================
+
     def _calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
         if len(prices) < period + 1:
             return None

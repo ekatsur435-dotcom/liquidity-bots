@@ -3,10 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
-    <title>🚀 Trading Dashboard — Live v6.0</title>
+    <title>🚀 Trading Dashboard — Live v2.9</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -230,9 +227,8 @@
         
         /* Trades List */
         .trades-list {
-            max-height: 240px;
+            max-height: 220px;
             overflow-y: auto;
-            padding-right: 5px;
         }
         
         .trade-item {
@@ -297,14 +293,19 @@
         .feed-list {
             max-height: 240px;
             overflow-y: auto;
-            padding-right: 5px;
         }
         
-        /* Active Positions Scrollable */
+        /* Active Positions */
         .positions-scrollable {
             max-height: 240px;
             overflow-y: auto;
-            padding-right: 5px;
+        }
+        
+        /* Period Selector */
+        .period-selector {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
         }
         
         .period-btn {
@@ -462,14 +463,14 @@
 <body>
     <!-- Header -->
     <div class="header">
-        <div class="header-title">🚀 Trading Dashboard — Торговый Дашборд v6.0</div>
+        <div class="header-title">🚀 Trading Dashboard — Live v2.9</div>
         <div class="header-status">
             <div class="status-badge status-online">
                 <span class="pulse"></span>
-                ● Онлайн
+                ● Online
             </div>
             <div style="color: rgba(255,255,255,0.4); font-size: 12px;">
-                Обновление: 30мин | Обновлен: <span id="last-update">--:--:--</span>
+                Auto-refresh: 30min | Last: <span id="last-update">--:--:--</span>
             </div>
         </div>
     </div>
@@ -479,34 +480,34 @@
         <!-- Summary Stats Row -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-label">Всего сделок</div>
+                <div class="stat-label">Total Trades</div>
                 <div class="stat-value" id="total-trades">-</div>
-                <div class="stat-change neutral" id="total-trades-change">Сегодня: <span id="today-trades">0</span></div>
+                <div class="stat-change neutral" id="total-trades-change">Today: <span id="today-trades">0</span></div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Винрейт</div>
+                <div class="stat-label">Win Rate</div>
                 <div class="stat-value" id="win-rate">-</div>
-                <div class="stat-change neutral" id="win-rate-change">Сегодня: <span id="today-winrate">0</span>%</div>
+                <div class="stat-change neutral" id="win-rate-change">Today: <span id="today-winrate">0</span>%</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Общий P&L</div>
+                <div class="stat-label">Total P&L</div>
                 <div class="stat-value" id="total-pnl">-</div>
-                <div class="stat-change neutral" id="total-pnl-change">Сегодня: <span id="today-pnl">0</span></div>
+                <div class="stat-change neutral" id="total-pnl-change">Today: <span id="today-pnl">0</span></div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Активных позиций</div>
+                <div class="stat-label">Active Positions</div>
                 <div class="stat-value" id="active-pos">-</div>
-                <div class="stat-change neutral">Оба бота</div>
+                <div class="stat-change neutral">Across both bots</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">SHORT P&L</div>
+                <div class="stat-label">SHORT Bot P&L</div>
                 <div class="stat-value" id="short-total-pnl">-</div>
-                <div class="stat-change neutral"><span id="short-trades-stat">0</span> сделок</div>
+                <div class="stat-change neutral"><span id="short-trades-stat">0</span> trades</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">LONG P&L</div>
+                <div class="stat-label">LONG Bot P&L</div>
                 <div class="stat-value" id="long-total-pnl">-</div>
-                <div class="stat-change neutral"><span id="long-trades-stat">0</span> сделок</div>
+                <div class="stat-change neutral"><span id="long-trades-stat">0</span> trades</div>
             </div>
         </div>
         
@@ -516,15 +517,15 @@
             <div class="section-card">
                 <div class="bot-header">
                     <div class="bot-name bot-short">🔴 SHORT Bot</div>
-                    <div class="bot-status">Активен</div>
+                    <div class="bot-status">Active</div>
                 </div>
                 <div class="mini-stats">
                     <div class="mini-stat">
-                        <div class="mini-label">Сделки</div>
+                        <div class="mini-label">Trades</div>
                         <div class="mini-value" id="short-trades">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Винрейт</div>
+                        <div class="mini-label">Win Rate</div>
                         <div class="mini-value" id="short-winrate">-</div>
                     </div>
                     <div class="mini-stat">
@@ -532,7 +533,7 @@
                         <div class="mini-value" id="short-pnl">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Спасено</div>
+                        <div class="mini-label">Saved</div>
                         <div class="mini-value" id="short-saved">-</div>
                     </div>
                 </div>
@@ -542,15 +543,15 @@
             <div class="section-card">
                 <div class="bot-header">
                     <div class="bot-name bot-long">🟢 LONG Bot</div>
-                    <div class="bot-status">Активен</div>
+                    <div class="bot-status">Active</div>
                 </div>
                 <div class="mini-stats">
                     <div class="mini-stat">
-                        <div class="mini-label">Сделки</div>
+                        <div class="mini-label">Trades</div>
                         <div class="mini-value" id="long-trades">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Винрейт</div>
+                        <div class="mini-label">Win Rate</div>
                         <div class="mini-value" id="long-winrate">-</div>
                     </div>
                     <div class="mini-stat">
@@ -558,7 +559,7 @@
                         <div class="mini-value" id="long-pnl">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Спасено</div>
+                        <div class="mini-label">Saved</div>
                         <div class="mini-value" id="long-saved">-</div>
                     </div>
                 </div>
@@ -566,11 +567,10 @@
             
             <!-- Active Positions -->
             <div class="section-card">
-                <div class="section-title">⚡ Текущие позиции (<span id="active-positions-count">0</span>)</div>
+                <div class="section-title">⚡ Active Positions</div>
                 <div id="active-positions-list" class="positions-scrollable">
                     <div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">
-                        📊 Здесь отображаются все открытые позиции<br>
-                        <small>SHORT + LONG ботов</small>
+                        No active positions
                     </div>
                 </div>
             </div>
@@ -604,30 +604,25 @@
         <div class="three-col">
             <!-- Recent SHORT Trades -->
             <div class="section-card">
-                <div class="section-title">🔴 Недавние SHORT позиции</div>
+                <div class="section-title">🔴 Recent SHORT Trades</div>
                 <div class="trades-list" id="short-trades-list">
-                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
+                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Loading...</div>
                 </div>
             </div>
             
             <!-- Recent LONG Trades -->
             <div class="section-card">
-                <div class="section-title">🟢 Недавние LONG позиции</div>
+                <div class="section-title">🟢 Recent LONG Trades</div>
                 <div class="trades-list" id="long-trades-list">
-                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
+                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Loading...</div>
                 </div>
             </div>
             
             <!-- Live Feed -->
             <div class="section-card">
-                <div class="section-title">🔔 Лента активности (в реальном времени)</div>
+                <div class="section-title">🔔 Live Activity Feed</div>
                 <div class="feed-list" id="feed-list">
-                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">
-                        📡 Здесь отображаются события ботов:<br>
-                        🎯 TBS сигналы | 💎 Входы в позиции<br>
-                        ✅ TP1/TP2/TP3 достигнуты | ⛔ Стоп-лоссы<br>
-                        <small>Обновляется автоматически</small>
-                    </div>
+                    <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Loading...</div>
                 </div>
             </div>
         </div>
@@ -790,7 +785,7 @@
                 updateTrades(trades);
                 
                 // 4. Active Positions
-                const posRes = await fetch('/api/positions?_=' + Date.now());
+                const posRes = await fetch('/api/active_positions');
                 const positions = await posRes.json();
                 updatePositions(positions);
                 
@@ -870,7 +865,7 @@
                     </div>
                 `).join('');
             } else {
-                shortList.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Нет недавних SHORT сделок</div>';
+                shortList.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">No recent trades</div>';
             }
             
             // LONG trades
@@ -885,52 +880,31 @@
                     </div>
                 `).join('');
             } else {
-                longList.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Нет недавних LONG сделок</div>';
+                longList.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">No recent trades</div>';
             }
         }
         
         function updatePositions(data) {
             const list = document.getElementById('active-positions-list');
-            const countSpan = document.getElementById('active-positions-count');
-            const activePosCard = document.getElementById('active-pos');
-            
-            const count = data.positions ? data.positions.length : 0;
-            
-            // ✅ Обновляем счетчик в секции "Текущие позиции"
-            if (countSpan) {
-                countSpan.textContent = count;
-            }
-            
-            // ✅ Обновляем верхнюю карточку "Активных позиций"
-            if (activePosCard) {
-                activePosCard.textContent = count;
-            }
-            
             if (data.positions && data.positions.length > 0) {
-                // ✅ Сортируем: отрицательный P&L сверху (требуют внимания)
-                const sorted = data.positions.sort((a, b) => (a.current_pnl || 0) - (b.current_pnl || 0));
-                
-                list.innerHTML = sorted.map(p => {
-                    const direction_emoji = p.direction === 'short' || p.direction === 'SHORT' ? '🔴' : '🟢';
-                    const direction_text = p.direction === 'short' || p.direction === 'SHORT' ? 'SHORT' : 'LONG';
-                    return `
+                list.innerHTML = data.positions.map(p => `
                     <div class="position-item position-${p.direction}">
                         <div class="position-header">
-                            <span class="position-symbol">${direction_emoji} ${p.symbol} <small style="opacity: 0.7">(${direction_text})</small></span>
+                            <span class="position-symbol">${p.symbol}</span>
                             <span class="position-pnl ${(p.current_pnl || 0) >= 0 ? 'positive' : 'negative'}">
                                 ${(p.current_pnl || 0) >= 0 ? '+' : ''}${(p.current_pnl || 0).toFixed(2)}%
                             </span>
                         </div>
                         <div class="position-details">
-                            <span>Вход: $${p.entry}</span>
+                            <span>Entry: $${p.entry}</span>
                             <span>TP: ${p.tp}%</span>
                             <span>SL: ${p.sl}%</span>
-                            <span>${p.duration_min}м</span>
+                            <span>${p.duration_min}m</span>
                         </div>
                     </div>
-                `}).join('');
+                `).join('');
             } else {
-                list.innerHTML = '<div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">📭 Нет активных позиций</div>';
+                list.innerHTML = '<div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">No active positions</div>';
             }
         }
         
@@ -967,7 +941,7 @@
                     </div>
                 `).join('');
             } else {
-                list.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Нет активности</div>';
+                list.innerHTML = '<div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">No recent activity</div>';
             }
         }
         

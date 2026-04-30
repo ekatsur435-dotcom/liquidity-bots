@@ -12,8 +12,7 @@ BingX Futures API Client  v2.7
 """
 
 import os, json, hmac, hashlib, time
-import asyncio
-from typing import Optional, Dict, List, Any, Set, Tuple
+from typing import Optional, Dict, List, Any, Set
 from dataclasses import dataclass
 from datetime import datetime
 import aiohttp
@@ -86,12 +85,6 @@ class BingXClient:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
         self._time_offset: int = 0   # ✅ FIX: server time offset
-        # ✅ RATE LIMITING: минимум 500ms между запросами (избегаем 109429)
-        self._last_request_time: float = 0
-        self._rate_limit_delay: float = 0.5  # 500ms — increased from 300ms
-        # ✅ FIX #2: Trend cache — TTL 15 мин (900 сек), чтобы не спамить BingX klines
-        self._trend_cache: Dict[str, tuple] = {}  # symbol -> (allowed, reason, ts)
-        self._trend_cache_ttl: float = 900.0  # 15 minutes
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -130,17 +123,7 @@ class BingXClient:
         offset = getattr(self, "_time_offset", 0)
         return int(time.time() * 1000) + offset
 
-    async def _rate_limit(self):
-        """✅ RATE LIMITING: ждём между запросами чтобы не получить бан"""
-        now = time.time()
-        elapsed = now - self._last_request_time
-        if elapsed < self._rate_limit_delay:
-            wait = self._rate_limit_delay - elapsed
-            await asyncio.sleep(wait)
-        self._last_request_time = time.time()
-
     async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
-        await self._rate_limit()  # ✅ RATE LIMITING: ждём перед каждым запросом
         try:
             session  = await self._get_session()
             all_p    = {}
@@ -254,34 +237,46 @@ class BingXClient:
         })
 
     async def is_symbol_active(self, symbol: str) -> bool:
-        """Проверяет активен ли символ на BingX. Ищет в обоих форматах: XXXUSDT и XXX-USDT."""
-        symbol_normalized = self._normalize_symbol(symbol)  # XXXUSDT
-        symbol_with_dash = f"{symbol_normalized[:-4]}-{symbol_normalized[-4:]}" if symbol_normalized.endswith('USDT') else symbol_normalized
-        
+        """✅ v5.1: Check if symbol is listed on BingX.
+        Error 109425 = symbol не существует на BingX (есть на Binance но не на BingX).
+        Решение: проверять кэш контрактов перед любым API вызовом.
+        """
+        norm = self._normalize_symbol(symbol)
         await self._load_contracts()
-        
-        # Ищем в обоих форматах
-        info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
-        
+        info = self._symbol_info_cache.get(norm)
         if info is None:
-            print(f"⚠️ [BingX] {symbol} (форматы: {symbol_normalized}/{symbol_with_dash}) не найден в кэше ({len(self._symbol_info_cache)} контрактов), обновляем список...")
+            # Пробуем с -USDT форматом
+            dash = self._format_for_order(symbol).replace('-', '')
+            info = self._symbol_info_cache.get(dash)
+        if info is None:
+            # Обновляем кэш один раз
             await self._load_contracts(force_refresh=True)
-            info = self._symbol_info_cache.get(symbol_normalized) or self._symbol_info_cache.get(symbol_with_dash)
-            
+            info = self._symbol_info_cache.get(norm) or self._symbol_info_cache.get(dash if 'dash' in dir() else norm)
         if info is None:
-            # Показываем примеры символов из кэша для отладки
-            sample_keys = list(self._symbol_info_cache.keys())[:5]
-            print(f"   📋 Примеры контрактов в кэше: {sample_keys}")
-            
-        return info.get("online", True) if info else False
+            # Символ реально не существует на BingX → тихо возвращаем False (нет лишних логов)
+            return False
+        return info.get("online", True)
 
     async def _round_price(self, symbol: str, price: float) -> float:
         info = await self.get_symbol_info(symbol)
         return round(price, info.get("price_precision", 4))
 
     def _normalize_symbol(self, symbol: str) -> str:
-        """Нормализует символ для BingX API (убирает дефисы)."""
-        return symbol.replace('-', '').replace('_', '')
+        """Нормализует символ (без дефисов — для кэша/индексов)."""
+        return symbol.replace('-', '').replace('_', '').upper()
+
+    def _format_for_order(self, symbol: str) -> str:
+        """✅ FIX v5.1: BingX ORDER API требует ATOM-USDT (с дефисом).
+        Ошибка 109400 'must end with -USDT' = неверный формат символа.
+        """
+        clean = symbol.replace('-', '').replace('_', '').upper()
+        if clean.endswith('USDT'):
+            return clean[:-4] + '-USDT'
+        if clean.endswith('USDC'):
+            return clean[:-4] + '-USDC'
+        if clean.endswith('BTC'):
+            return clean[:-3] + '-BTC'
+        return clean + '-USDT'  # fallback
 
     def _format_symbol_for_positions(self, symbol: str) -> str:
         """
@@ -551,20 +546,15 @@ class BingXClient:
             sl_side = "SELL" if direction == "long" else "BUY"
             print(f"🔍 [BingX] sl_side={sl_side}")
 
-            # ✅ FIX v7: Получаем ВСЕ позиции без фильтра и ищем по символу client-side.
-            # get_positions(symbol) → BingX error 109425 "not exist" для редких пар.
-            # Причина: BingX требует точный формат (LIGHT-USDT, MON-USDT) который часто
-            # отличается от нашего. Решение: get_positions() без аргумента → все позиции.
-            print(f"🔍 [BingX] Getting ALL positions (no filter) to match {symbol}...")
-            positions = await self.get_positions()   # ← Без аргумента = все позиции
-            print(f"🔍 [BingX] Total exchange positions: {len(positions)}")
+            # Получаем текущий размер позиции (нужен для SL ордера)
+            print(f"🔍 [BingX] Getting positions for {symbol}...")
+            positions = await self.get_positions(symbol)
+            print(f"🔍 [BingX] Found {len(positions)} positions")
             for p in positions:
                 print(f"   - {p.symbol}: size={p.size}, side={p.side}, pos_side={p.position_side}")
 
-            # Matching: убираем дефисы и сравниваем чистые тикеры
-            clean_target = symbol.replace("-", "").replace("_", "").upper()
             pos = next((p for p in positions
-                        if p.symbol.replace("-", "").replace("_", "").upper() == clean_target), None)
+                        if p.symbol.replace("-", "") == symbol.replace("-", "")), None)
             if not pos:
                 print(f"⚠️  [BingX] update_stop_loss: позиция {symbol} не найдена")
                 return False
@@ -623,143 +613,15 @@ class BingXClient:
         except Exception as e:
             print(f"⚠️  cancel_order {symbol}/{order_id}: {e}")
             return False
-
-    async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 200) -> List[Dict]:
-        """
-        📊 Получить свечи (klines) для анализа тренда
-        
-        Args:
-            symbol: Торговая пара (BTC-USDT)
-            interval: Таймфрейм (1m, 5m, 15m, 30m, 1h, 4h, 1d)
-            limit: Количество свечей (макс 500)
-        
-        Returns:
-            List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
-        """
-        try:
-            symbol_api = self._normalize_symbol(symbol)
-            result = await self._make_request(
-                "GET", "/openApi/swap/v3/quote/klines",
-                params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
-            )
-            
-            if result and result.get("code") == 0:
-                data = result.get("data", [])
-                klines = []
-                for item in data:
-                    klines.append({
-                        'time': item[0],      # Open time
-                        'open': float(item[1]),
-                        'high': float(item[2]),
-                        'low': float(item[3]),
-                        'close': float(item[4]),
-                        'volume': float(item[5])
-                    })
-                return klines
-            return []
+            balance = await self.get_account_balance()
+            if balance:
+                print(f"✅ BingX OK ({'DEMO' if self.demo else 'REAL'}) equity={balance.get('equity','?')}")
+                return True
+            print(f"❌ BingX failed | {self.last_error}")
+            return False
         except Exception as e:
-            print(f"⚠️  get_klines {symbol}: {e}")
-            return []
-
-    async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """
-        💰 Получить текущую цену тикера (для zombie cleanup)
-        
-        Args:
-            symbol: Торговая пара (BTC-USDT)
-        
-        Returns:
-            Dict: {'price': float, 'symbol': str} или None
-        """
-        try:
-            symbol_api = self._normalize_symbol(symbol)
-            result = await self._make_request(
-                "GET", "/openApi/swap/v2/quote/ticker",
-                params={"symbol": symbol_api}
-            )
-            
-            if result and result.get("code") == 0:
-                data = result.get("data", [])
-                if data and len(data) > 0:
-                    ticker = data[0]
-                    return {
-                        'symbol': symbol,
-                        'price': float(ticker.get('lastPrice', 0)),
-                        'bid': float(ticker.get('bidPrice', 0)),
-                        'ask': float(ticker.get('askPrice', 0)),
-                        'volume24h': float(ticker.get('volume', 0)),
-                        'change24h': float(ticker.get('priceChangePercent', 0))
-                    }
-            return None
-        except Exception as e:
-            print(f"⚠️  get_ticker {symbol}: {e}")
-            return None
-
-    async def check_trend(self, symbol: str, direction: str) -> Tuple[bool, str]:
-        """
-        📈 Проверить соответствие направления сделки тренду
-        ✅ FIX: Кэш на 15 мин — избегаем 109429 rate limit на BingX klines
-        
-        Returns:
-            (allowed: bool, reason: str)
-        """
-        import time as _time
-        # ── Cache check ──────────────────────────────────────────────────────
-        cache_key = f"{symbol}:{direction}"
-        if cache_key in self._trend_cache:
-            allowed, reason, ts = self._trend_cache[cache_key]
-            if _time.time() - ts < self._trend_cache_ttl:
-                return allowed, f"[cached] {reason}"
-        try:
-            # Получаем свечи 1H
-            klines = await self.get_klines(symbol, interval="1h", limit=200)  # Увеличили до 200
-            if len(klines) < 50:
-                return True, "Недостаточно данных для анализа тренда"
-            
-            # Получаем цены закрытия
-            closes = [k['close'] for k in klines]
-            
-            # Рассчитываем EMA50 и EMA200
-            ema50 = self._calculate_ema(closes, 50)
-            ema200 = self._calculate_ema(closes, 200)
-            
-            if not ema50 or not ema200:
-                return True, "Не удалось рассчитать EMA"
-            
-            # Проверяем направление
-            result_allowed, result_reason = True, "Неизвестное направление"
-            if direction.lower() == "long":
-                if ema50 < ema200:
-                    result_allowed, result_reason = False, f"🚫 LONG запрещён: EMA50({ema50:.6f}) < EMA200({ema200:.6f}) - падающий тренд"
-                else:
-                    result_allowed, result_reason = True, f"✅ LONG разрешён: EMA50({ema50:.6f}) > EMA200({ema200:.6f}) - восходящий тренд"
-            elif direction.lower() == "short":
-                if ema50 > ema200:
-                    result_allowed, result_reason = False, f"🚫 SHORT запрещён: EMA50({ema50:.6f}) > EMA200({ema200:.6f}) - восходящий тренд"
-                else:
-                    result_allowed, result_reason = True, f"✅ SHORT разрешён: EMA50({ema50:.6f}) < EMA200({ema200:.6f}) - падающий тренд"
-            
-            # ✅ FIX: Кэшируем результат на 15 мин чтобы избежать 109429 rate limit
-            import time as _time
-            self._trend_cache[cache_key] = (result_allowed, result_reason, _time.time())
-            return result_allowed, result_reason
-            
-        except Exception as e:
-            print(f"⚠️  check_trend {symbol}: {e}")
-            return True, f"Ошибка анализа тренда: {e}"
-    
-    def _calculate_ema(self, prices: List[float], period: int) -> Optional[float]:
-        """Рассчитать EMA для списка цен"""
-        if len(prices) < period:
-            return None
-        
-        multiplier = 2 / (period + 1)
-        ema = sum(prices[:period]) / period  # Начальное SMA
-        
-        for price in prices[period:]:
-            ema = (price - ema) * multiplier + ema
-        
-        return ema
+            print(f"❌ BingX error: {e}")
+            return False
 
 
 _bingx_client = None

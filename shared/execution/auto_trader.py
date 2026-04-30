@@ -25,8 +25,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from api.bingx_client import BingXClient
 from upstash.redis_client import get_redis_client
 from execution.limit_executor import LimitExecutor, LimitOrderConfig, get_limit_executor
-# 🆕 Aegis: Kelly Risk Manager
-from core.kelly_risk_manager import get_kelly_risk_manager, SignalQuality
 
 
 def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
@@ -51,8 +49,8 @@ def _parse_max_notional_from_error(error_msg: str) -> Optional[float]:
 class TradeConfig:
     enabled:             bool  = True
     demo_mode:           bool  = True
-    max_positions:       int   = 30        # увеличили для 200K депо
-    risk_per_trade:      float = 0.0005     # 0.05% на сделку!
+    max_positions:       int   = 20
+    risk_per_trade:      float = 0.0005     # 0.05%
     max_daily_risk:      float = 5.0        # 5% (в %, не дробях!)
     default_leverage:    int   = 20
     min_leverage:        int   = 5
@@ -62,9 +60,6 @@ class TradeConfig:
     notional_safety_pct: float = 0.92      # 92% от лимита (запас 8%)
     open_cooldown_sec:   float = 30.0      # антидубль
     bot_type:            str   = "short"   # "long" или "short" для фильтрации позиций
-    # 🆕 ФИЛЬТР ТРЕНДА
-    trend_filter_enabled: bool = True      # включить проверку EMA50/200
-    trend_filter_tf:      str  = "1h"      # таймфрейм для анализа тренда
 
 
 class AutoTrader:
@@ -87,9 +82,6 @@ class AutoTrader:
 
         # 🎯 Phase 3: Limit Executor для адаптивных лимитных входов
         self.limit_executor = get_limit_executor()
-        
-        # 🆕 Aegis: Kelly Risk Manager
-        self.kelly_rm = get_kelly_risk_manager(capital=10000.0, redis_client=self.redis)
         
         mode = "DEMO" if self.config.demo_mode else "REAL"
         print(f"🤖 AutoTrader initialized ({mode})")
@@ -122,17 +114,8 @@ class AutoTrader:
 
     async def execute_signal(self, signal: Dict) -> Optional[Dict]:
         symbol = signal.get("symbol", "?")
-        direction = signal.get("direction", "long")
         score  = signal.get("score", 0)
-        print(f"\n🚀 [AutoTrader] {symbol} | score={score:.1f} | {direction.upper()}")
-        
-        # 📈 ФИЛЬТР ТРЕНДА: Проверяем направление перед входом
-        if self.config.trend_filter_enabled:
-            allowed, reason = await self.bingx.check_trend(symbol, direction)
-            print(f"📊 [TREND][{symbol}] {reason}")
-            if not allowed:
-                print(f"🚫 [AutoTrader][{symbol}] Сделка отклонена по фильтру тренда")
-                return None
+        print(f"\n🚀 [AutoTrader] {symbol} | score={score:.1f}")
         
         # 🎯 Phase 3: Limit Executor — проверяем возможность лимитного входа
         if self.limit_executor.should_use_limit(signal):
@@ -256,84 +239,6 @@ class AutoTrader:
         """Callback для fallback с лимитки на маркет"""
         return {"symbol": symbol, "side": side, "quantity": quantity, "filled_price": None}
 
-    async def execute_momentum_signal(self, signal: Dict) -> Optional[Dict]:
-        """
-        🚀 Momentum Signal Execution
-        Отдельный метод для momentum сигналов с особым риск-менеджментом:
-        - Меньший риск (0.03% vs 0.05%)
-        - Уже стопы (1% vs 1.5-2%)
-        - Быстрый трейлинг (с 0.5%)
-        - Макс время 30 минут
-        """
-        symbol = signal.get("symbol", "?")
-        direction = signal.get("direction", "long")
-        pfx = f"[AT-MOMENTUM][{symbol}][{direction.upper()}]"
-        
-        print(f"\n🚀 {pfx} Executing momentum signal...")
-        print(f"   Score: {signal.get('score', 0):.1f}")
-        print(f"   Velocity: {signal.get('indicators', {}).get('velocity_1m', 0):.2f}%/min")
-        print(f"   Volume spike: {signal.get('indicators', {}).get('volume_spike', 0):.1f}x")
-        
-        # Отдельный риск для momentum
-        momentum_risk = signal.get("risk_per_trade", 0.0003)  # Default 0.03%
-        original_risk = self.config.risk_per_trade
-        
-        try:
-            # Временно меняем риск на momentum
-            self.config.risk_per_trade = momentum_risk
-            
-            # У momentum более агрессивные TP
-            take_profits = signal.get("take_profits", [])
-            if not take_profits:
-                # Default momentum TPs: быстрая фиксация
-                entry = signal.get("entry_price", 0)
-                if direction == "long":
-                    take_profits = [
-                        round(entry * 1.015, 6),  # TP1 1.5%
-                        round(entry * 1.03, 6),   # TP2 3%
-                    ]
-                else:
-                    take_profits = [
-                        round(entry * 0.985, 6),  # TP1 1.5%
-                        round(entry * 0.97, 6),  # TP2 3%
-                    ]
-            
-            result = await self.open_position(
-                symbol=symbol,
-                direction=direction,
-                entry_price=signal.get("entry_price"),
-                stop_loss=signal.get("stop_loss"),
-                take_profits=take_profits,
-                signal_score=signal.get("score", 50),
-                smc_data=signal.get("indicators"),
-                tg_msg_id=signal.get("tg_msg_id"),
-            )
-            
-            if result:
-                print(f"✅ {pfx} Momentum position opened successfully")
-                # Дополнительно логируем momentum-специфичные параметры
-                if self.telegram:
-                    await self.telegram.send_message(
-                        f"🚀 <b>Momentum Trade Executed</b>\n"
-                        f"Symbol: {symbol}\n"
-                        f"Direction: {direction.upper()}\n"
-                        f"Risk: {momentum_risk*100:.3f}% (momentum mode)\n"
-                        f"Max hold: 30 min"
-                    )
-            else:
-                print(f"❌ {pfx} Failed to open momentum position")
-            
-            return result
-            
-        except Exception as e:
-            print(f"❌ {pfx} Momentum execution error: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-        finally:
-            # Восстанавливаем оригинальный риск
-            self.config.risk_per_trade = original_risk
-
     async def open_position(self, symbol, direction, entry_price, stop_loss,
                             take_profits, signal_score, smc_data=None,
                             tg_msg_id=None) -> Optional[Dict]:
@@ -355,10 +260,10 @@ class AutoTrader:
 
         # ── 1. Daily risk ─────────────────────────────────────────────────────
         self._check_daily_reset()
-        if self.daily_pnl <= -self.config.max_daily_risk:
-            reason = f"DAILY_LIMIT: {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+        # ✅ FIX v5.1: Daily P&L is per-bot (long:daily_pnl, short:daily_pnl)
+        bot_daily_pnl = self._get_bot_daily_pnl()
+        if bot_daily_pnl <= -self.config.max_daily_risk:
+            print(f"{pfx} ⏸ SKIP — {self.config.bot_type} daily risk limit {bot_daily_pnl:.2f}% <= -{self.config.max_daily_risk}%")
             await self._tg(
                 f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: "
                 f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
@@ -385,9 +290,7 @@ class AutoTrader:
             print(f"{pfx} 📋 {pos_list}")
 
         if n_pos >= self.config.max_positions:
-            reason = f"MAX_POSITIONS: {n_pos}/{self.config.max_positions}"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+            print(f"{pfx} ⏸ SKIP — max {expected_side} positions")
             await self._tg_reply(
                 f"⏸ <b>{expected_side} лимит достигнут</b> ({n_pos}/{self.config.max_positions})\n"
                 f"<b>#{symbol}</b> — сигнал пропущен", tg_msg_id
@@ -399,41 +302,12 @@ class AutoTrader:
         existing = [p for p in current_positions
                     if p.symbol.replace("-", "") == symbol.replace("-", "")]
         if existing:
-            reason = f"DUPLICATE: already open ({existing[0].side})"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+            print(f"{pfx} ⏸ SKIP — already open ({existing[0].side})")
             await self._tg_reply(
                 f"ℹ️ <b>Позиция уже открыта</b>\n"
                 f"<b>#{symbol}</b> — {existing[0].side} уже активен", tg_msg_id
             )
             return None
-
-        # ── 3.5 Sector Limit (5 positions per sector per bot) ───────────────────
-        try:
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-            from utils.sector_mapper import get_sector, count_positions_by_sector
-            
-            sector = get_sector(symbol)
-            sector_count = count_positions_by_sector(
-                [{"symbol": p.symbol} for p in bot_positions], 
-                sector
-            )
-            MAX_PER_SECTOR = int(os.getenv("MAX_POSITIONS_PER_SECTOR", "5"))
-            
-            if sector_count >= MAX_PER_SECTOR:
-                reason = f"SECTOR_LIMIT: {sector} ({sector_count}/{MAX_PER_SECTOR})"
-                print(f"{pfx} ⏸ SKIP — {reason}")
-                print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
-                await self._tg_reply(
-                    f"⏸ <b>Лимит сектора {sector}</b> ({sector_count}/{MAX_PER_SECTOR})\n"
-                    f"<b>#{symbol}</b> — пропущен", tg_msg_id
-                )
-                return None
-            else:
-                print(f"{pfx} ✅ Sector {sector}: {sector_count}/{MAX_PER_SECTOR}")
-        except Exception as e:
-            print(f"{pfx} ⚠️ Sector check error: {e}")
-            # Не блокируем если ошибка проверки сектора
 
         # ── 4. Symbol online? ─────────────────────────────────────────────────
         if not await self.bingx.is_symbol_active(bingx_symbol):
@@ -456,55 +330,18 @@ class AutoTrader:
             return None
 
         # ── 6. Sizing ─────────────────────────────────────────────────────────
-        # ✅ FIX #1: sl_distance MUST be calculated BEFORE Kelly RM call
-        sl_distance = abs(entry_price - stop_loss) / entry_price
-
-        # 🆕 Aegis: Kelly Risk Manager sizing
-        signal_quality = SignalQuality(
-            score=signal_score,
-            has_tbs=smc_data.get("has_tbs", False) if smc_data else False,
-            ob_quality=smc_data.get("ob_quality", 0) if smc_data else 0,
-            is_sweep=smc_data.get("is_sweep", False) if smc_data else False,
-            confidence="HIGH" if signal_score >= 80 else ("MEDIUM" if signal_score >= 65 else "LOW")
-        )
-        
-        # Получаем капитал из equity
-        self.kelly_rm.update_capital(equity)
-        
-        # Расчёт Kelly size
-        kelly_result = self.kelly_rm.calculate_position_size(
-            signal_quality=signal_quality,
-            sl_pct=sl_distance * 100,
-            current_exposure_pct=(n_pos / self.config.max_positions) if self.config.max_positions > 0 else 0
-        )
-        
-        if kelly_result.blocked:
-            print(f"{pfx} ⏸ SKIP — Kelly Risk Manager: {kelly_result.block_reason}")
-            await self._tg_reply(
-                f"⏸ <b>Блокировка Kelly RM</b>\n"
-                f"<b>#{symbol}</b> — {kelly_result.block_reason}", tg_msg_id
-            )
-            return None
-        
-        # Базовый расчёт sizing (legacy)
         risk_mult   = 1.5 if signal_score >= 85 else (1.2 if signal_score >= 75 else 1.0)
         actual_risk = self.config.risk_per_trade * risk_mult
         risk_amount = available * actual_risk
+        sl_distance = abs(entry_price - stop_loss) / entry_price
 
         print(f"{pfx} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
-        print(f"{pfx} 🎯 Kelly: kelly_pct={kelly_result.kelly_pct:.1f}% | "
-              f"signal_boost={kelly_result.signal_boost:.1f}% | "
-              f"final_size_pct={kelly_result.adjusted_pct:.1f}%")
 
         if sl_distance < 0.001:
             print(f"{pfx} ❌ SKIP — SL too small ({sl_distance:.4%})")
             return None
 
-        # Используем MAX из legacy и Kelly sizing
-        legacy_position_value = risk_amount / sl_distance
-        kelly_position_value = kelly_result.size_usd if not kelly_result.blocked else 0
-        
-        position_value = max(legacy_position_value, kelly_position_value)
+        position_value = risk_amount / sl_distance
         leverage       = self._calc_leverage(signal_score)
         size           = position_value / entry_price
 
@@ -630,8 +467,6 @@ class AutoTrader:
             "tg_msg_id":    tg_msg_id,
             "taken_tps":    [],
             "be_done":      False,
-            "confirmed":    True,  # ✅ Позиция подтверждена открытием на бирже
-            "skip_reason":  None,  # Причина пропуска (если не открыли)
         }
         bot_type = "long" if direction == "long" else "short"
         self.redis.save_signal(bot_type, symbol, position_data)

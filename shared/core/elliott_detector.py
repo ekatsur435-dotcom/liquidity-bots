@@ -205,7 +205,7 @@ class ElliottWaveDetector:
         if direction == "long":
             return self._analyze_long_waves(swings, current_price, is_uptrend, is_downtrend, details)
         else:  # short
-            if len(swings) < 4:
+            if len(swings) < 4 or len(ohlcv) < 20:
                 # Недостаточно свингов — упрощенный анализ
                 details = {"swing_types": [s.get("type", "?") for s in swings], "swing_count": len(swings)}
                 return self._analyze_short_waves(swings, current_price, is_uptrend, is_downtrend, details)
