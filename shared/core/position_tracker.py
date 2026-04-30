@@ -102,6 +102,16 @@ class PositionTracker:
         if not signals:
             return
 
+        # ✅ FIX: Загружаем список позиций ОДИН РАЗ на весь цикл (не в каждом _move_sl)
+        # Экономит N × 3 × proxies вызовов к BingX за цикл трекинга
+        cached_positions = []
+        if self.auto_trader and hasattr(self.auto_trader, 'bingx') and self.auto_trader.bingx:
+            try:
+                cached_positions = await self.auto_trader.bingx.get_positions() or []
+                print(f"[PT] 📊 Позиции с биржи: {len(cached_positions)} | Активных в Redis: {len([s for s in signals if s.get('status')=='active'])}")
+            except Exception as e:
+                print(f"[PT] ⚠️ get_positions failed: {e} — используем Redis без проверки биржи")
+
         # ✅ v4.0: Zombie cleanup — раз в 10 итераций чистим «мёртвые» Redis позиции
         if not hasattr(self, '_scan_count'):
             self._scan_count = 0
@@ -113,7 +123,7 @@ class PositionTracker:
             if sig.get("status") != "active":
                 continue
             try:
-                await self._check_one(sig)
+                await self._check_one(sig, cached_positions=cached_positions)
             except Exception as e:
                 print(f"[PositionTracker] {sig.get('symbol')} error: {e}")
             await asyncio.sleep(0.3)
@@ -123,6 +133,10 @@ class PositionTracker:
         ✅ v4.0: Удаляет из Redis позиции которых нет на бирже.
         Zombie = сигнал в Redis со status=active, но BingX не знает о позиции.
         Без этого — SL никогда не срабатывает → бесконечный убыток.
+
+        ✅ ВАР А+Б: Проверяем ТОЛЬКО позиции с confirmed=True
+        Позиции без confirmed (не открылись из-за лимитов/ошибок) — пропускаем
+        Это экономит N API запросов к BingX на каждый цикл
         """
         if not self.auto_trader or not hasattr(self.auto_trader, 'bingx'):
             return
@@ -136,15 +150,18 @@ class PositionTracker:
             direction = sig.get('direction', 'long')
             if not symbol:
                 continue
-            try:
-                # 🆕 NEW: Проверяем только подтвержденные позиции (confirmed=True)
-                confirmed = sig.get('confirmed', False)
-                if not confirmed:
-                    # Позиция не подтверждена биржей - не проверяем ее статус
-                    # (экономим API запросы, не создаем ложных zombie)
-                    print(f"[ZOMBIE-SKIP] {symbol}: не подтверждена на бирже (confirmed=False), пропускаем проверку")
-                    continue
 
+            # ✅ ВАР А: Пропускаем неподтверждённые позиции (не открытые на бирже)
+            # confirmed=False или отсутствует → позиция не была реально открыта
+            if not sig.get('confirmed', False):
+                print(f"[ZOMBIE-SKIP] {symbol}: confirmed=False — пропускаем (не открыта на бирже)")
+                # Удаляем такую запись из Redis — она не нужна
+                try:
+                    self._save(symbol, {**sig, 'status': 'not_confirmed', 'close_reason': 'never_opened'})
+                except Exception:
+                    pass
+                continue
+            try:
                 pos_side = 'LONG' if direction == 'long' else 'SHORT'
                 positions = await bingx.get_positions(symbol)
                 has_real_position = any(
@@ -238,7 +255,7 @@ class PositionTracker:
             except Exception as e:
                 print(f"⚠️ [ZOMBIE-CLEANUP] {symbol}: {e}")
 
-    async def _check_one(self, signal: Dict):
+    async def _check_one(self, signal: Dict, cached_positions: list = None):
         symbol    = signal.get("symbol", "")
         entry     = _f(signal.get("entry_price", 0))
         sl        = _f(signal.get("stop_loss", 0))
@@ -246,6 +263,31 @@ class PositionTracker:
         opened_at = signal.get("timestamp", "")
         tps_raw   = signal.get("take_profits", [])
         taken     = list(signal.get("taken_tps", []))
+
+        if not symbol or not entry:
+            return
+
+        # ✅ PRE-FLIGHT CHECK: Если позиция не найдена в cached_positions — закрываем в Redis
+        # Это экономит все последующие API вызовы для мёртвой позиции
+        if cached_positions is not None and len(cached_positions) > 0:
+            clean_symbol = symbol.replace("-", "").replace("_", "").upper()
+            pos_side     = "LONG" if direction == "long" else "SHORT"
+            found = any(
+                p.symbol.replace("-", "").replace("_", "").upper() == clean_symbol
+                and getattr(p, 'position_side', getattr(p, 'side', '')).upper() == pos_side
+                for p in cached_positions
+            )
+            if not found:
+                print(f"[PT-PREFLIGHT] {symbol}: не найдена на бирже → помечаем как закрытую")
+                signal['status']       = 'closed_preflight'
+                signal['close_time']   = datetime.utcnow().isoformat()
+                signal['close_reason'] = 'not_found_on_exchange'
+                self._save(symbol, signal)
+                try:
+                    self.redis.delete(f"active_position:{self.bot_type}:{symbol}")
+                except Exception:
+                    pass
+                return  # Прерываем — не делаем ни одного лишнего API вызова
 
         if not symbol or not entry:
             return
@@ -296,6 +338,23 @@ class PositionTracker:
               f"TP={len(taken)}/{len(tps_raw)}"
               + (f" макс={max_tp_log}" if max_tp_log else ""))
         # ─────────────────────────────────────────────────────────────────────
+
+        # ✅ POSITION SIZE DRIFT: Проверяем частичное закрытие позиции
+        # Бывает что часть позиции закрылась по TP/лимитке а бот думает что позиция полная
+        expected_size = _f(signal.get("size", 0))
+        if cached_positions and expected_size > 0:
+            clean_sym = symbol.replace("-", "").replace("_", "").upper()
+            pos_side  = "LONG" if direction == "long" else "SHORT"
+            for pos in cached_positions:
+                if pos.symbol.replace("-", "").replace("_", "").upper() == clean_sym:
+                    actual_size = abs(getattr(pos, 'size', 0) or 0)
+                    if actual_size > 0 and expected_size > 0:
+                        drift_pct = abs(actual_size - expected_size) / expected_size * 100
+                        if drift_pct > 10:  # Дрейф > 10% — обновляем
+                            print(f"[PT-DRIFT] {symbol}: размер Redis={expected_size:.4f} ≠ биржа={actual_size:.4f} ({drift_pct:.1f}%) — обновляем")
+                            signal["size"] = actual_size
+                            self._save(symbol, signal)
+                    break
 
         # Трейлинг (только если уже в безубытке)
         await self._check_trailing(signal, price)
@@ -430,30 +489,18 @@ class PositionTracker:
         Стало: 1) Обновляем SL на BingX (cancel old → place new STOP_MARKET)
                2) Обновляем Redis
                3) Уведомляем в Telegram
+
+        ✅ FIX: Убрана повторная проверка get_positions() — pre-flight check
+        выполнен в _check_one() с кэшированным списком позиций.
+        Экономит N × API вызовов за цикл трекинга.
         """
         symbol    = signal["symbol"]
         direction = signal["direction"]
         entry     = _f(signal["entry_price"])
         position_side = "LONG" if direction == "long" else "SHORT"
 
-        # ✅ ШАГ 0: Проверяем что позиция ещё существует на бирже
-        position_exists = False
-        if self.auto_trader and self.auto_trader.bingx:
-            try:
-                all_positions = await self.auto_trader.bingx.get_positions()
-                clean_symbol = symbol.replace("-", "").replace("_", "").upper()
-                for pos in all_positions:
-                    pos_clean = pos.symbol.replace("-", "").replace("_", "").upper()
-                    if pos_clean == clean_symbol:
-                        position_exists = True
-                        break
-                if not position_exists:
-                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — возможно закрыта. Пропускаем обновление SL.")
-                    # Удаляем из Redis тоже
-                    self.redis.delete(f"{self.bot_type}:signal:{symbol}")
-                    return
-            except Exception as e:
-                print(f"⚠️  [PT] _move_sl: ошибка проверки позиции {symbol}: {e}")
+        # ✅ ШАГ 0 убран — pre-flight проверка позиции теперь в _check_one()
+        # Если мы дошли до _move_sl — позиция точно есть на бирже (или cached_positions пусты)
 
         # ✅ ШАГ 1: Обновляем SL на бирже (если auto_trader доступен)
         exchange_updated = False
@@ -848,90 +895,6 @@ class PositionTracker:
 
         except Exception as e:
             print(f"[PT] _record_pnl: {e}")
-
-    # =========================================================================
-    # 🧟 ZOMBIE CLEANUP
-    # =========================================================================
-
-    async def cleanup_zombies(self) -> int:
-        """
-        🧹 Очистка zombie позиций (есть в Redis, но не на бирже)
-        
-        Returns:
-            int: Количество удаленных позиций
-        """
-        if not self.bingx:
-            print(f"[PT][ZOMBIE] ⚠️ Нет BingX клиента для проверки")
-            return 0
-            
-        removed_count = 0
-        try:
-            # Получаем все позиции из Redis
-            redis_positions = self.redis.get_all_positions(self.bot_type)
-            if not redis_positions:
-                print(f"[PT][ZOMBIE] ✅ Нет позиций в Redis для проверки")
-                return 0
-                
-            # Получаем позиции с биржи
-            try:
-                bingx_positions = await self.bingx.get_positions()
-            except Exception as e:
-                print(f"[PT][ZOMBIE] ⚠️ Ошибка получения позиций с биржи: {e}")
-                return 0
-                
-            # Создаем множество символов с позициями на бирже
-            bingx_symbols = set()
-            if isinstance(bingx_positions, list):
-                for pos in bingx_positions:
-                    symbol = pos.get("symbol", "")
-                    if symbol:
-                        # Нормализуем символ (убираем - если есть)
-                        bingx_symbols.add(symbol.replace("-", ""))
-                        bingx_symbols.add(symbol)  # И с дефисом тоже
-                        
-            print(f"[PT][ZOMBIE] 🔍 Проверяем {len(redis_positions)} позиций в Redis vs {len(bingx_symbols)} на бирже")
-            
-            # Проверяем каждую позицию из Redis
-            for symbol in list(redis_positions.keys()):
-                # Нормализуем символ для сравнения
-                normalized = symbol.replace("-", "")
-                
-                # Проверяем есть ли позиция на бирже
-                on_exchange = False
-                for bx_sym in bingx_symbols:
-                    if bx_sym.replace("-", "") == normalized:
-                        on_exchange = True
-                        break
-                        
-                if not on_exchange:
-                    # Проверяем можно ли получить цену (символ существует)
-                    try:
-                        ticker = await self.bingx.get_ticker(symbol)
-                        if ticker and ticker.get("price", 0) > 0:
-                            # Символ существует, но позиции нет - это zombie
-                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена доступна)")
-                            self.redis.remove_position(self.bot_type, symbol)
-                            removed_count += 1
-                        else:
-                            # Не можем получить цену - возможно символ делистед
-                            print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (нет на бирже, цена недоступна - делист)")
-                            self.redis.remove_position(self.bot_type, symbol)
-                            removed_count += 1
-                    except Exception as e:
-                        print(f"[PT][ZOMBIE] 🗑️ Удаляем {symbol} (ошибка проверки: {e})")
-                        self.redis.remove_position(self.bot_type, symbol)
-                        removed_count += 1
-                        
-            if removed_count > 0:
-                print(f"[PT][ZOMBIE] ✅ Очищено {removed_count} zombie позиций")
-                await self._send(f"🧹 Очищено {removed_count} ghost-позиций из {self.bot_type.upper()}")
-            else:
-                print(f"[PT][ZOMBIE] ✅ Все позиции актуальны")
-                
-        except Exception as e:
-            print(f"[PT][ZOMBIE] 🔴 Ошибка cleanup: {e}")
-            
-        return removed_count
 
     # =========================================================================
     # HELPERS

@@ -344,6 +344,7 @@ class AutoTrader:
         since_last = time.time() - self._last_open_ts
         if since_last < self.config.open_cooldown_sec:
             print(f"{pfx} ⏸ SKIP — cooldown ({since_last:.0f}s)")
+            self._log_skip_reason(symbol, "COOLDOWN", f"cooldown {since_last:.0f}s < {self.config.open_cooldown_sec}s")
             return None
 
         if not self.config.enabled:
@@ -351,32 +352,20 @@ class AutoTrader:
 
         if signal_score < self.config.min_score_for_trade:
             print(f"{pfx} ⏸ SKIP — score {signal_score:.1f} < {self.config.min_score_for_trade}")
+            self._log_skip_reason(symbol, "LOW_SCORE", f"score {signal_score:.1f} < min {self.config.min_score_for_trade}")
             return None
 
-        # ── 0. Emergency Stop (Стоп-кран при критической просадке) ───────────
-        emergency_stop = self.redis.get(f"{self.bot_type}:emergency_stop")
-        if emergency_stop:
-            print(f"🛑 [EMERGENCY STOP] {self.bot_type.upper()} bot halted due to critical loss. Restart manually.")
-            return None
-        
         # ── 1. Daily risk ─────────────────────────────────────────────────────
         self._check_daily_reset()
+        # ✅ FIX #6: Восстанавливаем daily_pnl из Redis при старте (переживает рестарт)
+        if not getattr(self, '_daily_pnl_loaded', False):
+            self._load_daily_pnl_from_redis()
         if self.daily_pnl <= -self.config.max_daily_risk:
-            reason = f"DAILY_LIMIT: {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
-            # 🆕 Активируем emergency stop при достижении -15%
-            if self.daily_pnl <= -15.0:
-                self.redis.set(f"{self.bot_type}:emergency_stop", "true", ex=86400)  # 24 часа
-                await self._tg(
-                    f"🛑 <b>EMERGENCY STOP</b>\n"
-                    f"<code>#{self.bot_type.upper()}</code> остановлен!\n"
-                    f"Просадка: {self.daily_pnl:.2f}% | Лимит: -15%\n"
-                    f"Перезапустите бота вручную завтра."
-                )
+            reason = f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
+            print(f"{pfx} ⏸ SKIP — daily risk limit {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%")
+            self._log_skip_reason(symbol, "DAILY_LIMIT", reason)
             await self._tg(
-                f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: "
-                f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
+                f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: {reason}"
             )
             return None
 
@@ -400,9 +389,9 @@ class AutoTrader:
             print(f"{pfx} 📋 {pos_list}")
 
         if n_pos >= self.config.max_positions:
-            reason = f"MAX_POSITIONS: {n_pos}/{self.config.max_positions}"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+            reason = f"MAX_POSITIONS: {n_pos}/{self.config.max_positions} {expected_side} открыто"
+            print(f"{pfx} ⏸ SKIP — max {expected_side} positions")
+            self._log_skip_reason(symbol, "MAX_POSITIONS", reason)
             await self._tg_reply(
                 f"⏸ <b>{expected_side} лимит достигнут</b> ({n_pos}/{self.config.max_positions})\n"
                 f"<b>#{symbol}</b> — сигнал пропущен", tg_msg_id
@@ -414,9 +403,8 @@ class AutoTrader:
         existing = [p for p in current_positions
                     if p.symbol.replace("-", "") == symbol.replace("-", "")]
         if existing:
-            reason = f"DUPLICATE: already open ({existing[0].side})"
-            print(f"{pfx} ⏸ SKIP — {reason}")
-            print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+            print(f"{pfx} ⏸ SKIP — already open ({existing[0].side})")
+            self._log_skip_reason(symbol, "DUPLICATE", f"позиция уже открыта ({existing[0].side})")
             await self._tg_reply(
                 f"ℹ️ <b>Позиция уже открыта</b>\n"
                 f"<b>#{symbol}</b> — {existing[0].side} уже активен", tg_msg_id
@@ -436,9 +424,9 @@ class AutoTrader:
             MAX_PER_SECTOR = int(os.getenv("MAX_POSITIONS_PER_SECTOR", "5"))
             
             if sector_count >= MAX_PER_SECTOR:
-                reason = f"SECTOR_LIMIT: {sector} ({sector_count}/{MAX_PER_SECTOR})"
-                print(f"{pfx} ⏸ SKIP — {reason}")
-                print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+                reason = f"SECTOR_LIMIT: {sector} {sector_count}/{MAX_PER_SECTOR}"
+                print(f"{pfx} ⏸ SKIP — sector {sector} limit ({sector_count}/{MAX_PER_SECTOR})")
+                self._log_skip_reason(symbol, "SECTOR_LIMIT", reason)
                 await self._tg_reply(
                     f"⏸ <b>Лимит сектора {sector}</b> ({sector_count}/{MAX_PER_SECTOR})\n"
                     f"<b>#{symbol}</b> — пропущен", tg_msg_id
@@ -480,9 +468,6 @@ class AutoTrader:
             confidence="HIGH" if signal_score >= 80 else ("MEDIUM" if signal_score >= 65 else "LOW")
         )
         
-        # 🔧 FIX: Расчёт sl_distance ДО использования в Kelly!
-        sl_distance = abs(entry_price - stop_loss) / entry_price
-        
         # Получаем капитал из equity
         self.kelly_rm.update_capital(equity)
         
@@ -505,6 +490,7 @@ class AutoTrader:
         risk_mult   = 1.5 if signal_score >= 85 else (1.2 if signal_score >= 75 else 1.0)
         actual_risk = self.config.risk_per_trade * risk_mult
         risk_amount = available * actual_risk
+        sl_distance = abs(entry_price - stop_loss) / entry_price
 
         print(f"{pfx} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
         print(f"{pfx} 🎯 Kelly: kelly_pct={kelly_result.kelly_pct:.1f}% | "
@@ -645,13 +631,24 @@ class AutoTrader:
             "tg_msg_id":    tg_msg_id,
             "taken_tps":    [],
             "be_done":      False,
-            "confirmed":    True,  # ✅ Позиция подтверждена открытием на бирже
-            "skip_reason":  None,  # Причина пропуска (если не открыли)
+            # ✅ ВАР А+Б: Флаг confirmed — позиция РЕАЛЬНО открыта на бирже
+            # Только confirmed=True позиции проверяются position_tracker'ом
+            "confirmed":    True,
+            "confirmed_at": datetime.utcnow().isoformat(),
+            "exchange_order_id": order.order_id,
         }
         bot_type = "long" if direction == "long" else "short"
+        # ✅ ВАР Б: Сохраняем в ACTIVE список (не в pending — реально открыто)
         self.redis.save_signal(bot_type, symbol, position_data)
         self.redis.save_position(bot_type, symbol, position_data)
+        # ✅ ВАР Б: Явно помечаем как active в отдельном ключе
+        try:
+            self.redis.set(f"active_position:{bot_type}:{symbol}", "1", ex=86400)
+        except Exception:
+            pass
         self.daily_trades += 1
+        # ✅ FIX #6: Сохраняем daily_pnl в Redis — переживает рестарт
+        self._save_daily_pnl_to_redis()
 
         print(f"✅ {pfx} Position opened [{mode}]! id={order.order_id}")
 
@@ -802,6 +799,42 @@ class AutoTrader:
             self.daily_trades = 0
             self.last_reset   = today
             print("📅 Daily stats reset")
+            # ✅ FIX #6: Сбрасываем и в Redis при смене дня
+            self._save_daily_pnl_to_redis()
+
+    # ✅ FIX #6: Сохранение daily_pnl в Redis — переживает рестарт Render
+    def _save_daily_pnl_to_redis(self):
+        try:
+            today = datetime.utcnow().date().isoformat()
+            self.redis.set(f"daily_pnl:{self.bot_type}:{today}", str(round(self.daily_pnl, 4)), ex=90000)
+        except Exception as e:
+            print(f"[AT] _save_daily_pnl error: {e}")
+
+    def _load_daily_pnl_from_redis(self):
+        """✅ FIX #6: Восстанавливаем daily_pnl при старте/рестарте"""
+        try:
+            today = datetime.utcnow().date().isoformat()
+            saved = self.redis.get(f"daily_pnl:{self.bot_type}:{today}")
+            if saved:
+                self.daily_pnl = float(saved)
+                print(f"📅 [AT] Restored daily_pnl from Redis: {self.daily_pnl:.2f}% (today={today})")
+        except Exception as e:
+            print(f"[AT] _load_daily_pnl error: {e}")
+        finally:
+            self._daily_pnl_loaded = True
+
+    # ✅ ВАР А+Б: Логирование причин пропуска — видно в Render логах
+    def _log_skip_reason(self, symbol: str, reason_code: str, details: str = ""):
+        """Логирует причину пропуска сигнала с форматом для быстрого поиска"""
+        print(f"📊 [SKIP-REASON] #{symbol}: {reason_code} — {details}")
+        try:
+            self.redis.set(
+                f"skip_log:{self.bot_type}:{symbol}",
+                f"{reason_code}|{details}|{datetime.utcnow().isoformat()}",
+                ex=3600  # TTL 1 час
+            )
+        except Exception:
+            pass
 
     def record_trade_result(self, pnl_pct: float):
         """pnl_pct в % (напр. 1.5 = +1.5%). daily_pnl та же единица."""
@@ -812,3 +845,5 @@ class AutoTrader:
         else:           self.loss_count += 1
         print(f"📊 Trade: {pnl_pct:+.2f}% | Day: {self.daily_pnl:+.2f}% | "
               f"Total trades: {self.daily_trades}")
+        # ✅ FIX #6: Сохраняем после каждой сделки — переживает рестарт
+        self._save_daily_pnl_to_redis()
