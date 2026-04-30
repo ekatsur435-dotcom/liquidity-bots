@@ -115,14 +115,15 @@ class Config:
     # ============================================================================
     # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
     # ============================================================================
-    # MIN_SCORE_LONG       - Минимальный score для входа (default: 75) ⭐ КЛЮЧЕВОЙ
+    # MIN_SCORE_LONG       - Минимальный score для входа (default: 65) ⭐ КЛЮЧЕВОЙ
     # MAX_LONG_POSITIONS   - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
     # LONG_SL_BUFFER       - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
-    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 120)
+    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 180)
     # LONG_LEVERAGE        - Плечо (default: "5-50")
     # LONG_TRAIL_ACTIVATION - Активация trailing SL (default: 0.025)
     # BTC_BLOCK_LONG_THRESHOLD - Блокировка при дампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
@@ -140,6 +141,7 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
@@ -557,6 +559,7 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
+                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
