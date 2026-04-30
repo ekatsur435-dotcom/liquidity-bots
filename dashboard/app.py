@@ -78,30 +78,27 @@ def get_trading_stats(days=7):
                 # Боты сохраняют через LPUSH в redis_client.py
                 try:
                     trades_json = redis.execute(["LRANGE", all_trades_key, "0", "49"])
-                    # ✅ FIX: handle both str and bytes from Redis
-                    trades_data = []
-                    for t in (trades_json or []):
-                        try:
-                            if isinstance(t, bytes): t = t.decode('utf-8')
-                            trades_data.append(json.loads(t))
-                        except: pass
+                    trades_data = [json.loads(t) for t in trades_json] if trades_json else []
                 except Exception as e:
                     print(f"Error reading list for {bot_name}: {e}")
                     trades_data = []
                 
                 if trades_data:
-                    # Берем только последние 50 сделок
-                    trades = trades_data[-50:] if len(trades_data) > 50 else trades_data
-                    
+                    # ✅ FIX v7: Считаем только ЗАКРЫТЫЕ сделки (status=closed_*)
+                    # Активные позиции имеют pnl=0 (unrealized) и искажают статистику
+                    all_t = trades_data[-100:] if len(trades_data) > 100 else trades_data
+                    closed_statuses = {'closed_tp', 'closed_sl', 'closed_manual', 'closed'}
+                    trades = [t for t in all_t
+                              if t.get('status', 'active') in closed_statuses
+                              or t.get('close_price') is not None]
+                    # Fallback: если нет закрытых — берём все (старые данные без status)
+                    if not trades:
+                        trades = all_t[-50:]
+
                     total = len(trades)
-                    def get_pnl(t):
-                        # ✅ FIX: trade может хранить pnl в разных полях
-                        v = t.get('pnl_pct', t.get('pnl', t.get('total_pnl', 0)))
-                        try: return float(v)
-                        except: return 0.0
-                    wins = sum(1 for t in trades if get_pnl(t) > 0)
-                    losses = sum(1 for t in trades if get_pnl(t) <= 0)
-                    pnl = sum(get_pnl(t) for t in trades)
+                    wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
+                    losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
+                    pnl = sum((t.get('pnl_pct') or t.get('pnl') or 0) for t in trades)
                     
                     stats["total_trades"] += total
                     stats["win_count"] += wins
@@ -307,7 +304,7 @@ def api_chart_data():
 
 @app.route("/api/trades")
 def api_trades():
-    """API: Последние 5 сделок SHORT и LONG с деталями"""
+    """API: Последние 20 сделок SHORT и LONG с деталями"""
     trades = {"short": [], "long": []}
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
@@ -315,12 +312,12 @@ def api_trades():
             redis = redis_getter()
             prefix = bot_name.lower()
             
-            # Читаем all_trades как LIST
+            # Читаем all_trades как LIST (последние 20)
             try:
-                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "4"])
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "19"])
                 if trades_json:
                     all_trades = [json.loads(t) for t in trades_json]
-                    trades[prefix] = all_trades[:5]
+                    trades[prefix] = all_trades[:20]
             except:
                 pass
         except Exception as e:
@@ -329,24 +326,23 @@ def api_trades():
     return jsonify(trades)
 
 
-@app.route("/api/active_positions")
-def api_active_positions():
-    """API: Активные позиции с текущим P&L"""
+@app.route("/api/positions")
+def api_positions():
+    """API: Получить список активных позиций (все)"""
     positions = []
-    seen_symbols = set()  # 🔧 FIX: Дедупликация по нормализованным символам
+    seen_symbols = set()
+    debug_info = {"short_keys": 0, "long_keys": 0, "skipped_status": 0, "skipped_dup": 0}
     
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
             prefix = bot_name.lower()
-            
-            # Читаем активные позиции из positions:*
             try:
-                # Используем KEYS для Upstash
                 result = redis.execute(["KEYS", f"{prefix}:positions:*"])
                 position_keys = result if result and isinstance(result, list) else []
+                debug_info[f"{prefix}_keys"] = len(position_keys)
                 
-                for key in position_keys[:10]:  # Максимум 10
+                for key in position_keys:  # ✅ ВСЕ позиции, без ограничения
                     pos_data = redis.execute(["GET", key])
                     if pos_data:
                         try:
@@ -356,27 +352,36 @@ def api_active_positions():
                             # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
                             symbol_normalized = symbol.replace('-', '').upper()
                             if symbol_normalized in seen_symbols:
+                                debug_info["skipped_dup"] += 1
                                 continue  # Пропускаем дубликат
                             seen_symbols.add(symbol_normalized)
+                            
+                            # ✅ Дополнительные поля для отображения
+                            status = pos.get('status', 'active')
+                            if status not in ['active', 'filled', 'open']:
+                                debug_info["skipped_status"] += 1
+                                continue  # Пропускаем неактивные позиции
 
                             positions.append({
                                 "symbol": symbol_normalized,  # Возвращаем нормализованный символ
                                 "direction": prefix,
                                 "entry": pos.get("entry_price", 0),
-                                "current_pnl": float(pos.get("unrealized_pnl", pos.get("pnl_pct", pos.get("pnl", 0))) or 0),
+                                "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
                                 "tp": pos.get("take_profit", pos.get("tp", 0)),
                                 "sl": pos.get("stop_loss", pos.get("sl", 0)),
                                 "duration_min": pos.get("duration_min", 0),
                                 "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
                             })
-                        except:
+                        except Exception as e:
+                            print(f"[API] Error parsing position {key}: {e}")
                             continue
             except Exception as e:
                 print(f"Error scanning positions for {bot_name}: {e}")
         except Exception as e:
             print(f"Error reading positions for {bot_name}: {e}")
     
-    return jsonify({"positions": positions, "count": len(positions)})
+    print(f"[API Positions] Found {len(positions)} active positions. Debug: {debug_info}")
+    return jsonify({"positions": positions, "count": len(positions), "debug": debug_info})
 
 
 @app.route("/api/feed")
@@ -405,7 +410,7 @@ def api_feed():
                                     "message": f"{t.get('exit_reason', 'Closed')} @ {t.get('exit_price', t.get('close_price', 0))}",
                                     "timestamp": t.get("exit_time", t.get("closed_at", "")),
                                     "price": t.get("exit_price", t.get("close_price", 0)),
-                                    "pnl": t.get("pnl", 0)
+                                    "pnl": (t.get("pnl_pct") or t.get("pnl") or 0)
                                 })
                         except:
                             continue
@@ -456,24 +461,6 @@ def api_feed():
     return jsonify({"events": events[:15]})
 
 
-
-@app.route("/api/reset_stats", methods=["POST"])
-def reset_stats():
-    """Reset dashboard stats cache (clears old bad data from view)"""
-    try:
-        for redis_getter in [get_redis_short, get_redis_long]:
-            try:
-                r = redis_getter()
-                # Only clear the all_trades key (keeps positions/signals)
-                for prefix in ["short", "long"]:
-                    r.execute(["DEL", f"{prefix}:all_trades"])
-                    r.execute(["DEL", f"{prefix}:micro_step:saved_trades"])
-            except:
-                pass
-        return jsonify({"ok": True, "message": "Stats reset. History cleared."})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
 @app.route("/api/summary")
 def api_summary():
     """API: Сводка P&L за сегодня, вчера, неделю"""
@@ -499,7 +486,7 @@ def api_summary():
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
-                            pnl = t.get("pnl", 0)
+                            pnl = (t.get("pnl_pct") or t.get("pnl") or 0)
                             is_win = pnl > 0
                             
                             # Week
@@ -535,6 +522,32 @@ def api_summary():
         summary[period]["winrate"] = round(wins / total * 100, 1) if total > 0 else 0
     
     return jsonify(summary)
+
+
+@app.route("/api/reset_stats", methods=["POST"])
+def reset_stats():
+    """
+    ✅ FIX v7: Сброс статистики Redis (старые данные до фиксов).
+    POST /api/reset_stats   — очищает all_trades, stats:daily ключи.
+    """
+    try:
+        for redis_getter, prefix in [(get_redis_short, "short"), (get_redis_long, "long")]:
+            try:
+                r = redis_getter()
+                r.execute(["DEL", f"{prefix}:all_trades"])
+                r.execute(["DEL", f"{prefix}:stats:daily"])
+                # Также удаляем кэшированные ключи daily по датам
+                result = r.execute(["KEYS", f"{prefix}:stats:daily:*"])
+                if result:
+                    for key in result:
+                        r.execute(["DEL", key])
+                print(f"[Dashboard] Stats reset for {prefix}")
+            except Exception as e:
+                print(f"[Dashboard] Reset error {prefix}: {e}")
+        return json.dumps({"status": "ok", "message": "Статистика сброшена. Данные накопятся заново."})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
 
 
 # Health check для Render
