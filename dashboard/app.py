@@ -8,6 +8,7 @@ URL: http://localhost:5000
 import os
 import sys
 import json
+import requests as _requests
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -40,6 +41,30 @@ def get_redis_long():
 # Кэш для статистики
 _stats_cache = {"data": None, "timestamp": 0}
 CACHE_TTL = 30  # секунды
+
+# Кэш live цен Binance (обновляем раз в 10 сек)
+_prices_cache = {"data": {}, "timestamp": 0}
+PRICES_TTL = 10  # секунды
+
+def get_binance_prices() -> dict:
+    """Получить все текущие цены с Binance Futures одним запросом (кэш 10с)"""
+    global _prices_cache
+    now = datetime.utcnow().timestamp()
+    if _prices_cache["data"] and (now - _prices_cache["timestamp"]) < PRICES_TTL:
+        return _prices_cache["data"]
+    try:
+        resp = _requests.get(
+            "https://fapi.binance.com/fapi/v1/ticker/price",
+            timeout=3
+        )
+        if resp.status_code == 200:
+            prices = {item["symbol"]: float(item["price"]) for item in resp.json()}
+            _prices_cache["data"] = prices
+            _prices_cache["timestamp"] = now
+            return prices
+    except Exception as e:
+        print(f"[Dashboard] Binance prices fetch error: {e}")
+    return _prices_cache["data"]  # вернуть старый кэш если запрос упал
 
 def get_trading_stats(days=7):
     """Получение статистики торговли за N дней (оба бота) с кэшированием"""
@@ -335,6 +360,9 @@ def api_positions():
     seen_positions = set()
     debug_info = {"short_keys": 0, "long_keys": 0, "skipped_status": 0, "skipped_dup": 0}
 
+    # 🔥 Получаем live цены с Binance одним запросом
+    live_prices = get_binance_prices()
+
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
@@ -344,42 +372,68 @@ def api_positions():
                 position_keys = result if result and isinstance(result, list) else []
                 debug_info[f"{prefix}_keys"] = len(position_keys)
 
-                for key in position_keys:  # ✅ ВСЕ позиции, без ограничения
+                for key in position_keys:
                     pos_data = redis.execute(["GET", key])
                     if pos_data:
                         try:
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
-
-                            # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
                             symbol_normalized = symbol.replace('-', '').upper()
-                            # Дедуплицируем по (символ, направление) — можно держать обе стороны
+
                             dedup_key = f"{symbol_normalized}:{prefix}"
                             if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
-                                continue  # Пропускаем настоящий дубликат
+                                continue
                             seen_positions.add(dedup_key)
-                            
-                            # ✅ Дополнительные поля для отображения
+
                             status = pos.get('status', 'active')
                             if status not in ['active', 'filled', 'open']:
                                 debug_info["skipped_status"] += 1
-                                continue  # Пропускаем неактивные позиции
+                                continue
 
-                            # ✅ FIX: Считаем unrealized PnL из entry_price + current_price
-                            # Боты не обновляют unrealized_pnl в Redis (только при закрытии)
-                            entry_price   = pos.get("entry_price", 0) or 0
-                            current_price = pos.get("current_price", pos.get("mark_price", 0)) or 0
-                            stored_pnl    = pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0
-                            leverage      = pos.get("leverage", 1) or 1
+                            entry_price = float(pos.get("entry_price", 0) or 0)
+                            stored_pnl  = float(pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0)
 
+                            # Парсим leverage (может быть "5-50" или число)
+                            lev_raw = pos.get("leverage", 1) or 1
+                            try:
+                                leverage = float(str(lev_raw).split("-")[0])
+                            except Exception:
+                                leverage = 1.0
+
+                            # 🔥 Live цена с Binance
+                            current_price = live_prices.get(symbol_normalized, 0)
+                            if not current_price:
+                                current_price = float(pos.get("current_price", pos.get("mark_price", 0)) or 0)
+
+                            # Live PnL
                             if entry_price > 0 and current_price > 0:
                                 price_change_pct = (current_price - entry_price) / entry_price * 100
                                 if prefix == "short":
-                                    price_change_pct = -price_change_pct  # Short: растёт → убыток
+                                    price_change_pct = -price_change_pct
                                 live_pnl = round(price_change_pct * leverage, 2)
                             else:
-                                live_pnl = round(stored_pnl, 2)  # fallback на сохранённое
+                                live_pnl = round(stored_pnl, 2)
+
+                            # ✅ TP/SL как % от entry
+                            # Боты сохраняют take_profits (список абс. цен) и stop_loss (абс. цена)
+                            stop_loss_price = float(
+                                pos.get("stop_loss", pos.get("sl", 0)) or 0
+                            )
+                            take_profits_raw = pos.get("take_profits", pos.get("take_profit", pos.get("tp", [])))
+                            tp1_price = 0.0
+                            if isinstance(take_profits_raw, list) and take_profits_raw:
+                                tp1_price = float(take_profits_raw[0] or 0)
+                            elif isinstance(take_profits_raw, (int, float)):
+                                tp1_price = float(take_profits_raw)
+
+                            sl_pct = 0.0
+                            tp_pct = 0.0
+                            if entry_price > 0:
+                                if stop_loss_price > 0:
+                                    sl_pct = round(abs(stop_loss_price - entry_price) / entry_price * 100, 2)
+                                if tp1_price > 0:
+                                    tp_pct = round(abs(tp1_price - entry_price) / entry_price * 100, 2)
 
                             # Время в позиции
                             opened_at = pos.get("opened_at", pos.get("created_at", ""))
@@ -393,13 +447,15 @@ def api_positions():
                                     duration_min = pos.get("duration_min", 0)
 
                             positions.append({
-                                "symbol": symbol_normalized,  # Возвращаем нормализованный символ
+                                "symbol": symbol_normalized,
                                 "direction": prefix,
                                 "entry": entry_price,
-                                "current_price": current_price,
+                                "current_price": round(current_price, 6) if current_price else 0,
                                 "current_pnl": live_pnl,
-                                "tp": pos.get("take_profit", pos.get("tp", 0)),
-                                "sl": pos.get("stop_loss", pos.get("sl", 0)),
+                                "tp": tp_pct,       # % от entry до TP1
+                                "sl": sl_pct,       # % от entry до SL
+                                "tp_price": tp1_price,
+                                "sl_price": stop_loss_price,
                                 "leverage": leverage,
                                 "duration_min": duration_min,
                                 "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
