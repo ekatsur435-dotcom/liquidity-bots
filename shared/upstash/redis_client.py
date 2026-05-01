@@ -326,6 +326,37 @@ class UpstashRedisClient:
             print(f"Error getting Redis info: {e}")
             return {}
     
+    # =========================================================================
+    # SIGNAL LOG — постоянный лог ВСЕХ сигналов (исполненных + пропущенных)
+    # =========================================================================
+
+    def save_signal_log(self, bot_type: str, signal_data: Dict) -> bool:
+        """
+        Сохраняет КАЖДЫЙ сигнал, который прошёл MIN_SCORE и попал в Telegram.
+        Включает флаг executed=True/False и skip_reason.
+        Используется для статистики сигналов и виртуальных трейдов.
+        """
+        try:
+            key = f"{bot_type}:signal_log"
+            entry = dict(signal_data)
+            entry["log_ts"] = datetime.utcnow().isoformat()
+            self.client.lpush(key, json.dumps(entry))
+            self.client.ltrim(key, 0, 4999)  # Хранить последние 5000 сигналов
+            return True
+        except Exception as e:
+            print(f"Error saving signal log: {e}")
+            return False
+
+    def get_signal_log(self, bot_type: str, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Получение лога сигналов для дашборда"""
+        try:
+            key = f"{bot_type}:signal_log"
+            items = self.client.lrange(key, offset, offset + limit - 1)
+            return [json.loads(i) for i in items]
+        except Exception as e:
+            print(f"Error getting signal log: {e}")
+            return []
+
     def get_memory_usage(self) -> Dict:
         try:
             info = self.client.info("memory")

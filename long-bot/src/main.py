@@ -141,7 +141,8 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
+    # ✅ FIX: MAX_DAILY_RISK определён ниже в блоке "Drawdown Control" (default 15.0)
+    # Удалено дублирующее определение с default 5.0 (оно перезаписывалось)
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
@@ -1916,6 +1917,8 @@ async def _count_real_positions() -> int:
         return 0
 
 
+_scan_lock = None  # asyncio.Lock — инициализируется лениво в event loop
+
 async def scan_market():
     """
     ✅ v2.7 АРХИТЕКТУРА (NO BTC CORR):
@@ -1923,6 +1926,20 @@ async def scan_market():
     - Биржевое исполнение: только если active_count < MAX и не /pause
     - Единственный блокер: команда /pause
     """
+    # ✅ FIX v4.1: Предотвращаем параллельный запуск scan_market (петля WIFUSDT/BRETTUSDT)
+    global _scan_lock
+    if _scan_lock is None:
+        _scan_lock = asyncio.Lock()
+    if _scan_lock.locked():
+        print(f"⚠️ [SCAN] Previous scan still running — skipping concurrent invocation")
+        return
+
+    async with _scan_lock:
+        await _scan_market_impl()
+
+
+async def _scan_market_impl():
+    """Внутренняя реализация scan_market — вызывается только через scan_market()."""
     print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
         print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
@@ -1978,12 +1995,18 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
+            # 📊 SIGNAL LOG: Запись всех сигналов (исполненных + пропущенных)
+            _signal_log_entry = {**signal, "executed": False, "skip_reason": None}
+
             # 🆕 STRICT: Проверка объема перед входом
             quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
+                _signal_log_entry["skip_reason"] = "volume_too_low"
+                try: state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
+                except Exception: pass
                 continue
-            
+
             # 🆕 BTC FILTER: Не лонгить если BTC падает (ловим ножи)
             btc_trend_ok = True
             if hasattr(state, 'btc_context') and state.btc_context:
@@ -1991,7 +2014,7 @@ async def scan_market():
                 if btc_data.get('direction') == 'DOWN' and btc_data.get('strength', 0) > 0.6:
                     btc_trend_ok = False
                     print(f"📊 [BTC-FILTER] {symbol}: BTC falling hard — skip LONG")
-            
+
             # ✅ Биржевое исполнение: только если есть слоты И не на паузе И BTC ок
             if not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok:
                 if state.auto_trader:
@@ -2002,18 +2025,37 @@ async def scan_market():
                             active_count += 1
                             exchange_full = active_count >= Config.MAX_POSITIONS
                             new_signals += 1
+                            _signal_log_entry["executed"] = True
+                            _signal_log_entry["executed_at"] = datetime.utcnow().isoformat()
                             print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                         else:
+                            _signal_log_entry["skip_reason"] = "bingx_rejected"
                             print(f"⚠️ LONG skipped (BingX rejected): {symbol}")
                     except Exception as e:
+                        _signal_log_entry["skip_reason"] = "error"
                         print(f"AutoTrader error {symbol}: {e}")
             elif not btc_trend_ok:
                 tg_only_count += 1
+                _signal_log_entry["skip_reason"] = "btc_falling"
                 print(f"📡 LONG TG-only: {symbol} [BTC falling]")
             else:
                 tg_only_count += 1
-                reason = "max positions" if exchange_full else "paused"
+                if exchange_full:
+                    _signal_log_entry["skip_reason"] = "exchange_full"
+                    reason = "max positions"
+                elif not Config.AUTO_TRADING:
+                    _signal_log_entry["skip_reason"] = "auto_trading_disabled"
+                    reason = "auto trading disabled"
+                else:
+                    _signal_log_entry["skip_reason"] = "paused"
+                    reason = "paused"
                 print(f"📡 LONG TG-only: {symbol} Score={signal['score']:.0f}% [{reason}]")
+
+            # 📊 Сохраняем в постоянный лог сигналов
+            try:
+                state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
+            except Exception:
+                pass
 
             await asyncio.sleep(0.4)
         except Exception as e:

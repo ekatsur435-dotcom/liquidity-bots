@@ -1,0 +1,132 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║        SHORT BOT — ЧИСТЫЕ ENV ПЕРЕМЕННЫЕ (только рабочие)       ║
+# ║  Проверено по коду short-bot/src/main.py + shared/*              ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔴 ОБЯЗАТЕЛЬНЫЕ (без них бот не запустится)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BINGX_API_KEY=ВАШ_КЛЮЧ
+BINGX_API_SECRET=ВАШ_СЕКРЕТ
+REDIS_URL=redis://...               # Upstash Redis URL
+RENDER_EXTERNAL_URL=https://your-short-bot.onrender.com
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📱 TELEGRAM
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SHORT_TELEGRAM_BOT_TOKEN=
+SHORT_TELEGRAM_CHAT_ID=
+SHORT_TELEGRAM_TOPIC_ID=
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🟡 ТОРГОВЫЕ ПАРАМЕТРЫ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIN_SCORE_SHORT=80
+MAX_SHORT_POSITIONS=15
+RISK_PER_TRADE=0.001
+SHORT_SL_BUFFER=2.0
+SHORT_LEVERAGE=5-50
+SHORT_TRAIL_ACTIVATION=0.030
+SCAN_INTERVAL=240
+SL_COOLDOWN_HOURS=2.0
+MAX_DAILY_RISK=15.0
+MAX_CONSECUTIVE_LOSSES=4
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🤖 РЕЖИМ ТОРГОВЛИ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUTO_TRADING_ENABLED=true
+BINGX_DEMO_MODE=true
+BINGX_FORCE_REAL=false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📊 ФИЛЬТРЫ ВОТЧЛИСТА
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIN_VOLUME_USDT=10000000
+MAX_WATCHLIST=100
+MIN_MARKET_CAP=900000
+MIN_ENTRY_VOLUME_USDT=10000000
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 💰 KELLY + РИСК-МЕНЕДЖМЕНТ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KELLY_FRACTION=0.25
+MAX_POSITION_PCT=0.25
+MAX_EXPOSURE_PCT=0.80
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔄 SMART DCA
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_SMART_DCA=true
+DCA_MAX_ADDITIONS=3
+DCA_MAX_PORTFOLIO_RISK=3.0
+DCA_ATR_MULT=1.5
+DCA_SIZE_MULT=1.5
+DCA_MAX_EXPOSURE_PCT=0.40
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🌐 ПРОКСИ (Singapore Render)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROXY_LIST=
+USE_BINANCE=false
+USE_PROXY_FOR_OKX=true
+USE_PROXY_FOR_COINGECKO=true
+USE_PROXY_FOR_CMC=true
+USE_PROXY_FOR_COINGLASS=true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔑 ДОПОЛНИТЕЛЬНЫЕ API (опционально)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COINGLASS_API_KEY=
+COINMARKETCAP_API_KEY=
+COINGECKO_API_KEY=
+BINANCE_API_KEY=
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🧩 BTC КОРРЕЛЯЦИЯ (SHORT — блокируется при памп BTC)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_BTC=true
+BTC_BLOCK_SHORT_THRESHOLD=4.0       # Блокировать SHORT если BTC растёт >4%
+                                    # Ставь 99.0 чтобы НИКОГДА не блокировать
+BTC_CORRELATION_FILTER=false
+BTC_DROP_THRESHOLD=-3.0
+DAILY_LOSS_STOP_PCT=-5.0
+BLOCK_ASIAN_SESSION=false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🎯 MOMENTUM SHORT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_MOMENTUM_SHORT=true
+MOMENTUM_SHORT_MIN_1MIN_CHANGE=0.8
+MOMENTUM_SHORT_MIN_5MIN_CHANGE=2.0
+MOMENTUM_SHORT_VOLUME_SPIKE=2.5
+MOMENTUM_SHORT_RSI_MIN=60
+MOMENTUM_SHORT_RSI_MAX=85
+MOMENTUM_SHORT_SCORE_MIN=50
+MOMENTUM_SHORT_MAX_POSITIONS=5
+MOMENTUM_SHORT_RISK_PER_TRADE=0.0003
+MOMENTUM_SHORT_SL_BUFFER=1.0
+MOMENTUM_SHORT_TRAIL_START=0.5
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🏭 СЕКТОРНЫЕ ЛИМИТЫ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_SECTOR_LIMITS=true
+MAX_PER_SECTOR_MEME=3
+MAX_PER_SECTOR_DEFI=3
+MAX_PER_SECTOR_GAMEFI=3
+MAX_PER_SECTOR_L1=3
+MAX_PER_SECTOR_L2=3
+MAX_PER_SECTOR_AI=3
+MAX_PER_SECTOR_RWA=2
+MAX_PER_SECTOR_ORACLE=2
+MAX_PER_SECTOR_INFRA=2
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ⚙️ СИСТЕМНЫЕ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PORT=8000
+LOG_LEVEL=INFO
+USE_SMC=true
+USE_COINGECKO=true
+ADMIN_USER_IDS=

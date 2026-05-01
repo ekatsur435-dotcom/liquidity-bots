@@ -330,9 +330,11 @@ def api_trades():
 def api_positions():
     """API: Получить список активных позиций (все)"""
     positions = []
-    seen_symbols = set()
+    # ✅ FIX: Дедупликация по (symbol, direction), а не только symbol
+    # Это позволяет иметь одновременно LONG и SHORT по одному символу
+    seen_positions = set()
     debug_info = {"short_keys": 0, "long_keys": 0, "skipped_status": 0, "skipped_dup": 0}
-    
+
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
@@ -341,20 +343,22 @@ def api_positions():
                 result = redis.execute(["KEYS", f"{prefix}:positions:*"])
                 position_keys = result if result and isinstance(result, list) else []
                 debug_info[f"{prefix}_keys"] = len(position_keys)
-                
+
                 for key in position_keys:  # ✅ ВСЕ позиции, без ограничения
                     pos_data = redis.execute(["GET", key])
                     if pos_data:
                         try:
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
-                            
+
                             # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
                             symbol_normalized = symbol.replace('-', '').upper()
-                            if symbol_normalized in seen_symbols:
+                            # Дедуплицируем по (символ, направление) — можно держать обе стороны
+                            dedup_key = f"{symbol_normalized}:{prefix}"
+                            if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
-                                continue  # Пропускаем дубликат
-                            seen_symbols.add(symbol_normalized)
+                                continue  # Пропускаем настоящий дубликат
+                            seen_positions.add(dedup_key)
                             
                             # ✅ Дополнительные поля для отображения
                             status = pos.get('status', 'active')
@@ -362,15 +366,45 @@ def api_positions():
                                 debug_info["skipped_status"] += 1
                                 continue  # Пропускаем неактивные позиции
 
+                            # ✅ FIX: Считаем unrealized PnL из entry_price + current_price
+                            # Боты не обновляют unrealized_pnl в Redis (только при закрытии)
+                            entry_price   = pos.get("entry_price", 0) or 0
+                            current_price = pos.get("current_price", pos.get("mark_price", 0)) or 0
+                            stored_pnl    = pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0
+                            leverage      = pos.get("leverage", 1) or 1
+
+                            if entry_price > 0 and current_price > 0:
+                                price_change_pct = (current_price - entry_price) / entry_price * 100
+                                if prefix == "short":
+                                    price_change_pct = -price_change_pct  # Short: растёт → убыток
+                                live_pnl = round(price_change_pct * leverage, 2)
+                            else:
+                                live_pnl = round(stored_pnl, 2)  # fallback на сохранённое
+
+                            # Время в позиции
+                            opened_at = pos.get("opened_at", pos.get("created_at", ""))
+                            duration_min = 0
+                            if opened_at:
+                                try:
+                                    from datetime import timezone
+                                    opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                                    duration_min = int((datetime.now(timezone.utc) - opened_dt).total_seconds() / 60)
+                                except Exception:
+                                    duration_min = pos.get("duration_min", 0)
+
                             positions.append({
                                 "symbol": symbol_normalized,  # Возвращаем нормализованный символ
                                 "direction": prefix,
-                                "entry": pos.get("entry_price", 0),
-                                "current_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
+                                "entry": entry_price,
+                                "current_price": current_price,
+                                "current_pnl": live_pnl,
                                 "tp": pos.get("take_profit", pos.get("tp", 0)),
                                 "sl": pos.get("stop_loss", pos.get("sl", 0)),
-                                "duration_min": pos.get("duration_min", 0),
-                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
+                                "leverage": leverage,
+                                "duration_min": duration_min,
+                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
+                                "score": pos.get("score", 0),
+                                "opened_at": opened_at,
                             })
                         except Exception as e:
                             print(f"[API] Error parsing position {key}: {e}")

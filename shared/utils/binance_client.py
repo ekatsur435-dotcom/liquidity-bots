@@ -192,8 +192,15 @@ class BinanceFuturesClient:
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
         
-        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool}
+        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool, permanent: bool}
         self._circuit_breaker: Dict[str, Dict] = {}
+        # ✅ FIX: Навсегда отключённые эндпоинты (постоянно 404, нет смысла пробовать)
+        self._permanently_disabled = {
+            "/futures/data/takerBuySellVolRatio",  # 404 на всех соединениях, OKX/klines — хороший фолбэк
+        }
+        for ep in self._permanently_disabled:
+            self._circuit_breaker[ep] = {"failures": 999, "last_failure": time.time(), "open": True, "permanent": True}
+            print(f"⚡ [Circuit Breaker] {ep}: permanently disabled (known dead endpoint)")
 
         print(f"🔧 Market client: {'Binance+proxy' if self._try_binance else 'Bybit'} mode")
     
@@ -203,6 +210,9 @@ class BinanceFuturesClient:
             return False
         cb = self._circuit_breaker[endpoint]
         if cb.get("open", False):
+            # ✅ FIX: Постоянно отключённые эндпоинты никогда не сбрасываются
+            if cb.get("permanent", False):
+                return True
             # Проверяем, не пора ли закрыть
             elapsed = time.time() - cb.get("last_failure", 0)
             if elapsed > self.CIRCUIT_BREAKER_DURATION:

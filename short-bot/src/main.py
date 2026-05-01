@@ -143,14 +143,14 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
-    
+    # ✅ FIX: MAX_DAILY_RISK определён ниже в блоке "Drawdown Control" (default 15.0)
+    # Удалено дублирующее определение с default 5.0 (оно перезаписывалось)
+
     # Trailing — SHORT активирует при +1% (раньше чем раньше)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     # ✅ FIX v7: BTC correlation — управляется через ENV
     BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
     # При BTC_BLOCK_SHORT_THRESHOLD=99 → SHORT не блокируется даже при сильном памп BTC
-    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
@@ -1467,17 +1467,33 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
         )
-        # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
+        # ✅ FIX v4.1: Логируем score breakdown (как в long-bot)
         ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)
-        ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
-        ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
-        
+        ob_quality_ok = ob_quality >= 50
+        ob_q_high     = ob_quality >= 65
+
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+
+        # ✅ FIX v4.1: STRICT MODE — только валидные сигналы (как в long-bot)
+        if not score_result.is_valid:
+            print(f"🚫 [FILTER-SHORT] {symbol}: score invalid ({score_result.total_score:.1f}%), skipping (STRICT MODE)")
+            return None
+
+        # ✅ FIX v4.1: Инициализируем final_score ДО любых операций +=
+        # Удалён zombie-блок (sweep["reasons"] + confirmation["reasons"]) — sweep=None → crash
+        # Если sweep+confirmation >= 75, функция уже вернула результат выше (~строка 1310)
+        reasons     = list(score_result.reasons)
+        base_score_before_override = score_result.total_score
+        final_score = min(100, score_result.total_score + max(0, base_score_bonus))
+
+        # Добавляем MTF RSI бонусы
         final_score += rsi_30m_score_adj + rsi_4h_score_adj
         if rsi_30m_score_adj != 0:
             print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
         if rsi_4h_score_adj != 0:
             print(f"[MTF] {symbol}: RSI4h={rsi_4h:.0f} adj={rsi_4h_score_adj:+d}")
-        reasons     = list(score_result.reasons)
         
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
@@ -1876,6 +1892,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
 
 
 
+_scan_lock = None  # asyncio.Lock — инициализируется лениво в event loop
+
 async def scan_market():
     """
     ✅ v2.7 АРХИТЕКТУРА (SHORT, NO BTC CORR):
@@ -1883,6 +1901,20 @@ async def scan_market():
     - Биржевое исполнение: только если active_short < MAX и не /pause
     - Единственный блокер: команда /pause
     """
+    # ✅ FIX v4.1: Предотвращаем параллельный запуск scan_market (петля RENDERUSDT/BOMEUSDT)
+    global _scan_lock
+    if _scan_lock is None:
+        _scan_lock = asyncio.Lock()
+    if _scan_lock.locked():
+        print(f"⚠️ [SCAN] Previous scan still running — skipping concurrent invocation")
+        return
+
+    async with _scan_lock:
+        await _scan_market_impl()
+
+
+async def _scan_market_impl():
+    """Внутренняя реализация scan_market — вызывается только через scan_market()."""
     print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
         print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
@@ -1966,6 +1998,9 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
+            # 📊 SIGNAL LOG: Запись всех сигналов (исполненных + пропущенных)
+            _signal_log_entry = {**signal, "executed": False, "skip_reason": None}
+
             # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.7)
             primary_tf = signal.get("timeframe", "15m")
             tf_for_execution = True  # Разрешаем всем ТФ
@@ -1974,8 +2009,11 @@ async def scan_market():
             quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
+                _signal_log_entry["skip_reason"] = "volume_too_low"
+                try: state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
+                except Exception: pass
                 continue
-            
+
             # 🆕 BTC FILTER: Не шортить если BTC растет (не шортим против тренда)
             btc_trend_ok = True
             if hasattr(state, 'btc_context') and state.btc_context:
@@ -1983,7 +2021,7 @@ async def scan_market():
                 if btc_data.get('direction') == 'UP' and btc_data.get('strength', 0) > 0.6:
                     btc_trend_ok = False
                     print(f"📊 [BTC-FILTER] {symbol}: BTC rising hard — skip SHORT")
-            
+
             # Биржевое исполнение: только если есть SHORT слоты, не на паузе, BTC ок
             if (not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok):
                 if state.auto_trader:
@@ -1994,21 +2032,37 @@ async def scan_market():
                             active_count += 1
                             exchange_full = active_count >= Config.MAX_POSITIONS
                             new_signals += 1
+                            _signal_log_entry["executed"] = True
+                            _signal_log_entry["executed_at"] = datetime.utcnow().isoformat()
                             print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                         else:
+                            _signal_log_entry["skip_reason"] = "bingx_rejected"
                             print(f"⚠️ SHORT skipped (BingX rejected): {symbol}")
                     except Exception as e:
+                        _signal_log_entry["skip_reason"] = f"error"
                         print(f"AutoTrader error {symbol}: {e}")
             elif not btc_trend_ok:
                 tg_only_count += 1
+                _signal_log_entry["skip_reason"] = "btc_rising"
                 print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] [BTC rising]")
             else:
                 tg_only_count += 1
                 if exchange_full:
+                    _signal_log_entry["skip_reason"] = "exchange_full"
                     reason = "max SHORT positions"
+                elif not Config.AUTO_TRADING:
+                    _signal_log_entry["skip_reason"] = "auto_trading_disabled"
+                    reason = "auto trading disabled"
                 else:
+                    _signal_log_entry["skip_reason"] = "paused"
                     reason = "paused or AT disabled"
                 print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] Score={signal['score']:.0f}% [{reason}]")
+
+            # 📊 Сохраняем в постоянный лог сигналов
+            try:
+                state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
+            except Exception:
+                pass
 
             await asyncio.sleep(0.4)
         except Exception as e:
