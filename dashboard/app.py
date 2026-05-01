@@ -380,7 +380,21 @@ def api_positions():
                             symbol = key.split(":")[-1]
                             symbol_normalized = symbol.replace('-', '').upper()
 
-                            dedup_key = f"{symbol_normalized}:{prefix}"
+                            # ✅ FIX: Определяем реальное направление из данных позиции
+                            # (при одном Redis для обоих ботов prefix недостаточен)
+                            real_direction = (
+                                pos.get("direction") or
+                                pos.get("side") or
+                                pos.get("type") or
+                                prefix
+                            ).lower()
+                            is_short = real_direction in ("short", "sell", "s")
+
+                            entry_price = float(pos.get("entry_price", 0) or 0)
+
+                            # ✅ FIX: Дедупликация включает направление+цену входа
+                            # Это отсеивает зеркальные позиции если оба бота в одном Redis
+                            dedup_key = f"{symbol_normalized}:{real_direction}:{entry_price}"
                             if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
                                 continue
@@ -391,7 +405,6 @@ def api_positions():
                                 debug_info["skipped_status"] += 1
                                 continue
 
-                            entry_price = float(pos.get("entry_price", 0) or 0)
                             stored_pnl  = float(pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0)
 
                             # Парсим leverage (может быть "5-50" или число)
@@ -409,7 +422,7 @@ def api_positions():
                             # Live PnL
                             if entry_price > 0 and current_price > 0:
                                 price_change_pct = (current_price - entry_price) / entry_price * 100
-                                if prefix == "short":
+                                if is_short:
                                     price_change_pct = -price_change_pct
                                 live_pnl = round(price_change_pct * leverage, 2)
                             else:
@@ -451,7 +464,7 @@ def api_positions():
 
                             positions.append({
                                 "symbol": symbol_normalized,
-                                "direction": prefix,
+                                "direction": real_direction,
                                 "entry": entry_price,
                                 "current_price": round(current_price, 6) if current_price else 0,
                                 "current_pnl": live_pnl,
