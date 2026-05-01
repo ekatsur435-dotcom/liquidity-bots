@@ -357,6 +357,84 @@ class UpstashRedisClient:
             print(f"Error getting signal log: {e}")
             return []
 
+    # =========================================================================
+    # VIRTUAL POSITIONS — мониторинг TP/SL для TG-only сигналов
+    # =========================================================================
+
+    def save_virtual_position(self, bot_type: str, symbol: str, signal_data: Dict) -> bool:
+        """
+        Сохраняет виртуальную позицию для мониторинга TP/SL.
+        Используется для сигналов, не открытых на бирже (exchange_full, paused и т.д.)
+        Структура: HASH {bot}:virtual_positions, field = {symbol}:{unix_ts}
+        """
+        try:
+            ts = int(datetime.utcnow().timestamp())
+            field = f"{symbol}:{ts}"
+            key = f"{bot_type}:virtual_positions"
+            entry = {
+                **signal_data,
+                "virtual_key": field,
+                "virtual_opened_at": datetime.utcnow().isoformat(),
+                "outcome": None,
+                "bot_type": bot_type,
+            }
+            self.client.hset(key, field, json.dumps(entry))
+            self.client.expire(key, 604800)  # 7 дней TTL для всего hash
+            return True
+        except Exception as e:
+            print(f"Error saving virtual position: {e}")
+            return False
+
+    def get_virtual_positions(self, bot_type: str) -> Dict[str, Dict]:
+        """Возвращает все активные виртуальные позиции (без исхода)"""
+        try:
+            key = f"{bot_type}:virtual_positions"
+            data = self.client.hgetall(key)
+            if not data:
+                return {}
+            return {field: json.loads(val) for field, val in data.items()}
+        except Exception as e:
+            print(f"Error getting virtual positions: {e}")
+            return {}
+
+    def close_virtual_position(self, bot_type: str, field: str, outcome: str,
+                               outcome_price: float, pnl_pct: float) -> bool:
+        """
+        Закрывает виртуальную позицию с результатом.
+        outcome: "tp" | "sl" | "expired"
+        Запись уходит в {bot}:virtual_trades LIST (lpush, ltrim 5000).
+        """
+        try:
+            key = f"{bot_type}:virtual_positions"
+            raw = self.client.hget(key, field)
+            if not raw:
+                return False
+            pos = json.loads(raw)
+            pos["outcome"] = outcome
+            pos["outcome_price"] = outcome_price
+            pos["pnl_pct"] = pnl_pct
+            pos["closed_at"] = datetime.utcnow().isoformat()
+            # Записываем в историю
+            hist_key = f"{bot_type}:virtual_trades"
+            self.client.lpush(hist_key, json.dumps(pos))
+            self.client.ltrim(hist_key, 0, 4999)
+            # Удаляем из активных
+            self.client.hdel(key, field)
+            return True
+        except Exception as e:
+            print(f"Error closing virtual position: {e}")
+            return False
+
+    def get_virtual_trades(self, bot_type: str, limit: int = 100) -> List[Dict]:
+        """Получение закрытых виртуальных сделок"""
+        try:
+            key = f"{bot_type}:virtual_trades"
+            items = self.client.lrange(key, 0, limit - 1)
+            return [json.loads(i) for i in items]
+        except Exception as e:
+            print(f"Error getting virtual trades: {e}")
+            return []
+
     def get_memory_usage(self) -> Dict:
         try:
             info = self.client.info("memory")

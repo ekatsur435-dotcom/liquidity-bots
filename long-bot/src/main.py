@@ -967,6 +967,7 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
+    asyncio.create_task(virtual_position_monitor())  # 🔍 Виртуальный TP/SL монитор
 
     yield
 
@@ -2057,6 +2058,13 @@ async def _scan_market_impl():
             except Exception:
                 pass
 
+            # 🔍 Если не исполнено на бирже — сохраняем как виртуальную позицию для мониторинга TP/SL
+            if not _signal_log_entry.get("executed"):
+                try:
+                    state.redis.save_virtual_position(Config.BOT_TYPE, symbol, _signal_log_entry)
+                except Exception:
+                    pass
+
             await asyncio.sleep(0.4)
         except Exception as e:
             print(f"Error {symbol}: {e}")
@@ -2124,7 +2132,10 @@ async def _scan_market_impl():
                         )
                         signal["tg_msg_id"] = tg_msg_id
                         state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-                        
+
+                        # 📊 SIGNAL LOG для momentum
+                        _mom_log_entry = {**signal, "executed": False, "skip_reason": None, "signal_type": "momentum"}
+
                         # Биржевое исполнение momentum сигналов (только если есть слоты)
                         if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
                             if state.auto_trader:
@@ -2134,13 +2145,34 @@ async def _scan_market_impl():
                                     active_count += 1
                                     exchange_full = active_count >= Config.MAX_POSITIONS
                                     new_signals += 1
+                                    _mom_log_entry["executed"] = True
+                                    _mom_log_entry["executed_at"] = datetime.utcnow().isoformat()
                                     print(f"✅ [MOMENTUM-LONG] Executed: {symbol} Score={signal['score']:.0f}%")
                                 except Exception as e:
+                                    _mom_log_entry["skip_reason"] = "error"
                                     print(f"❌ [MOMENTUM-LONG] Error {symbol}: {e}")
                         else:
                             tg_only_count += 1
+                            if exchange_full:
+                                _mom_log_entry["skip_reason"] = "exchange_full"
+                            elif not Config.AUTO_TRADING:
+                                _mom_log_entry["skip_reason"] = "auto_trading_disabled"
+                            else:
+                                _mom_log_entry["skip_reason"] = "paused"
                             print(f"📡 [MOMENTUM-LONG] TG-only: {symbol}")
-                            
+
+                        try:
+                            state.redis.save_signal_log(Config.BOT_TYPE, _mom_log_entry)
+                        except Exception:
+                            pass
+
+                        # Виртуальная позиция для не-исполненных momentum сигналов
+                        if not _mom_log_entry.get("executed"):
+                            try:
+                                state.redis.save_virtual_position(Config.BOT_TYPE, symbol, _mom_log_entry)
+                            except Exception:
+                                pass
+
                     except Exception as e:
                         print(f"❌ [MOMENTUM-LONG] Signal error: {e}")
                         
@@ -2168,6 +2200,92 @@ async def background_scanner():
             except Exception as e:
                 print(f"Scanner error: {e}")
         await asyncio.sleep(Config.SCAN_INTERVAL)
+
+
+# =============================================================================
+# 🔍 VIRTUAL TP/SL MONITOR — следит за виртуальными позициями (TG-only сигналы)
+# =============================================================================
+
+async def virtual_position_monitor():
+    """
+    Фоновая задача: каждую минуту проверяет цену по всем виртуальным позициям.
+    Если цена достигла TP1 или SL — закрывает позицию с outcome tp/sl.
+    Если позиция висит >24 часов — закрывает как expired.
+    """
+    await asyncio.sleep(30)  # небольшая пауза при старте
+    while state.is_running:
+        try:
+            virtual_positions = state.redis.get_virtual_positions(Config.BOT_TYPE)
+            if virtual_positions:
+                print(f"🔍 [VIRTUAL-LONG] Monitoring {len(virtual_positions)} virtual positions")
+                for field, pos in list(virtual_positions.items()):
+                    try:
+                        symbol        = pos.get("symbol")
+                        entry_price   = float(pos.get("entry_price") or 0)
+                        stop_loss     = float(pos.get("stop_loss") or 0)
+                        take_profits  = pos.get("take_profits") or []
+                        direction     = pos.get("direction", "long")
+                        opened_at_str = pos.get("virtual_opened_at", "")
+
+                        if not symbol or entry_price <= 0:
+                            continue
+
+                        # Проверяем истечение 24 часов
+                        outcome = None
+                        if opened_at_str:
+                            try:
+                                opened_at = datetime.fromisoformat(opened_at_str)
+                                if (datetime.utcnow() - opened_at).total_seconds() > 86400:
+                                    outcome = "expired"
+                            except Exception:
+                                pass
+
+                        if outcome is None:
+                            # Получаем текущую цену
+                            current_price = await state.binance.get_price(symbol)
+                            if not current_price or current_price <= 0:
+                                continue
+
+                            tp1 = float(take_profits[0]) if take_profits else None
+
+                            if direction == "long":
+                                if stop_loss > 0 and current_price <= stop_loss:
+                                    outcome = "sl"
+                                elif tp1 and current_price >= tp1:
+                                    outcome = "tp"
+                            else:  # short
+                                if stop_loss > 0 and current_price >= stop_loss:
+                                    outcome = "sl"
+                                elif tp1 and current_price <= tp1:
+                                    outcome = "tp"
+                        else:
+                            current_price = entry_price  # для expired берём entry
+
+                        if outcome:
+                            # PnL расчёт
+                            try:
+                                lev_str = str(pos.get("leverage", "10")).split("-")[0]
+                                leverage = float(lev_str) if lev_str.replace(".", "").isdigit() else 10.0
+                            except Exception:
+                                leverage = 10.0
+                            change_pct = (current_price - entry_price) / entry_price * 100
+                            if direction == "short":
+                                change_pct = -change_pct
+                            pnl_pct = round(change_pct * leverage, 2)
+
+                            state.redis.close_virtual_position(
+                                Config.BOT_TYPE, field, outcome, current_price, pnl_pct
+                            )
+                            emoji = "✅" if outcome == "tp" else ("⏰" if outcome == "expired" else "❌")
+                            print(f"{emoji} [VIRTUAL-LONG] {symbol}: {outcome} @ {current_price:.6f} | PnL={pnl_pct:+.1f}%")
+
+                    except Exception as e:
+                        print(f"[VIRTUAL-LONG] Error checking {field}: {e}")
+
+        except Exception as e:
+            print(f"[VIRTUAL-LONG] Monitor error: {e}")
+
+        await asyncio.sleep(60)  # проверяем каждую минуту
 
 
 if __name__ == "__main__":

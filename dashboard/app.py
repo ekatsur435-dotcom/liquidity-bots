@@ -558,6 +558,177 @@ def api_summary():
     return jsonify(summary)
 
 
+@app.route("/api/signal_log")
+def api_signal_log():
+    """
+    📊 Лог ВСЕХ сигналов (исполненные на бирже + TG-only / пропущенные).
+    Параметры:
+      ?limit=100   — кол-во последних сигналов (макс 500)
+      ?bot=short|long|both  — какой бот (по умолчанию both)
+    """
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+        bot_filter = request.args.get("bot", "both").lower()
+
+        result = {
+            "short": [],
+            "long": [],
+            "stats": {
+                "short": {"total": 0, "executed": 0, "tg_only": 0, "winrate_signal": 0},
+                "long":  {"total": 0, "executed": 0, "tg_only": 0, "winrate_signal": 0},
+            }
+        }
+
+        pairs = []
+        if bot_filter in ("short", "both"):
+            pairs.append(("short", get_redis_short))
+        if bot_filter in ("long", "both"):
+            pairs.append(("long", get_redis_long))
+
+        for prefix, redis_getter in pairs:
+            try:
+                redis = redis_getter()
+                items = redis.execute(["LRANGE", f"{prefix}:signal_log", "0", str(limit - 1)])
+                signals = []
+                if items:
+                    for raw in items:
+                        try:
+                            s = json.loads(raw)
+                            # Добавляем удобные поля для UI
+                            s["bot"] = prefix
+                            s["executed_label"] = "✅ Биржа" if s.get("executed") else "📡 TG-only"
+                            skip = s.get("skip_reason") or ""
+                            skip_labels = {
+                                "exchange_full":        "🔴 Биржа заполнена",
+                                "paused":               "⏸️ Пауза",
+                                "auto_trading_disabled":"🔕 Авто откл.",
+                                "btc_rising":           "📈 BTC памп",
+                                "btc_falling":          "📉 BTC дамп",
+                                "volume_too_low":       "📊 Низкий объём",
+                                "bingx_rejected":       "❌ BingX отклонил",
+                                "error":                "⚠️ Ошибка",
+                            }
+                            s["skip_label"] = skip_labels.get(skip, skip)
+                            signals.append(s)
+                        except Exception:
+                            pass
+
+                result[prefix] = signals
+
+                total = len(signals)
+                executed = sum(1 for s in signals if s.get("executed"))
+                tg_only = total - executed
+                # Простой winrate: executed + hit_tp vs hit_sl (если есть поле outcome)
+                hits = sum(1 for s in signals if s.get("outcome") == "tp")
+                losses = sum(1 for s in signals if s.get("outcome") == "sl")
+                winrate = round(hits / (hits + losses) * 100, 1) if (hits + losses) > 0 else None
+
+                result["stats"][prefix] = {
+                    "total": total,
+                    "executed": executed,
+                    "tg_only": tg_only,
+                    "winrate_signal": winrate,
+                }
+            except Exception as e:
+                print(f"[signal_log] {prefix} error: {e}")
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/virtual_trades")
+def api_virtual_trades():
+    """
+    📊 Закрытые виртуальные сделки (TG-only сигналы с исходом TP/SL/expired).
+    Параметры:
+      ?limit=100  — кол-во сделок
+      ?bot=short|long|both
+    """
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+        bot_filter = request.args.get("bot", "both").lower()
+
+        result = {
+            "short": [],
+            "long": [],
+            "stats": {
+                "short": {"total": 0, "tp": 0, "sl": 0, "expired": 0, "winrate": None, "avg_pnl": None},
+                "long":  {"total": 0, "tp": 0, "sl": 0, "expired": 0, "winrate": None, "avg_pnl": None},
+            }
+        }
+
+        pairs = []
+        if bot_filter in ("short", "both"):
+            pairs.append(("short", get_redis_short))
+        if bot_filter in ("long", "both"):
+            pairs.append(("long", get_redis_long))
+
+        for prefix, redis_getter in pairs:
+            try:
+                redis = redis_getter()
+                items = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", str(limit - 1)])
+                trades = []
+                if items:
+                    for raw in items:
+                        try:
+                            t = json.loads(raw)
+                            t["bot"] = prefix
+                            outcome = t.get("outcome", "unknown")
+                            t["outcome_label"] = {
+                                "tp": "✅ TP",
+                                "sl": "❌ SL",
+                                "expired": "⏰ Expired",
+                            }.get(outcome, outcome)
+                            trades.append(t)
+                        except Exception:
+                            pass
+
+                result[prefix] = trades
+
+                total = len(trades)
+                tp_c  = sum(1 for t in trades if t.get("outcome") == "tp")
+                sl_c  = sum(1 for t in trades if t.get("outcome") == "sl")
+                exp_c = sum(1 for t in trades if t.get("outcome") == "expired")
+                closed = tp_c + sl_c  # expired не считаем в winrate
+                winrate = round(tp_c / closed * 100, 1) if closed > 0 else None
+                pnls = [t.get("pnl_pct", 0) for t in trades if t.get("pnl_pct") is not None]
+                avg_pnl = round(sum(pnls) / len(pnls), 2) if pnls else None
+
+                result["stats"][prefix] = {
+                    "total": total, "tp": tp_c, "sl": sl_c, "expired": exp_c,
+                    "winrate": winrate, "avg_pnl": avg_pnl,
+                }
+
+                # Также читаем АКТИВНЫЕ виртуальные позиции
+                try:
+                    active_raw = redis.execute(["HGETALL", f"{prefix}:virtual_positions"])
+                    if active_raw and isinstance(active_raw, list):
+                        # HGETALL возвращает [field, value, field, value, ...]
+                        active_list = []
+                        for i in range(0, len(active_raw), 2):
+                            try:
+                                pos = json.loads(active_raw[i + 1])
+                                pos["bot"] = prefix
+                                pos["outcome"] = "open"
+                                pos["outcome_label"] = "🔄 Active"
+                                active_list.append(pos)
+                            except Exception:
+                                pass
+                        result[f"{prefix}_active"] = active_list
+                except Exception as e:
+                    print(f"[virtual_trades] active {prefix} error: {e}")
+
+            except Exception as e:
+                print(f"[virtual_trades] {prefix} error: {e}")
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/reset_stats", methods=["POST"])
 def reset_stats():
     """
