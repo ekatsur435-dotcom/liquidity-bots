@@ -452,10 +452,136 @@
             opacity: 0.5;
             animation: pulse-loading 1.5s infinite;
         }
-        
+
         @keyframes pulse-loading {
             0%, 100% { opacity: 0.5; }
             50% { opacity: 0.8; }
+        }
+
+        /* Signal Log & Virtual Trades */
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .signal-list {
+            max-height: 320px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .signal-item {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 12px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .signal-item:hover {
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+        }
+
+        .signal-badge {
+            padding: 3px 7px;
+            border-radius: 5px;
+            font-size: 10px;
+            font-weight: 600;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .badge-executed {
+            background: rgba(0,255,136,0.2);
+            color: #00ff88;
+            border: 1px solid rgba(0,255,136,0.3);
+        }
+
+        .badge-tgonly {
+            background: rgba(123,44,191,0.2);
+            color: #a855f7;
+            border: 1px solid rgba(123,44,191,0.3);
+        }
+
+        .badge-tp {
+            background: rgba(0,255,136,0.2);
+            color: #00ff88;
+            border: 1px solid rgba(0,255,136,0.3);
+        }
+
+        .badge-sl {
+            background: rgba(255,68,68,0.2);
+            color: #ff6b6b;
+            border: 1px solid rgba(255,68,68,0.3);
+        }
+
+        .badge-expired {
+            background: rgba(255,255,255,0.08);
+            color: rgba(255,255,255,0.5);
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        .badge-open {
+            background: rgba(0,212,255,0.15);
+            color: #00d4ff;
+            border: 1px solid rgba(0,212,255,0.3);
+        }
+
+        .signal-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .signal-symbol {
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 2px;
+        }
+
+        .signal-meta {
+            color: rgba(255,255,255,0.45);
+            font-size: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .signal-time {
+            font-size: 10px;
+            color: rgba(255,255,255,0.3);
+            flex-shrink: 0;
+        }
+
+        .signal-dir-short { color: #ff6b6b; }
+        .signal-dir-long  { color: #00d4ff; }
+
+        .vt-pnl-positive { color: #00ff88; font-weight: 600; }
+        .vt-pnl-negative { color: #ff4444; font-weight: 600; }
+
+        /* Position card improvements */
+        .position-score {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.08);
+            color: rgba(255,255,255,0.6);
+            margin-left: 4px;
+        }
+
+        .position-lev {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255,180,0,0.15);
+            color: #ffd700;
+        }
+
+        @media (max-width: 1200px) {
+            .two-col { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -469,7 +595,7 @@
                 ● Онлайн
             </div>
             <div style="color: rgba(255,255,255,0.4); font-size: 12px;">
-                Обновление: 30мин | Обновлен: <span id="last-update">--:--:--</span>
+                Обновление: 5 мин | Обновлен: <span id="last-update">--:--:--</span>
             </div>
         </div>
     </div>
@@ -609,7 +735,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-            
+
             <!-- Recent LONG Trades -->
             <div class="section-card">
                 <div class="section-title">🟢 Недавние LONG позиции</div>
@@ -617,7 +743,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-            
+
             <!-- Live Feed -->
             <div class="section-card">
                 <div class="section-title">🔔 Лента активности (в реальном времени)</div>
@@ -630,6 +756,47 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Signal Log & Virtual Trades -->
+        <div class="two-col">
+
+            <!-- 📊 Signal Log — все сигналы (биржа + TG-only) -->
+            <div class="section-card">
+                <div class="section-title section-title-with-selector">
+                    <span>📊 Лог сигналов <span id="signal-log-count" style="font-size:11px; opacity:0.5; font-weight:400;"></span></span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="period-btn active" id="sigbtn-both" onclick="setSigFilter('both')">Все</button>
+                        <button class="period-btn" id="sigbtn-executed" onclick="setSigFilter('executed')">✅ Биржа</button>
+                        <button class="period-btn" id="sigbtn-tgonly" onclick="setSigFilter('tgonly')">📡 TG</button>
+                    </div>
+                </div>
+                <div class="signal-list" id="signal-log-list">
+                    <div style="text-align:center;padding:40px;color:rgba(255,255,255,0.3);">
+                        📊 Все сигналы ботов — биржа и TG-only<br>
+                        <small>Загрузка...</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 🔍 Virtual Trades — исходы виртуальных сигналов -->
+            <div class="section-card">
+                <div class="section-title section-title-with-selector">
+                    <span>🔍 Виртуальный мониторинг <span id="vt-count" style="font-size:11px; opacity:0.5; font-weight:400;"></span></span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="period-btn active" id="vtbtn-all" onclick="setVtFilter('all')">Все</button>
+                        <button class="period-btn" id="vtbtn-open" onclick="setVtFilter('open')">🟡 Открытые</button>
+                        <button class="period-btn" id="vtbtn-closed" onclick="setVtFilter('closed')">Закрытые</button>
+                    </div>
+                </div>
+                <div class="signal-list" id="vt-list">
+                    <div style="text-align:center;padding:40px;color:rgba(255,255,255,0.3);">
+                        🔍 TG-only сигналы — мониторинг TP/SL<br>
+                        <small>Загрузка...</small>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
     
@@ -770,47 +937,6 @@
             }
         }
         
-        // Load all data
-        async function loadAllData() {
-            try {
-                // 1. Main Stats
-                const statsRes = await fetch('/api/stats');
-                const stats = await statsRes.json();
-                updateStats(stats);
-                
-                // 2. Chart Data + Stats for Win Distribution
-                const chartRes = await fetch('/api/chart_data');
-                const chartData = await chartRes.json();
-                // Pass both chart data and stats to updateCharts
-                updateCharts(chartData, stats);
-                
-                // 3. Trades
-                const tradesRes = await fetch('/api/trades');
-                const trades = await tradesRes.json();
-                updateTrades(trades);
-                
-                // 4. Active Positions
-                const posRes = await fetch('/api/positions?_=' + Date.now());
-                const positions = await posRes.json();
-                updatePositions(positions);
-                
-                // 5. Feed
-                const feedRes = await fetch('/api/feed');
-                const feed = await feedRes.json();
-                updateFeed(feed);
-                
-                // 6. Summary (Today/Yesterday/Week)
-                const summaryRes = await fetch('/api/summary');
-                const summary = await summaryRes.json();
-                updateSummary(summary);
-                
-                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-                
-            } catch (e) {
-                console.error('Load error:', e);
-            }
-        }
-        
         function updateStats(data) {
             document.getElementById('total-trades').textContent = formatNumber(data.total_trades || 0);
             document.getElementById('win-rate').textContent = (data.win_rate || 0).toFixed(1) + '%';
@@ -893,42 +1019,44 @@
             const list = document.getElementById('active-positions-list');
             const countSpan = document.getElementById('active-positions-count');
             const activePosCard = document.getElementById('active-pos');
-            
+
             const count = data.positions ? data.positions.length : 0;
-            
-            // ✅ Обновляем счетчик в секции "Текущие позиции"
-            if (countSpan) {
-                countSpan.textContent = count;
-            }
-            
-            // ✅ Обновляем верхнюю карточку "Активных позиций"
-            if (activePosCard) {
-                activePosCard.textContent = count;
-            }
-            
+
+            if (countSpan) countSpan.textContent = count;
+            if (activePosCard) activePosCard.textContent = count;
+
             if (data.positions && data.positions.length > 0) {
-                // ✅ Сортируем: отрицательный P&L сверху (требуют внимания)
+                // Сортируем: отрицательный P&L сверху (требуют внимания)
                 const sorted = data.positions.sort((a, b) => (a.current_pnl || 0) - (b.current_pnl || 0));
-                
+
                 list.innerHTML = sorted.map(p => {
-                    const direction_emoji = p.direction === 'short' || p.direction === 'SHORT' ? '🔴' : '🟢';
-                    const direction_text = p.direction === 'short' || p.direction === 'SHORT' ? 'SHORT' : 'LONG';
+                    const isShort = (p.direction || '').toLowerCase() === 'short';
+                    const dirEmoji = isShort ? '🔴' : '🟢';
+                    const dirText  = isShort ? 'SHORT' : 'LONG';
+                    const pnl      = p.current_pnl || 0;
+                    const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+                    const pnlSign  = pnl >= 0 ? '+' : '';
+                    const scoreHtml = p.score ? `<span class="position-score">⭐${p.score}</span>` : '';
+                    const levHtml   = p.leverage ? `<span class="position-lev">${p.leverage}x</span>` : '';
+                    const curPrice  = p.current_price ? `<span>Цена: $${Number(p.current_price).toFixed(4)}</span>` : '';
+                    const tpVal     = p.tp != null ? `TP: ${Number(p.tp).toFixed(1)}%` : 'TP: —';
+                    const slVal     = p.sl != null ? `SL: ${Number(p.sl).toFixed(1)}%` : 'SL: —';
+                    const durMin    = p.duration_min != null ? `${p.duration_min}м` : '';
                     return `
-                    <div class="position-item position-${p.direction}">
+                    <div class="position-item position-${isShort ? 'short' : 'long'}">
                         <div class="position-header">
-                            <span class="position-symbol">${direction_emoji} ${p.symbol} <small style="opacity: 0.7">(${direction_text})</small></span>
-                            <span class="position-pnl ${(p.current_pnl || 0) >= 0 ? 'positive' : 'negative'}">
-                                ${(p.current_pnl || 0) >= 0 ? '+' : ''}${(p.current_pnl || 0).toFixed(2)}%
-                            </span>
+                            <span class="position-symbol">${dirEmoji} ${p.symbol} <small style="opacity:0.7">(${dirText})</small>${scoreHtml}${levHtml}</span>
+                            <span class="position-pnl ${pnlClass}">${pnlSign}${pnl.toFixed(2)}%</span>
                         </div>
                         <div class="position-details">
                             <span>Вход: $${p.entry}</span>
-                            <span>TP: ${p.tp}%</span>
-                            <span>SL: ${p.sl}%</span>
-                            <span>${p.duration_min}м</span>
+                            ${curPrice}
+                            <span>${tpVal}</span>
+                            <span>${slVal}</span>
+                            <span>${durMin}</span>
                         </div>
-                    </div>
-                `}).join('');
+                    </div>`;
+                }).join('');
             } else {
                 list.innerHTML = '<div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">📭 Нет активных позиций</div>';
             }
@@ -976,13 +1104,207 @@
             document.getElementById('today-winrate').textContent = summary.today?.winrate || 0;
             document.getElementById('today-pnl').textContent = (summary.today?.pnl || 0).toFixed(2) + '%';
         }
-        
+
+        // ── Signal Log ─────────────────────────────────────────────────────────────
+        let _sigRaw = [];
+        let _sigFilter = 'both';
+
+        function setSigFilter(f) {
+            _sigFilter = f;
+            ['both','executed','tgonly'].forEach(k => {
+                document.getElementById('sigbtn-' + k)?.classList.toggle('active', k === f);
+            });
+            renderSignalLog();
+        }
+
+        function renderSignalLog() {
+            const list = document.getElementById('signal-log-list');
+            let items = _sigRaw;
+            if (_sigFilter === 'executed') items = _sigRaw.filter(s => s.executed);
+            else if (_sigFilter === 'tgonly')   items = _sigRaw.filter(s => !s.executed);
+
+            const countEl = document.getElementById('signal-log-count');
+            if (countEl) countEl.textContent = `(${items.length})`;
+
+            if (!items.length) {
+                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет сигналов</div>';
+                return;
+            }
+
+            list.innerHTML = items.map(s => {
+                const isShort  = (s.direction || s.signal_type || '').toLowerCase().includes('short');
+                const dirClass = isShort ? 'signal-dir-short' : 'signal-dir-long';
+                const dirLabel = isShort ? '🔴 S' : '🟢 L';
+                const badge    = s.executed
+                    ? '<span class="signal-badge badge-executed">✅ Биржа</span>'
+                    : '<span class="signal-badge badge-tgonly">📡 TG</span>';
+                const score  = s.score   ? `Скор: ${s.score}` : '';
+                const entry  = s.entry_price ? `$${Number(s.entry_price).toFixed(4)}` : '';
+                const skip   = s.skip_reason ? `<span style="color:#ffa500"> • ${s.skip_reason}</span>` : '';
+                const ts     = s.timestamp ? formatTimeAgo(s.timestamp * 1000) : '';
+                return `
+                <div class="signal-item">
+                    ${badge}
+                    <div class="signal-body">
+                        <div class="signal-symbol">
+                            <span class="${dirClass}">${dirLabel}</span> ${s.symbol || '?'}
+                            ${score ? `<span style="opacity:0.5;font-size:10px;margin-left:4px;">${score}</span>` : ''}
+                        </div>
+                        <div class="signal-meta">${entry}${skip}</div>
+                    </div>
+                    <div class="signal-time">${ts}</div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadSignalLog() {
+            try {
+                const res  = await fetch('/api/signal_log?limit=200');
+                const data = await res.json();
+                // Backend returns {short:[...], long:[...], stats:{...}}
+                const all = [...(data.short || []), ...(data.long || [])];
+                // Sort newest first by timestamp
+                all.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                _sigRaw = all;
+                renderSignalLog();
+            } catch (e) {
+                console.error('signal_log error:', e);
+            }
+        }
+
+        // ── Virtual Trades ─────────────────────────────────────────────────────────
+        let _vtRaw = [];
+        let _vtFilter = 'all';
+
+        function setVtFilter(f) {
+            _vtFilter = f;
+            ['all','open','closed'].forEach(k => {
+                document.getElementById('vtbtn-' + k)?.classList.toggle('active', k === f);
+            });
+            renderVirtualTrades();
+        }
+
+        function renderVirtualTrades() {
+            const list = document.getElementById('vt-list');
+            let items = _vtRaw;
+            if (_vtFilter === 'open')   items = _vtRaw.filter(v => v.outcome === 'open' || !v.outcome);
+            if (_vtFilter === 'closed') items = _vtRaw.filter(v => v.outcome && v.outcome !== 'open');
+
+            const countEl = document.getElementById('vt-count');
+            if (countEl) countEl.textContent = `(${items.length})`;
+
+            if (!items.length) {
+                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет виртуальных позиций</div>';
+                return;
+            }
+
+            list.innerHTML = items.map(v => {
+                const isShort  = (v.direction || '').toLowerCase().includes('short');
+                const dirClass = isShort ? 'signal-dir-short' : 'signal-dir-long';
+                const dirLabel = isShort ? '🔴 S' : '🟢 L';
+
+                let outcomeBadge = '<span class="signal-badge badge-open">🟡 Открыта</span>';
+                const oc = (v.outcome || '').toLowerCase();
+                if      (oc === 'tp')      outcomeBadge = '<span class="signal-badge badge-tp">✅ TP</span>';
+                else if (oc === 'sl')      outcomeBadge = '<span class="signal-badge badge-sl">⛔ SL</span>';
+                else if (oc === 'expired') outcomeBadge = '<span class="signal-badge badge-expired">⏱ Истекла</span>';
+
+                const pnl     = v.pnl_pct;
+                let pnlHtml   = '';
+                if (pnl != null) {
+                    const cls = pnl >= 0 ? 'vt-pnl-positive' : 'vt-pnl-negative';
+                    pnlHtml = `<span class="${cls}">${pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}%</span>`;
+                }
+                const entry  = v.entry_price ? `Вход: $${Number(v.entry_price).toFixed(4)}` : '';
+                const score  = v.score ? `⭐${v.score}` : '';
+                const ts     = v.virtual_opened_at ? formatTimeAgo(v.virtual_opened_at * 1000) : '';
+
+                return `
+                <div class="signal-item">
+                    ${outcomeBadge}
+                    <div class="signal-body">
+                        <div class="signal-symbol">
+                            <span class="${dirClass}">${dirLabel}</span> ${v.symbol || '?'}
+                            ${score ? `<span style="opacity:0.5;font-size:10px;margin-left:4px;">${score}</span>` : ''}
+                            ${pnlHtml ? `<span style="margin-left:6px;">${pnlHtml}</span>` : ''}
+                        </div>
+                        <div class="signal-meta">${entry}</div>
+                    </div>
+                    <div class="signal-time">${ts}</div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadVirtualTrades() {
+            try {
+                const res  = await fetch('/api/virtual_trades?limit=200');
+                const data = await res.json();
+                // Backend returns {short:[...closed], long:[...closed],
+                //                  short_active:[...], long_active:[...], stats:{...}}
+                const closed = [...(data.short || []), ...(data.long || [])];
+                const open   = [...(data.short_active || []), ...(data.long_active || [])];
+                // open items have outcome="open", closed have outcome=tp/sl/expired
+                const all = [...open, ...closed];
+                all.sort((a, b) => (b.virtual_opened_at || b.timestamp || 0) - (a.virtual_opened_at || a.timestamp || 0));
+                _vtRaw = all;
+                renderVirtualTrades();
+            } catch (e) {
+                console.error('virtual_trades error:', e);
+            }
+        }
+
+        // ── Main Data Loader ───────────────────────────────────────────────────────
+        async function loadAllData() {
+            try {
+                // 1. Main Stats
+                const statsRes = await fetch('/api/stats');
+                const stats = await statsRes.json();
+                updateStats(stats);
+
+                // 2. Chart Data
+                const chartRes = await fetch('/api/chart_data');
+                const chartData = await chartRes.json();
+                updateCharts(chartData, stats);
+
+                // 3. Trades
+                const tradesRes = await fetch('/api/trades');
+                const trades = await tradesRes.json();
+                updateTrades(trades);
+
+                // 4. Active Positions
+                const posRes = await fetch('/api/positions?_=' + Date.now());
+                const positions = await posRes.json();
+                updatePositions(positions);
+
+                // 5. Feed
+                const feedRes = await fetch('/api/feed');
+                const feed = await feedRes.json();
+                updateFeed(feed);
+
+                // 6. Summary
+                const summaryRes = await fetch('/api/summary');
+                const summary = await summaryRes.json();
+                updateSummary(summary);
+
+                // 7. Signal Log
+                await loadSignalLog();
+
+                // 8. Virtual Trades
+                await loadVirtualTrades();
+
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+
+            } catch (e) {
+                console.error('Load error:', e);
+            }
+        }
+
         // Init
         initCharts();
         loadAllData();
-        
-        // Auto-refresh every 30 minutes
-        setInterval(loadAllData, 900000);
+
+        // Auto-refresh every 5 minutes
+        setInterval(loadAllData, 300000);
     </script>
 </body>
 </html>

@@ -436,12 +436,15 @@ def api_positions():
                                     tp_pct = round(abs(tp1_price - entry_price) / entry_price * 100, 2)
 
                             # Время в позиции
-                            opened_at = pos.get("opened_at", pos.get("created_at", ""))
+                            opened_at = pos.get("opened_at", pos.get("created_at", pos.get("timestamp", "")))
                             duration_min = 0
                             if opened_at:
                                 try:
                                     from datetime import timezone
                                     opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                                    # Если нет timezone — считаем UTC
+                                    if opened_dt.tzinfo is None:
+                                        opened_dt = opened_dt.replace(tzinfo=timezone.utc)
                                     duration_min = int((datetime.now(timezone.utc) - opened_dt).total_seconds() / 60)
                                 except Exception:
                                     duration_min = pos.get("duration_min", 0)
@@ -459,7 +462,7 @@ def api_positions():
                                 "leverage": leverage,
                                 "duration_min": duration_min,
                                 "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
-                                "score": pos.get("score", 0),
+                                "score": pos.get("score", pos.get("signal_score", 0)),
                                 "opened_at": opened_at,
                             })
                         except Exception as e:
