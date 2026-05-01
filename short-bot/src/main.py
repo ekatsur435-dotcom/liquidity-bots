@@ -1472,10 +1472,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
         ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
         
-        if confirmation["passed"] and confirmation["score"] >= 75:
-            # ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
-            base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
-            reasons = sweep["reasons"] + confirmation["reasons"]
         final_score += rsi_30m_score_adj + rsi_4h_score_adj
         if rsi_30m_score_adj != 0:
             print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
