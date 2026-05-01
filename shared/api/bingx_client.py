@@ -89,9 +89,9 @@ class BingXClient:
         # ✅ RATE LIMITING: минимум 500ms между запросами (избегаем 109429)
         self._last_request_time: float = 0
         self._rate_limit_delay: float = 0.5  # 500ms (was 300ms)
-        # 🆕 Семафор для предотвращения параллельных запросов к klines
-        import asyncio
-        self._klines_semaphore = asyncio.Semaphore(3)  # Макс 3 параллельных запроса
+        # ✅ FIX: Семафор создаётся в async-контексте (не в __init__), чтобы избежать
+        # NameError/ValueError при создании вне event loop (Python 3.10+)
+        self._klines_semaphore = None  # Инициализируется лениво в get_klines
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -643,15 +643,20 @@ class BingXClient:
         Returns:
             List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
         """
-        # 🆕 Семафор: ограничиваем параллельные запросы к klines
+        # ✅ FIX: Ленивая инициализация семафора в async-контексте (не в __init__)
+        if self._klines_semaphore is None:
+            self._klines_semaphore = asyncio.Semaphore(3)
         async with self._klines_semaphore:
             try:
                 symbol_api = self._normalize_symbol(symbol)
+                # ✅ FIX: Синхронизируем время перед каждым klines-запросом
+                # чтобы избежать 109400 (timestamp invalid)
+                await self._sync_server_time()
                 result = await self._make_request(
                     "GET", "/openApi/swap/v3/quote/klines",
                     params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
                 )
-                
+
                 if result and result.get("code") == 0:
                     data = result.get("data", [])
                     klines = []

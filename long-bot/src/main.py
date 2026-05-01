@@ -148,6 +148,10 @@ class Config:
     ENABLE_SMART_DCA = os.getenv("ENABLE_SMART_DCA", "true").lower() == "true"
     DCA_MAX_ADDITIONS = int(os.getenv("DCA_MAX_ADDITIONS", "3"))
     DCA_MAX_PORTFOLIO_RISK = float(os.getenv("DCA_MAX_PORTFOLIO_RISK", "3.0"))
+    # ✅ FIX: добавлены отсутствующие параметры SmartDCAEngine (были NameError при инициализации)
+    DCA_ATR_MULT = float(os.getenv("DCA_ATR_MULT", "1.5"))        # ATR множитель для DCA шага
+    DCA_SIZE_MULT = float(os.getenv("DCA_SIZE_MULT", "1.5"))       # Anti-martingale множитель
+    DCA_MAX_EXPOSURE_PCT = float(os.getenv("DCA_MAX_EXPOSURE_PCT", "0.40"))  # Макс 40% депо
     
     # Grid DCA
     ENABLE_GRID_DCA = os.getenv("ENABLE_GRID_DCA", "true").lower() == "true"
@@ -190,8 +194,8 @@ class Config:
     # ============================================================================
     # 🏛️ INSTITUTIONAL RISK MANAGEMENT (Aegis Integration)
     # ============================================================================
-    # ⚠️ ВАЖНО: Увеличиваем риск для видимости сделок
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.05"))  # 5% для видимости
+    # ✅ FIX: убрана первая дублирующая запись RISK_PER_TRADE=0.05 (она перезаписывалась ниже на 0.0005)
+    # Итоговый RISK_PER_TRADE задаётся ниже через env RISK_PER_TRADE
     
     # Kelly Criterion Sizing
     KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))  # 25% Kelly
@@ -1636,7 +1640,24 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 print(f"💡 [LONG-FALLBACK] {symbol}: Нет данных Elliott, TBS+OB_Q{ob_quality} — мин={elliott_min_score}")
         
         min_score_for_entry = elliott_min_score
-        
+
+        # ✅ FIX: HTF (4H) Bias Filter — не лонговать против 4H тренда
+        # Портировано из liquidity-bots-fixed 2 (v3.2)
+        try:
+            ohlcv_4h_bias = await state.binance.get_klines(symbol, "4h", 25)
+            if ohlcv_4h_bias and len(ohlcv_4h_bias) >= 21:
+                closes_4h_bias = [float(c.close if hasattr(c, 'close') else c[4]) for c in ohlcv_4h_bias]
+                ema9_4h  = sum(closes_4h_bias[-9:]) / 9
+                ema21_4h = sum(closes_4h_bias[-21:]) / 21
+                if ema9_4h < ema21_4h * 0.995:  # 4H EMA9 < EMA21×0.995 = подтверждённый даунтренд
+                    if final_score < 90:          # Разрешаем только сверхсильные сигналы ≥90
+                        print(f"🚫 [HTF-4H-LONG] {symbol}: EMA9({ema9_4h:.4f}) < EMA21({ema21_4h:.4f}) — 4H даунтренд, score={final_score}<90 → skip")
+                        return None
+                    else:
+                        print(f"⚠️ [HTF-4H-LONG] {symbol}: 4H даунтренд, но score={final_score}≥90 — разрешаем")
+        except Exception as e:
+            print(f"⚠️ [HTF-4H-LONG] {symbol}: ошибка проверки 4H тренда: {e}")
+
         if final_score < min_score_for_entry:
             print(f"🔴 [FILTER1-LONG] {symbol}: score={final_score} < MIN={min_score_for_entry} — отфильтрован!")
             return None
@@ -1975,13 +1996,17 @@ async def scan_market():
             if not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok:
                 if state.auto_trader:
                     try:
-                        await state.auto_trader.execute_signal(signal)
-                        active_count += 1
-                        exchange_full = active_count >= Config.MAX_POSITIONS
+                        _trade_result = await state.auto_trader.execute_signal(signal)
+                        # ✅ FIX: считаем слот ТОЛЬКО если сделка реально открылась
+                        if _trade_result is not None:
+                            active_count += 1
+                            exchange_full = active_count >= Config.MAX_POSITIONS
+                            new_signals += 1
+                            print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+                        else:
+                            print(f"⚠️ LONG skipped (BingX rejected): {symbol}")
                     except Exception as e:
                         print(f"AutoTrader error {symbol}: {e}")
-                new_signals += 1
-                print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
             elif not btc_trend_ok:
                 tg_only_count += 1
                 print(f"📡 LONG TG-only: {symbol} [BTC falling]")

@@ -174,8 +174,8 @@ class BinanceFuturesClient:
     
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
-    CIRCUIT_BREAKER_DURATION = 3600  # 1 час в секундах
-    CIRCUIT_BREAKER_THRESHOLD = 3     # 3 ошибки подряд = отключение
+    CIRCUIT_BREAKER_DURATION = 120   # ✅ FIX: 2 минуты (было 1 час — убивало данные!)
+    CIRCUIT_BREAKER_THRESHOLD = 3    # 3 ошибки подряд = отключение
     
     def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
@@ -223,8 +223,9 @@ class BinanceFuturesClient:
         cb["failures"] += 1
         cb["last_failure"] = time.time()
         
-        # Открываем circuit если слишком много ошибок 404/418
-        if status in (404, 418) or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
+        # ✅ FIX: 418 (rate limit) не открывает CB мгновенно — нужен threshold
+        # 404 = endpoint не существует → открываем сразу (смысла ретраить нет)
+        if status == 404 or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
             cb["open"] = True
             print(f"🔒 [Circuit Breaker] {endpoint}: OPENED ({cb['failures']} failures, status={status})")
     
