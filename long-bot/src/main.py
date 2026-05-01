@@ -18,7 +18,7 @@ import time
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
@@ -115,14 +115,15 @@ class Config:
     # ============================================================================
     # 🔧 ENVIRONMENT VARIABLES (настраиваются на Render Dashboard)
     # ============================================================================
-    # MIN_SCORE_LONG       - Минимальный score для входа (default: 75) ⭐ КЛЮЧЕВОЙ
+    # MIN_SCORE_LONG       - Минимальный score для входа (default: 65) ⭐ КЛЮЧЕВОЙ
     # MAX_LONG_POSITIONS   - Макс. кол-во позиций (default: 10) ⭐ КЛЮЧЕВОЙ
     # LONG_SL_BUFFER       - SL буфер в процентах (default: 2.0) ⭐ КЛЮЧЕВОЙ
-    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 120)
+    # SCAN_INTERVAL        - Интервал сканирования в сек (default: 180)
     # LONG_LEVERAGE        - Плечо (default: "5-50")
     # LONG_TRAIL_ACTIVATION - Активация trailing SL (default: 0.025)
     # BTC_BLOCK_LONG_THRESHOLD - Блокировка при дампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_LONG_SCORE → MIN_SCORE_LONG для соответствия Render
@@ -140,6 +141,7 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("LONG_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
@@ -184,16 +186,63 @@ class Config:
     # 🆕 NEW: Candle History Manager
     ENABLE_CANDLE_HISTORY = os.getenv("ENABLE_CANDLE_HISTORY", "true").lower() == "true"
     CANDLE_4H_COUNT = int(os.getenv("CANDLE_4H_COUNT", "30"))
+    
+    # ============================================================================
+    # 🏛️ INSTITUTIONAL RISK MANAGEMENT (Aegis Integration)
+    # ============================================================================
+    # ⚠️ ВАЖНО: Увеличиваем риск для видимости сделок
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.05"))  # 5% для видимости
+    
+    # Kelly Criterion Sizing
+    KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))  # 25% Kelly
+    
+    # Position & Exposure Limits
+    MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.25"))  # 25% на позицию
+    MAX_EXPOSURE_PCT = float(os.getenv("MAX_EXPOSURE_PCT", "0.80"))  # 80% макс экспозиция
+    
+    # Drawdown Control (ВАШЕ требование: -15%)
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "15.0"))  # -15% (было 5.0)
+    MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "4"))
+    
+    # ============================================================================
+    # 🎯 6 TP LEVELS CONFIG (Phase 4 - best-ls-bot optimization)
+    # ============================================================================
+    TP_LEVELS = [3.0, 5.0, 8.0, 12.0, 18.0, 25.0]  # Long: дальние цели
+    TP_WEIGHTS = [25, 25, 20, 15, 10, 5]  # Акцент на TP1-3
+    
+    # ============================================================================
+    # 🚩 FEATURE FLAGS (Phase 3 - Institutional Analysis)
+    # ============================================================================
+    ENABLE_WYCKOFF_DETECTOR = os.getenv("ENABLE_WYCKOFF", "true").lower() == "true"
+    ENABLE_BSL_SCANNER = os.getenv("ENABLE_BSL", "true").lower() == "true"
+    ENABLE_OI_ANALYZER = os.getenv("ENABLE_OI", "true").lower() == "true"
+    ENABLE_LIQ_MAPPER = os.getenv("ENABLE_LIQ", "true").lower() == "true"
+    ENABLE_DELTA = os.getenv("ENABLE_DELTA", "true").lower() == "true"
+    
+    # BTC Correlation & Decoupling
+    ENABLE_BTC_CORRELATION = os.getenv("ENABLE_BTC", "true").lower() == "true"
+    ENABLE_DECOUPLING_BONUS = os.getenv("ENABLE_DECOUPLING", "true").lower() == "true"
+    BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_THRESHOLD", "-3.0"))  # Блок при -3% BTC
+    
+    # ============================================================================
+    # 🏭 SECTOR DIVERSIFICATION (Phase 5 - Sector Limits)
+    # ============================================================================
+    ENABLE_SECTOR_LIMITS = os.getenv("ENABLE_SECTOR_LIMITS", "true").lower() == "true"
+    MAX_PER_SECTOR_MEME = int(os.getenv("MAX_PER_SECTOR_MEME", "2"))
+    MAX_PER_SECTOR_DEFI = int(os.getenv("MAX_PER_SECTOR_DEFI", "3"))
+    MAX_PER_SECTOR_GAMEFI = int(os.getenv("MAX_PER_SECTOR_GAMEFI", "3"))
+    MAX_PER_SECTOR_L1 = int(os.getenv("MAX_PER_SECTOR_L1", "3"))
+    MAX_PER_SECTOR_L2 = int(os.getenv("MAX_PER_SECTOR_L2", "3"))
+    MAX_PER_SECTOR_AI = int(os.getenv("MAX_PER_SECTOR_AI", "3"))
+    MAX_PER_SECTOR_RWA = int(os.getenv("MAX_PER_SECTOR_RWA", "2"))
+    MAX_PER_SECTOR_ORACLE = int(os.getenv("MAX_PER_SECTOR_ORACLE", "2"))
+    MAX_PER_SECTOR_INFRA = int(os.getenv("MAX_PER_SECTOR_INFRA", "2"))
     CANDLE_2H_COUNT = int(os.getenv("CANDLE_2H_COUNT", "50"))
     CANDLE_1H_COUNT = int(os.getenv("CANDLE_1H_COUNT", "80"))
     CANDLE_30M_COUNT = int(os.getenv("CANDLE_30M_COUNT", "120"))
     CANDLE_15M_COUNT = int(os.getenv("CANDLE_15M_COUNT", "150"))
     CANDLE_5M_COUNT = int(os.getenv("CANDLE_5M_COUNT", "300"))
-    CANDLE_MIN_REQUIRED = int(os.getenv("CANDLE_MIN_REQUIRED", "20"))  # ✅ FIX v5: 1.5% — даёт дышать, меньше ложных стопов
-
-    # TP levels из Config (v2.5: увеличены для R:R ≥ 2:1)
-    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ FIX v5: TP1=2.5% → R:R=1.67:1 (математически прибыльно)
-    TP_WEIGHTS = [30,  25,  20,  15,  7,    3]   # TP1=30% — основной сбор прибыли
+    CANDLE_MIN_REQUIRED = int(os.getenv("CANDLE_MIN_REQUIRED", "20"))
 
     # Trailing — LONG активирует при +2.5% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("LONG_TRAIL_ACTIVATION", "0.025"))
@@ -212,10 +261,181 @@ class Config:
 
     # ✅ REDUCED: 300 → 80 монет (меньше запросов к API)
     # ✅ INCREASED: 300K → 1M (только ликвидные монеты, меньше ошибок)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))  # $1M минимум
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "10000000"))  # 🔧 $10M минимум (was $1M)
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "80"))  # 80 монет max
     # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
     MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
+    # 🆕 STRICT: Минимальный объем для входа в сделку (отдельно от watchlist)
+    MIN_ENTRY_VOLUME_USDT = int(os.getenv("MIN_ENTRY_VOLUME_USDT", "10000000"))  # $10M
+
+
+# ============================================================================
+# 🆕 SMART DCA v2 ENGINE (Aegis Integration - Phase 2)
+# ============================================================================
+
+from dataclasses import dataclass
+
+@dataclass
+class DCALevel:
+    """Уровень DCA с параметрами."""
+    level: int
+    price_drop_pct: float
+    size_multiplier: float
+    max_position_pct: float
+
+
+class SmartDCAEngine:
+    """
+    Smart DCA v2 из Aegis-bots.
+    ATR-based spacing, Kelly sizing, Circuit breaker.
+    """
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.dca_levels = self._init_dca_levels()
+        self.total_exposure_pct = 0.0
+        self.circuit_breaker_triggered = False
+        
+    def _init_dca_levels(self) -> List:
+        """Инициализация уровней DCA."""
+        levels = []
+        base_mult = self.config.DCA_ATR_MULT
+        
+        for i in range(1, 5):  # 4 уровня
+            level = DCALevel(
+                level=i,
+                price_drop_pct=i * self.config.DCA_ATR_MULT,  # ATR-based
+                size_multiplier=self.config.DCA_SIZE_MULT ** (i - 1),  # Anti-martingale
+                max_position_pct=min(0.10 * i, 0.40)  # Max 40%
+            )
+            levels.append(level)
+            
+        return levels
+    
+    def calculate_dca_orders(self, entry_price: float, position_size: float,
+                            atr: float, portfolio_value: float) -> List[Dict]:
+        """
+        Расчет DCA ордеров с Kelly Criterion sizing.
+        """
+        if not self.config.ENABLE_SMART_DCA:
+            return []
+            
+        # Circuit breaker check
+        if self.total_exposure_pct >= self.config.DCA_MAX_EXPOSURE_PCT:
+            print(f"⚠️ [DCA] Circuit breaker: exposure {self.total_exposure_pct:.1%}")
+            self.circuit_breaker_triggered = True
+            return []
+            
+        orders = []
+        current_size = position_size
+        
+        for level in self.dca_levels:
+            # Kelly Criterion sizing
+            kelly_fraction = self.config.KELLY_FRACTION
+            level_size = current_size * level.size_multiplier * kelly_fraction
+            
+            # Проверка лимита экспозиции
+            level_exposure = (level_size * entry_price) / portfolio_value
+            if self.total_exposure_pct + level_exposure > self.config.DCA_MAX_EXPOSURE_PCT:
+                print(f"⚠️ [DCA] Level {level.level} skipped: exposure limit")
+                break
+                
+            # Для long: цена падает (против нас)
+            dca_price = entry_price * (1 - level.price_drop_pct / 100)
+            
+            order = {
+                "level": level.level,
+                "price": dca_price,
+                "size": level_size,
+                "exposure_pct": level_exposure,
+                "atr_mult": level.price_drop_pct / atr if atr > 0 else 0
+            }
+            orders.append(order)
+            
+            self.total_exposure_pct += level_exposure
+            current_size = level_size
+            
+        return orders
+    
+    def reset_exposure(self):
+        """Сброс счетчика экспозиции."""
+        self.total_exposure_pct = 0.0
+        self.circuit_breaker_triggered = False
+
+
+# ============================================================================
+# 🆕 SECTOR POSITION MANAGER (Phase 5)
+# ============================================================================
+
+class SectorPositionManager:
+    """
+    Управление позициями по секторам.
+    Диверсификация и лимиты на секторы.
+    """
+    
+    def __init__(self, config: Config, sector_mapper):
+        self.config = config
+        self.sector_mapper = sector_mapper
+        self.positions_by_sector: Dict[str, List[str]] = {}
+        
+    def can_open_position(self, symbol: str) -> Tuple[bool, str]:
+        """Проверка возможности открытия позиции в секторе."""
+        if not self.config.ENABLE_SECTOR_LIMITS:
+            return True, "Sector limits disabled"
+            
+        sector = self.sector_mapper.get_sector(symbol)
+        if not sector:
+            return True, "No sector assigned"
+            
+        current_count = len(self.positions_by_sector.get(sector, []))
+        max_allowed = self._get_max_for_sector(sector)
+        
+        if current_count >= max_allowed:
+            return False, f"Sector {sector} limit: {current_count}/{max_allowed}"
+            
+        return True, f"Sector {sector}: {current_count}/{max_allowed}"
+    
+    def _get_max_for_sector(self, sector: str) -> int:
+        """Получить лимит для сектора."""
+        mapping = {
+            "Meme": self.config.MAX_PER_SECTOR_MEME,
+            "DeFi": self.config.MAX_PER_SECTOR_DEFI,
+            "GameFi": self.config.MAX_PER_SECTOR_GAMEFI,
+            "L1": self.config.MAX_PER_SECTOR_L1,
+            "L2": self.config.MAX_PER_SECTOR_L2,
+            "AI": self.config.MAX_PER_SECTOR_AI,
+            "RWA": self.config.MAX_PER_SECTOR_RWA,
+            "Oracle": self.config.MAX_PER_SECTOR_ORACLE,
+            "Infra": self.config.MAX_PER_SECTOR_INFRA
+        }
+        return mapping.get(sector, 3)
+    
+    def add_position(self, symbol: str):
+        """Добавление позиции в сектор."""
+        sector = self.sector_mapper.get_sector(symbol)
+        if sector:
+            if sector not in self.positions_by_sector:
+                self.positions_by_sector[sector] = []
+            self.positions_by_sector[sector].append(symbol)
+            
+    def remove_position(self, symbol: str):
+        """Удаление позиции из сектора."""
+        sector = self.sector_mapper.get_sector(symbol)
+        if sector and sector in self.positions_by_sector:
+            if symbol in self.positions_by_sector[sector]:
+                self.positions_by_sector[sector].remove(symbol)
+                
+    def get_sector_stats(self) -> Dict:
+        """Статистика по секторам."""
+        stats = {}
+        for sector, positions in self.positions_by_sector.items():
+            max_allowed = self._get_max_for_sector(sector)
+            stats[sector] = {
+                "current": len(positions),
+                "max": max_allowed,
+                "symbols": positions
+            }
+        return stats
 
 
 # ============================================================================
@@ -242,6 +462,32 @@ class BotState:
         self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
+        
+        # 🆕 NEW: Smart DCA v2 Engine
+        self.dca_engine: Optional[SmartDCAEngine] = None
+        
+        # 🆕 NEW: Sector Position Manager
+        self.sector_manager: Optional[SectorPositionManager] = None
+        self.sector_mapper = None
+        
+        # 🆕 NEW: Institutional Detectors (Phase 3)
+        self.wyckoff_detector = None
+        self.bsl_scanner = None
+        self.oi_analyzer = None
+        self.liq_mapper = None
+        self.delta_analyzer = None
+        
+        # Daily stats for risk tracking
+        self.daily_stats = {
+            "signals_generated": 0,
+            "positions_opened": 0,
+            "positions_closed": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "consecutive_losses": 0,
+            "daily_pnl": 0.0,
+            "max_daily_dd": 0.0  # Track max drawdown
+        }
 
 
 # ============================================================================
@@ -557,6 +803,7 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
+                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -704,39 +951,22 @@ async def lifespan(app: FastAPI):
         config=Config, auto_trader=state.auto_trader,
     )
 
+    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
+    print("🧹 [STARTUP] Проверка zombie позиций...")
+    try:
+        cleaned = await state.tracker.cleanup_zombies()
+        if cleaned > 0:
+            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
+    except Exception as e:
+        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
+
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
-
-    # ✅ SIGTERM HANDLER: Render отправляет SIGTERM при деплое/рестарте
-    # Сохраняем весь стейт в Redis перед завершением
-    import signal as _signal
-    def _sigterm_handler(signum, frame):
-        print("⚠️ [SIGTERM] Получен сигнал завершения — сохраняем состояние...")
-        try:
-            if state.redis:
-                # Сохраняем daily_pnl если auto_trader живой
-                if state.auto_trader:
-                    state.auto_trader._save_daily_pnl_to_redis()
-                # Помечаем бот как остановленный
-                state.redis.set(f"bot_status:{Config.BOT_TYPE}", "stopped", ex=300)
-                print("✅ [SIGTERM] Состояние сохранено в Redis")
-        except Exception as e:
-            print(f"❌ [SIGTERM] Ошибка сохранения: {e}")
-        state.is_running = False
-
-    _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
     yield
 
     state.is_running = False
     print("🛑 Shutting down LONG Bot...")
-    # Финальное сохранение состояния
-    try:
-        if state.redis and state.auto_trader:
-            state.auto_trader._save_daily_pnl_to_redis()
-            print("✅ [SHUTDOWN] daily_pnl сохранён в Redis")
-    except Exception:
-        pass
     if state.binance:
         await state.binance.close()
     if state.auto_trader:
@@ -754,30 +984,9 @@ app = FastAPI(lifespan=lifespan, title="LONG Bot v5.0")
 # ✅ HEAD + GET для UptimeRobot (405 → 200)
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    # ✅ УЛУЧШЕННЫЙ HEALTH CHECK: проверяем Redis + базовое состояние
-    redis_ok = False
-    redis_latency_ms = -1
-    try:
-        t0 = time.monotonic()
-        state.redis.set("health_ping", "1", ex=10)
-        redis_latency_ms = round((time.monotonic() - t0) * 1000, 1)
-        redis_ok = True
-    except Exception as e:
-        print(f"⚠️ [HEALTH] Redis check failed: {e}")
-
-    status_code = 200 if redis_ok else 503
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "status": "ok" if redis_ok else "degraded",
-            "bot": "long",
-            "version": "2.9",
-            "watchlist": len(state.watchlist),
-            "active": state.active_signals,
-            "redis": {"ok": redis_ok, "latency_ms": redis_latency_ms},
-            "uptime_s": round((datetime.utcnow() - state.start_time).total_seconds()) if state.start_time else 0,
-        }
-    )
+    return JSONResponse({"status": "ok", "bot": "long", "version": "2.9",
+                         "watchlist": len(state.watchlist),
+                         "active": state.active_signals})
 
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -936,38 +1145,29 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             if not ctx.allowed:
                 # Логируем блокировку только 1 раз в минуту чтобы не спамить
                 print(f"⛔ [CTX-LONG] {symbol}: {ctx.block_reason}")
-                # 🆕 NEW: Telegram уведомление о блокировке (1 раз в 15 минут для BTC блока)
+                # 🆕 NEW: Telegram уведомление о блокировке (1 раз в час для BTC блока)
                 if hasattr(state, 'telegram') and state.telegram and 'BTC' in ctx.block_reason:
                     try:
-                        cache_key = f"btc_block_long:{symbol}:{int(time.time() / 900)}"  # 15 минут
+                        cache_key = f"btc_block_long:{symbol}:{int(time.time() / 3600)}"  # 1 час
                         if not state.redis.get(cache_key):
-                            block_alert = f"🔴 <b>BTC БЛОКИРОВКА LONG</b>\n\n{ctx.block_reason}\n\n📍 Символ: <b>#{symbol}</b>\n\n<i>Ждём стабилизации BTC...</i>"
+                            block_alert = f"🔴 <b>BTC БЛОКИРОВКА LONG</b>\n\n{ctx.block_reason}\n\n📍 Символ: <b>#{symbol}</b>\n\n<i>Ждём стабилизации BTC (1h timeframe)...</i>"
                             await state.telegram.send_message(block_alert)
-                            state.redis.set(cache_key, "1", 900)
-                            print(f"   📨 BTC block alert for LONG sent to Telegram")
+                            state.redis.set(cache_key, "1", 3600)  # 1 час TTL
+                            print(f"   📨 BTC block alert for LONG sent to Telegram (1h)")
                     except Exception as e:
                         print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 return None
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
 
-        # ✅ FIX #3: RSI GUARD — лонги только в зонах перепроданности/нейтрали
-        # Не открываем лонги когда RSI > 60 (рынок уже перегрет для покупки)
-        rsi_guard = md.rsi_1h or 50
-        rsi_max_long = float(os.getenv("LONG_RSI_MAX", "58"))
-        if rsi_guard > rsi_max_long:
-            print(f"⛔ [RSI-GUARD-LONG] {symbol}: RSI={rsi_guard:.1f} > {rsi_max_long} — перекупленность, не зона для лонга")
-            return None
-
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: только 30m (1h уже есть в md.klines из get_complete_market_data)
-        # ✅ FIX #8: Убираем дублирующий запрос klines(1h) — экономим 50 API calls/scan
-        ohlcv_30m = await state.binance.get_klines(symbol, "30m", 100)
-        # Используем klines из MarketData для 1h вместо нового запроса
-        ohlcv_1h = getattr(md, 'klines_1h', None) or await state.binance.get_klines(symbol, "1h", 50)
+        # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)  # Увеличили до 200
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
+        ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
         if hasattr(state, 'candle_manager') and state.candle_manager:
@@ -985,12 +1185,19 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
                 if insufficient:
                     print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
-                    # ✅ FIX #5: Добавляем в skip-лист если много TF без данных
-                    if len(insufficient) >= 3:
-                        if not hasattr(state, '_insufficient_symbols'):
-                            state._insufficient_symbols = set()
-                        state._insufficient_symbols.add(symbol)
-                        print(f"⛔ [DATA-SKIP] {symbol}: добавлен в skip-лист ({len(insufficient)} TF без данных)")
+                    
+                    # 🆕 TF FALLBACK: если 1h/30m нет данных, используем 15m
+                    if '30m' in insufficient or '1h' in insufficient:
+                        try:
+                            ohlcv_15m_fallback = await state.binance.get_klines(symbol, "15m", 200)
+                            if ohlcv_15m_fallback and len(ohlcv_15m_fallback) >= 50:
+                                state.candle_manager.update_candles(symbol, "15m", ohlcv_15m_fallback)
+                                print(f"   📊 [TF-FALLBACK] {symbol}: Using 15m data instead of {insufficient}")
+                                # Обновляем insufficient - 15m теперь есть
+                                quality = state.candle_manager.get_all_data_quality(symbol)
+                                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
+                        except Exception as e:
+                            print(f"   ⚠️ [TF-FALLBACK] {symbol}: Failed to get 15m: {e}")
             except Exception as e:
                 print(f"[CandleHistory] {symbol} error: {e}")
 
@@ -1009,7 +1216,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != "30m" and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
@@ -1269,57 +1476,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
               f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
               f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
 
+        # 🛑 STRICT MODE: Нет оверрайдов! Только чистые валидные сигналы
         if not score_result.is_valid:
-            override_reason = None
-            boost = 0
-            
-            # Уровень 1: TBS + OB >= 70 — сильный оверрайд (было единственным условием)
-            if tbs_found and ob_q_high:
-                override_reason = f"TBS+OB_Q{ob_quality}"
-                boost = 15
-            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд  
-            elif tbs_found and ob_quality_ok:
-                override_reason = f"TBS+OB_Q{ob_quality}"
-                boost = 10
-            # Уровень 3: только TBS без OB (риск выше)
-            elif tbs_found and base_score_bonus >= 5:
-                override_reason = f"TBS+confirmation"
-                boost = 8
-            # Уровень 4: OB >= 70 без TBS (институциональная зона)
-            elif ob_q_high and base_score_bonus >= 3:
-                override_reason = f"OB_Q{ob_quality}+confirmation"
-                boost = 5
-            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
-            elif ob_q_high:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 12  # Сильный буст для институционального OB
-            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
-            elif ob_quality_ok:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 8
-            
-            if override_reason:
-                print(f"💡 [SMART-SCORE-LONG] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
-                from core.scorer import ScoreResult, Confidence
-                # Помечаем что использован оверрайд
-                override_used = True
-                override_type = override_reason
-                score_result = ScoreResult(
-                    total_score=max(70, score_result.total_score + boost),
-                    max_possible=score_result.max_possible,
-                    direction=score_result.direction,
-                    is_valid=True,
-                    confidence=Confidence.MEDIUM if boost < 12 else Confidence.HIGH,
-                    grade="B" if boost < 12 else "A",
-                    components=score_result.components,
-                    reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
-                )
-            else:
-                # ✅ FIX #2: Убираем Bear Pass — больше не снижаем порог входа
-                # Было: bear_threshold = max(40, Config.MIN_SCORE - 20) — пропускало мусор с 52%
-                # Теперь: строгий порог = MIN_SCORE
-                print(f"🔴 [FILTER0-LONG] {symbol}: score={score_result.total_score} <{Config.MIN_SCORE} skip")
-                return None
+            print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}%), skipping (STRICT MODE)")
+            return None
         
         reasons     = list(score_result.reasons)
         base_score_before_override = score_result.total_score  # Сохраняем базовый скор
@@ -1380,7 +1540,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # 🆕 Бонус если RSI восстанавливается от низов (LONG сигнал)
         rsi_now = md.rsi_1h or 0
         if 30 <= rsi_now <= 50 and rsi_current > 0:
-            final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
+            final_score += 3
             reasons.append(f"RSI восстановление {rsi_now:.0f} → +3")
         
         # 🌊 ELLIOTT WAVE v3.0: Детекция волн для точных входов
@@ -1428,7 +1588,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
                 wave_boost = 10 if wave_result.confidence > 0.75 else 5
-                final_score = min(100, final_score + wave_boost)  # ✅ FIX #1: Score Cap
+                final_score += wave_boost
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
                 print(f"🎯 [ELLIOTT-BOOST-LONG] {symbol}: Идеальная волна {wave_result.wave}! "
@@ -1436,7 +1596,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 📈 ТРЕНД (Волна 3) — небольшой бонус
             elif wave_result.position == WavePosition.TREND:
-                final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
+                final_score += 3
                 reasons.append(f"🌊 Elliott Wave 3 (trend) +3")
                 print(f"📈 [ELLIOTT-TREND-LONG] {symbol}: Волна 3 тренда")
             
@@ -1522,7 +1682,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 smc = get_smc_result(_ohlcv(ohlcv_15m), "long",    # ✅ FIX: "long" not "short"
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
-                    final_score = min(100, final_score + smc.score_bonus)  # ✅ FIX #1: Score Cap
+                    final_score += smc.score_bonus
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl < price:      # ✅ FIX: SL must be below
                     stop_loss = smc.refined_sl
@@ -1609,23 +1769,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if (price - stop_loss) / price < 0.005:       # минимум 0.5% SL
             stop_loss = price * (1 - Config.SL_BUFFER / 100)
 
-        # ✅ FIX #10: ATR-валидация минимального SL — SL не может быть меньше ATR×1.5
-        atr_pct_val = getattr(md, 'atr_pct', 0.0) or 0.0
-        if atr_pct_val > 0:
-            min_sl_pct = max(Config.SL_BUFFER, atr_pct_val * 1.5)
-            actual_sl_pct = (price - stop_loss) / price * 100
-            if actual_sl_pct < min_sl_pct:
-                stop_loss = price * (1 - min_sl_pct / 100)
-                print(f"📐 [ATR-SL-LONG] {symbol}: SL расширен {actual_sl_pct:.2f}%→{min_sl_pct:.2f}% (ATR={atr_pct_val:.2f}%)")
-
-        # ✅ FIX: R:R валидация — TP1 должен быть минимум в 1.3× от SL
-        if stop_loss > 0 and price > stop_loss:
-            sl_pct_check = (price - stop_loss) / price * 100
-            tp1_pct_check = Config.TP_LEVELS[0] if Config.TP_LEVELS else 2.5
-            if tp1_pct_check / max(sl_pct_check, 0.01) < 1.3:
-                print(f"🔴 [RR-FILTER-LONG] {symbol}: R:R={tp1_pct_check/sl_pct_check:.2f} < 1.3 — плохое соотношение, skip")
-                return None
-
         # ✅ FIX: TP ВЫШЕ входа для LONG
         take_profits = [
             (round(price * (1 + tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
@@ -1669,8 +1812,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 best_pattern = "SMC_STRUCTURE"
         
         print(f"🟢 [SIGNAL-LONG] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
-        # ✅ FIX #1: ФИНАЛЬНЫЙ HARD CAP — скор никогда не превышает 100%
-        final_score = max(0, min(100, final_score))
         return {
             "symbol": symbol, "direction": "long",
             "score": final_score, "grade": score_result.grade,
@@ -1781,10 +1922,6 @@ async def scan_market():
 
     for symbol in state.watchlist:
         try:
-            # ✅ FIX #5: Пропускаем символы с хронически недостаточными данными
-            if hasattr(state, '_insufficient_symbols') and symbol in state._insufficient_symbols:
-                continue
-
             # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
@@ -1820,8 +1957,22 @@ async def scan_market():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # ✅ Биржевое исполнение: только если есть слоты И не на паузе
-            if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
+            # 🆕 STRICT: Проверка объема перед входом
+            quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
+            if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
+                print(f"📊 [VOLUME-FILTER] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
+                continue
+            
+            # 🆕 BTC FILTER: Не лонгить если BTC падает (ловим ножи)
+            btc_trend_ok = True
+            if hasattr(state, 'btc_context') and state.btc_context:
+                btc_data = state.btc_context.get('trend', {})
+                if btc_data.get('direction') == 'DOWN' and btc_data.get('strength', 0) > 0.6:
+                    btc_trend_ok = False
+                    print(f"📊 [BTC-FILTER] {symbol}: BTC falling hard — skip LONG")
+            
+            # ✅ Биржевое исполнение: только если есть слоты И не на паузе И BTC ок
+            if not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok:
                 if state.auto_trader:
                     try:
                         await state.auto_trader.execute_signal(signal)
@@ -1831,6 +1982,9 @@ async def scan_market():
                         print(f"AutoTrader error {symbol}: {e}")
                 new_signals += 1
                 print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+            elif not btc_trend_ok:
+                tg_only_count += 1
+                print(f"📡 LONG TG-only: {symbol} [BTC falling]")
             else:
                 tg_only_count += 1
                 reason = "max positions" if exchange_full else "paused"
@@ -1841,16 +1995,7 @@ async def scan_market():
             print(f"Error {symbol}: {e}")
 
     # 🆕 NEW: Momentum Scanning (Trend Following)
-    # ✅ FIX #9: Momentum scanner throttle — не чаще 1 раза в 180 сек
-    # Было: вызывался на каждом scan_market (каждые 240s) + отдельный 1m цикл → 3000 calls/час
-    _momentum_interval = int(os.getenv("SCAN_1M_INTERVAL", "180"))  # повышаем с 30 до 180
-    _momentum_enabled  = os.getenv("ENABLE_1M_SCANNER", "false").lower() == "true"  # OFF по умолчанию
-    _now_ts = time.time()
-    _last_mom_ts = getattr(state, '_last_momentum_scan_ts', 0)
-
-    if _momentum_enabled and Config.ENABLE_MOMENTUM_LONG and hasattr(state, 'momentum_detector') \
-            and (_now_ts - _last_mom_ts) >= _momentum_interval:
-        state._last_momentum_scan_ts = _now_ts
+    if Config.ENABLE_MOMENTUM_LONG and hasattr(state, 'momentum_detector'):
         try:
             print(f"\n🚀 [MOMENTUM-LONG] Scanning {len(state.watchlist)} symbols for velocity...")
             

@@ -167,33 +167,16 @@ class BinanceFuturesClient:
     """
     Клиент рыночных данных.
     USE_BINANCE=false (default) → Bybit, без прокси
-    USE_BINANCE=true            → Binance через прокси
+    USE_BINANCE=true → Binance, с прокси (если заданы)
+    
+    🆕 v2.0: Circuit Breaker — отключает мертвые эндпоинты на 1 час
     """
-
-    # ✅ FIX #4: Class-level flag — allForceOrders заблокирован Binance для Singapore
-    _allForceOrders_disabled: bool = False
-
-    # ✅ CIRCUIT BREAKER: per-endpoint счётчики ошибок
-    # Если endpoint вернул 5+ ошибок → отключаем на 30 мин
-    _circuit_breakers: Dict[str, Dict] = {}  # endpoint → {errors, disabled_until}
-    CIRCUIT_BREAKER_THRESHOLD = 5
-    CIRCUIT_BREAKER_COOLDOWN  = 1800  # 30 мин
-
-    # ✅ DEAD ENDPOINT CACHE: per-symbol per-endpoint на 2 часа
-    # Если takerBuySellVolRatio вернул 404 для JELLYJELLY → не пробуем 2 часа
-    _dead_endpoints: Dict[str, float] = {}  # "endpoint:symbol" → disabled_until
-    DEAD_ENDPOINT_TTL = 7200  # 2 часа
-
-    # ✅ PROXY HEALTH: баллы качества прокси (выше = лучше)
-    _proxy_scores: Dict[str, float] = {}    # proxy_url → score (начинаем с 10.0)
-    _proxy_fail_counts: Dict[str, int] = {} # proxy_url → consecutive failures
-    PROXY_SCORE_MAX = 10.0
-    PROXY_FAIL_PENALTY = 2.0   # -2 балла за ошибку
-    PROXY_SUCCESS_BONUS = 0.5  # +0.5 балла за успех
-
+    
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
-
+    CIRCUIT_BREAKER_DURATION = 3600  # 1 час в секундах
+    CIRCUIT_BREAKER_THRESHOLD = 3     # 3 ошибки подряд = отключение
+    
     def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.session: Optional[aiohttp.ClientSession] = None
@@ -208,112 +191,54 @@ class BinanceFuturesClient:
         self._proxies     = [p.strip() for p in proxy_env.split(",") if p.strip()]
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
-
-        # Инициализируем начальные баллы прокси
-        for p in self._proxies:
-            if p not in BinanceFuturesClient._proxy_scores:
-                BinanceFuturesClient._proxy_scores[p] = self.PROXY_SCORE_MAX
+        
+        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool}
+        self._circuit_breaker: Dict[str, Dict] = {}
 
         print(f"🔧 Market client: {'Binance+proxy' if self._try_binance else 'Bybit'} mode")
-
-    # ─── Circuit Breaker ─────────────────────────────────────────────────────
-
-    @classmethod
-    def _is_circuit_open(cls, endpoint: str) -> bool:
-        """Проверяет: Circuit Breaker открыт (endpoint заблокирован)?"""
-        cb = cls._circuit_breakers.get(endpoint)
-        if not cb:
+    
+    def _is_circuit_open(self, endpoint: str) -> bool:
+        """Проверяет, открыт ли Circuit Breaker для эндпоинта"""
+        if endpoint not in self._circuit_breaker:
             return False
-        if cb.get("disabled_until", 0) > time.time():
+        cb = self._circuit_breaker[endpoint]
+        if cb.get("open", False):
+            # Проверяем, не пора ли закрыть
+            elapsed = time.time() - cb.get("last_failure", 0)
+            if elapsed > self.CIRCUIT_BREAKER_DURATION:
+                # Закрываем circuit
+                cb["open"] = False
+                cb["failures"] = 0
+                print(f"🔓 [Circuit Breaker] {endpoint}: CLOSED (timeout)")
+                return False
             return True
-        # TTL истёк — сбрасываем
-        cls._circuit_breakers.pop(endpoint, None)
         return False
-
-    @classmethod
-    def _record_endpoint_error(cls, endpoint: str):
-        """Регистрирует ошибку endpoint — при достижении порога открывает Circuit Breaker"""
-        cb = cls._circuit_breakers.setdefault(endpoint, {"errors": 0, "disabled_until": 0})
-        cb["errors"] = cb.get("errors", 0) + 1
-        if cb["errors"] >= cls.CIRCUIT_BREAKER_THRESHOLD:
-            cb["disabled_until"] = time.time() + cls.CIRCUIT_BREAKER_COOLDOWN
-            print(f"⚡ [CIRCUIT-BREAKER] {endpoint}: открыт на {cls.CIRCUIT_BREAKER_COOLDOWN//60} мин "
-                  f"({cb['errors']} ошибок подряд)")
-
-    @classmethod
-    def _record_endpoint_success(cls, endpoint: str):
-        """Успех — сбрасываем счётчик ошибок"""
-        cls._circuit_breakers.pop(endpoint, None)
-
-    # ─── Dead Endpoint Cache (per-symbol) ────────────────────────────────────
-
-    @classmethod
-    def _is_dead_endpoint(cls, endpoint: str, symbol: str) -> bool:
-        """Проверяет кэш мёртвых endpoint'ов для конкретного символа"""
-        key = f"{endpoint}:{symbol}"
-        until = cls._dead_endpoints.get(key, 0)
-        return time.time() < until
-
-    @classmethod
-    def _mark_dead_endpoint(cls, endpoint: str, symbol: str):
-        """Помечает endpoint как мёртвый для символа на DEAD_ENDPOINT_TTL секунд"""
-        key = f"{endpoint}:{symbol}"
-        cls._dead_endpoints[key] = time.time() + cls.DEAD_ENDPOINT_TTL
-        print(f"🪦 [DEAD-ENDPOINT] {endpoint} для {symbol}: отключён на {cls.DEAD_ENDPOINT_TTL//3600}ч")
-
-    # ─── Proxy Health ─────────────────────────────────────────────────────────
-
-    def _best_proxy(self) -> Optional[str]:
-        """Выбирает лучший прокси по текущему score (а не просто round-robin)"""
-        if not self._proxies:
-            return None
-        # Сортируем по убыванию баллов — выбираем лучший
-        scored = [(BinanceFuturesClient._proxy_scores.get(p, self.PROXY_SCORE_MAX), p)
-                  for p in self._proxies]
-        scored.sort(reverse=True)
-        best_score, best_proxy = scored[0]
-        # Если лучший прокси совсем плохой — логируем предупреждение
-        if best_score < 3.0:
-            print(f"⚠️ [PROXY-HEALTH] Лучший прокси имеет score={best_score:.1f} — все прокси деградировали!")
-        return best_proxy
+    
+    def _record_failure(self, endpoint: str, status: int = 0):
+        """Записывает ошибку для Circuit Breaker"""
+        if endpoint not in self._circuit_breaker:
+            self._circuit_breaker[endpoint] = {"failures": 0, "last_failure": 0, "open": False}
+        
+        cb = self._circuit_breaker[endpoint]
+        cb["failures"] += 1
+        cb["last_failure"] = time.time()
+        
+        # Открываем circuit если слишком много ошибок 404/418
+        if status in (404, 418) or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
+            cb["open"] = True
+            print(f"🔒 [Circuit Breaker] {endpoint}: OPENED ({cb['failures']} failures, status={status})")
+    
+    def _record_success(self, endpoint: str):
+        """Сбрасывает счетчик ошибок при успехе"""
+        if endpoint in self._circuit_breaker:
+            self._circuit_breaker[endpoint]["failures"] = 0
 
     def _next_proxy(self) -> Optional[str]:
-        """Round-robin с учётом health score — плохие прокси пропускаются"""
         if not self._proxies:
             return None
-        # Стандартный round-robin, но пропускаем совсем плохих (score < 1.0)
-        for _ in range(len(self._proxies)):
-            p = self._proxies[self._proxy_idx % len(self._proxies)]
-            self._proxy_idx += 1
-            score = BinanceFuturesClient._proxy_scores.get(p, self.PROXY_SCORE_MAX)
-            if score >= 1.0:
-                return p
-        # Все плохие — возвращаем первый (лучше чем ничего)
-        return self._proxies[0]
-
-    @classmethod
-    def _proxy_success(cls, proxy: str):
-        cls._proxy_scores[proxy] = min(cls.PROXY_SCORE_MAX,
-                                       cls._proxy_scores.get(proxy, cls.PROXY_SCORE_MAX) + cls.PROXY_SUCCESS_BONUS)
-        cls._proxy_fail_counts[proxy] = 0
-
-    @classmethod
-    def _proxy_fail(cls, proxy: str):
-        cls._proxy_scores[proxy] = max(0.0,
-                                       cls._proxy_scores.get(proxy, cls.PROXY_SCORE_MAX) - cls.PROXY_FAIL_PENALTY)
-        cls._proxy_fail_counts[proxy] = cls._proxy_fail_counts.get(proxy, 0) + 1
-
-    @classmethod
-    def get_proxy_health_report(cls) -> str:
-        """Краткий отчёт о состоянии прокси для мониторинга"""
-        if not cls._proxy_scores:
-            return "Нет прокси"
-        lines = []
-        for p, score in sorted(cls._proxy_scores.items(), key=lambda x: -x[1]):
-            short = p.split("@")[-1] if "@" in p else p  # Скрываем credentials
-            status = "✅" if score >= 7 else ("⚠️" if score >= 3 else "🔴")
-            lines.append(f"{status} {short}: {score:.1f}/10")
-        return "\n".join(lines)
+        p = self._proxies[self._proxy_idx % len(self._proxies)]
+        self._proxy_idx += 1
+        return p
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -405,9 +330,14 @@ class BinanceFuturesClient:
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         """
-        ✅ v3.0 Отказоустойчивость: пробуем все прокси по очереди
-        Если все прокси упали → возвращаем None (вызывающий код попробует Bybit)
+        ✅ v3.1 Circuit Breaker + Отказоустойчивость
+        Если Circuit Breaker открыт — сразу возвращаем None (fallback на Bybit)
         """
+        # 🆕 CIRCUIT BREAKER: проверяем, не отключен ли эндпоинт
+        if self._is_circuit_open(endpoint):
+            print(f"⚡ [Circuit Breaker] {endpoint} skipped (circuit OPEN)")
+            return None
+        
         await self._rate_limit()
         
         errors = []
@@ -422,9 +352,13 @@ class BinanceFuturesClient:
                 ssl=False
             ) as resp:
                 if resp.status == 200:
+                    self._record_success(endpoint)
                     print(f"   ✅ [BINANCE] Direct connection success: {endpoint}")
                     return await resp.json()
                 else:
+                    # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
+                    if resp.status in (404, 418, 400):
+                        self._record_failure(endpoint, resp.status)
                     errors.append(f"direct:{resp.status}")
         except Exception as e:
             errors.append(f"direct:{type(e).__name__}")
@@ -442,6 +376,7 @@ class BinanceFuturesClient:
                     ssl=False
                 ) as resp:
                     if resp.status == 200:
+                        self._record_success(endpoint)
                         # ✅ Успех! Запоминаем рабочий прокси
                         if self._active_proxy != proxy:
                             self._active_proxy = proxy
@@ -450,13 +385,17 @@ class BinanceFuturesClient:
                         return await resp.json()
                     else:
                         # HTTP ошибка (403, 429, etc)
+                        # 🆕 CIRCUIT BREAKER: записываем ошибку 404/418
+                        if resp.status in (404, 418, 400):
+                            self._record_failure(endpoint, resp.status)
                         errors.append(f"proxy{idx+1}:{resp.status}")
                         
             except Exception as e:
                 errors.append(f"proxy{idx+1}:{type(e).__name__}")
                 continue
         
-        # ❌ Все попытки упали
+        # ❌ Все попытки упали — записываем общий failure
+        self._record_failure(endpoint, 0)
         error_summary = ", ".join(errors[:4])  # Первые 4 ошибки
         print(f"🔴 [BINANCE] All connections failed for {endpoint}. Errors: {error_summary}")
         return None
@@ -734,9 +673,7 @@ class BinanceFuturesClient:
         okx = get_okx_client()
         okx_data = await okx.get_open_interest_history(symbol, period, limit)
         if okx_data:
-            # ✅ OI NORM: Показываем реальный OI чтобы было сравнимо с Bybit
-            oi_val = float(okx_data[0].get("sumOpenInterest", 0)) if okx_data else 0
-            print(f"   ✅ OI from OKX: {len(okx_data)} points (latest={oi_val:,.0f})")
+            print(f"   ✅ OI from OKX: {len(okx_data)} points")
             return okx_data
         
         # Level 2 — Bybit
@@ -747,12 +684,10 @@ class BinanceFuturesClient:
                                     "intervalTime": imap.get(period, "1h"),
                                     "limit": limit})
         if result and result.get("list"):
-            bybit_list = result.get("list", [])
-            oi_val = float(bybit_list[-1].get("openInterest", 0)) if bybit_list else 0
-            print(f"   ✅ OI from Bybit: {len(bybit_list)} points (latest={oi_val:,.0f})")
+            print(f"   ✅ OI from Bybit: {len(result.get('list', []))} points")
             return [{"sumOpenInterest": item.get("openInterest", 0), 
                      "timestamp": int(item.get("ts", 0))}
-                    for item in bybit_list]
+                    for item in result.get("list", [])]
         
         # Level 3 — Binance (часто не работает /fapi/v1/openInterestHist)
         if self._use_binance:
@@ -811,36 +746,18 @@ class BinanceFuturesClient:
             print(f"   ✅ Taker ratio from OKX: {okx_taker.ratio:.2f}")
             return okx_taker.ratio
         
-        # Level 2 — Binance takerBuySellVolRatio
-        # ✅ CIRCUIT BREAKER + DEAD ENDPOINT CACHE:
-        # Этот endpoint возвращает 404 для новых/неликвидных монет (JELLYJELLY, XAGUSDT и т.д.)
-        # Не тратим 4 попытки через прокси — проверяем cache и circuit breaker
-        _ep = "/futures/data/takerBuySellVolRatio"
-        if self._use_binance \
-                and not self._is_circuit_open(_ep) \
-                and not self._is_dead_endpoint(_ep, symbol):
-            try:
-                d = await self._binance(_ep,
-                                        {"symbol": symbol, "period": period, "limit": 1})
-                if d and len(d) > 0:
-                    buy_vol = float(d[0].get("buyVol", 0))
-                    sell_vol = float(d[0].get("sellVol", 0))
-                    total = buy_vol + sell_vol
-                    if total > 0:
-                        ratio = buy_vol / total
-                        self._record_endpoint_success(_ep)
-                        print(f"   ✅ Taker ratio from Binance: {ratio:.2f}")
-                        return ratio
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str:
-                    # 404 = endpoint не существует для этого символа → per-symbol cache
-                    self._mark_dead_endpoint(_ep, symbol)
-                elif "429" in err_str or "418" in err_str:
-                    # Rate limit → circuit breaker
-                    self._record_endpoint_error(_ep)
-                else:
-                    self._record_endpoint_error(_ep)
+        # Level 2 — Binance (часто не работает /futures/data/takerBuySellVolRatio)
+        if self._use_binance:
+            d = await self._binance("/futures/data/takerBuySellVolRatio",
+                                    {"symbol": symbol, "period": period, "limit": 1})
+            if d and len(d) > 0:
+                buy_vol = float(d[0].get("buyVol", 0))
+                sell_vol = float(d[0].get("sellVol", 0))
+                total = buy_vol + sell_vol
+                if total > 0:
+                    ratio = buy_vol / total
+                    print(f"   ✅ Taker ratio from Binance: {ratio:.2f}")
+                    return ratio
         
         # Level 3 — Estimation from klines (close vs open)
         try:
@@ -897,40 +814,10 @@ class BinanceFuturesClient:
         except Exception:
             pass
         
-        # Level 3 — Binance allForceOrders
-        # ✅ FIX #4: Этот endpoint заблокирован Binance для Singapore/proxy (всегда 400/418)
-        # Используем class-level флаг чтобы не тратить 4 попытки × 50 символов = 200 вызовов/цикл
-        if self._use_binance and not BinanceFuturesClient._allForceOrders_disabled:
-            try:
-                d = await self._binance("/fapi/v1/allForceOrders",
-                                        {"symbol": symbol, "limit": limit})
-                if d:
-                    long_liq = 0.0
-                    short_liq = 0.0
-                    for order in d:
-                        qty = float(order.get("origQty", 0))
-                        price = float(order.get("avgPrice", 0))
-                        side = order.get("side", "").upper()
-                        usd = qty * price
-                        if side == "SELL":
-                            long_liq += usd
-                        else:
-                            short_liq += usd
-                    total = long_liq + short_liq
-                    print(f"   ✅ Liquidations from Binance: ${total:,.0f}")
-                    return {
-                        "total_usd": total,
-                        "long_liq_usd": long_liq,
-                        "short_liq_usd": short_liq,
-                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT" if short_liq > long_liq else None
-                    }
-            except Exception as e:
-                err_str = str(e)
-                if any(code in err_str for code in ["400", "418", "403"]):
-                    BinanceFuturesClient._allForceOrders_disabled = True
-                    print("⛔ [FIX#4] allForceOrders: permanently disabled (Binance 400/418 — Singapore blocked)")
+        # 🔴 REMOVED: Binance /fapi/v1/allForceOrders — эндпоинт удалён Binance (HTTP 418/400)
+        # Используем OKX и Coinglass как единственные источники
         
-        print(f"   ⚠️ Liquidation data unavailable for {symbol}")
+        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance API disabled, OKX/Coinglass only)")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
@@ -1124,8 +1011,8 @@ class BinanceFuturesClient:
                 self.get_open_interest(symbol),
                 self.get_long_short_ratio(symbol),
                 self.get_24h_ticker(symbol),
-                self.get_klines(symbol, "1h", 100),
-                self.get_klines(symbol, "15m", 50),   # ← NEW: 15м данные
+                self.get_klines(symbol, "1h", 200),
+                self.get_klines(symbol, "15m", 200),   # ← NEW: 15м данные (увеличили до 200)
                 return_exceptions=True
             )
 

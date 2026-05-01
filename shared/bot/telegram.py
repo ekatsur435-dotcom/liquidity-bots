@@ -79,24 +79,6 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
         self.session: Optional[aiohttp.ClientSession] = None
 
-        # ✅ SILENCE MODE: Агрегируем позиционные апдейты, не спамим в Telegram
-        # TELEGRAM_SILENCE_MODE=true → только критические сообщения (SL hit, TP hit)
-        # TELEGRAM_SUMMARY_INTERVAL=300 → итоговый апдейт каждые 5 минут
-        self.silence_mode = os.getenv("TELEGRAM_SILENCE_MODE", "false").lower() == "true"
-        self.summary_interval = int(os.getenv("TELEGRAM_SUMMARY_INTERVAL", "300"))
-        self._pending_updates: list = []   # Буфер апдейтов для агрегации
-        self._last_summary_ts: float = 0.0
-
-    def is_critical_message(self, text: str) -> bool:
-        """Определяет критичность сообщения — критичные отправляются всегда"""
-        critical_markers = [
-            "SL HIT", "TP1", "TP2", "TP3", "TP4", "TP5", "TP6",
-            "AUTO-TRADE", "SIGNAL", "дневной лимит", "MAX_POSITIONS",
-            "SKIP-REASON", "ОШИБКА", "ERROR", "WARN"
-        ]
-        text_upper = text.upper()
-        return any(m.upper() in text_upper for m in critical_markers)
-
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
@@ -206,42 +188,8 @@ class TelegramBot:
             return None
 
     async def send_message(self, text: str) -> Optional[int]:
-        """Отправить сообщение. Возвращает message_id.
-
-        ✅ SILENCE MODE: Если включён, фильтруем некритичные сообщения.
-        Критичные (SL hit, TP, SIGNAL, дневной лимит) — отправляем всегда.
-        Некритичные — добавляем в буфер для агрегированного итога.
-        """
-        if self.silence_mode and not self.is_critical_message(text):
-            # Добавляем в буфер вместо немедленной отправки
-            self._pending_updates.append(text[:120])  # Обрезаем для компактности
-            # Проверяем: пора ли отправить итог?
-            now = __import__("time").time()
-            if (now - self._last_summary_ts) >= self.summary_interval and self._pending_updates:
-                await self._flush_summary()
-            return None
+        """Отправить сообщение. Возвращает message_id."""
         return await self._send_message(text)
-
-    async def _flush_summary(self):
-        """Отправляет агрегированный итог апдейтов (раз в N минут)"""
-        if not self._pending_updates:
-            return
-        count = len(self._pending_updates)
-        summary = f"📊 <b>Итог за {self.summary_interval//60} мин</b>: {count} апдейтов\n\n"
-        # Показываем последние 5 уникальных
-        seen = set()
-        lines = []
-        for upd in reversed(self._pending_updates[-10:]):
-            key = upd[:40]
-            if key not in seen:
-                seen.add(key)
-                lines.append(f"• {upd[:80]}")
-            if len(lines) >= 5:
-                break
-        summary += "\n".join(reversed(lines))
-        self._pending_updates.clear()
-        self._last_summary_ts = __import__("time").time()
-        await self._send_message(summary)
 
     async def send_reply(self, text: str, reply_to_message_id: int) -> Optional[int]:
         """

@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time  # 🆕 NEW: For BTC block caching
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
@@ -125,6 +125,7 @@ class Config:
     # SHORT_TRAIL_ACTIVATION - Активация trailing SL (default: 0.030)
     # BTC_BLOCK_SHORT_THRESHOLD - Блокировка при пампе BTC (default: 4.0)
     # SL_COOLDOWN_HOURS    - Кулдаун после SL в часах (default: 2.0)
+    # MAX_DAILY_RISK       - Дневной лимит потерь % (default: 5.0) ⭐ КЛЮЧЕВОЙ
     # ============================================================================
     
     # ✅ FIX: Переименовано MIN_SHORT_SCORE → MIN_SCORE_SHORT для соответствия Render
@@ -141,14 +142,10 @@ class Config:
     # SHORT: SL ВЫШЕ входа, TP НИЖЕ входа
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
-
-    # TP динамические — short_filter.get_short_tp_config выбирает профиль
-    # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
-    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
-    # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
-    TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
-
-    # Trailing — SHORT активирует при +3% (после TP1)
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
+    
+    # Trailing — SHORT активирует при +1% (раньше чем раньше)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     # ✅ FIX v7: BTC correlation — управляется через ENV
     BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
@@ -182,6 +179,57 @@ class Config:
     # Dump Detector
     ENABLE_DUMP_DETECTOR = os.getenv("ENABLE_DUMP_DETECTOR", "true").lower() == "true"
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
+    
+    # ============================================================================
+    # 🏛️ INSTITUTIONAL RISK MANAGEMENT (Aegis Integration)
+    # ============================================================================
+    # ⚠️ ВАЖНО: Увеличиваем риск для видимости сделок
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.05"))  # 5% для видимости
+    
+    # Kelly Criterion Sizing
+    KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))  # 25% Kelly
+    
+    # Position & Exposure Limits
+    MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.25"))  # 25% на позицию
+    MAX_EXPOSURE_PCT = float(os.getenv("MAX_EXPOSURE_PCT", "0.80"))  # 80% макс экспозиция
+    
+    # Drawdown Control (ВАШЕ требование: -15%)
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "15.0"))  # -15% (было 5.0)
+    MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "4"))
+    
+    # ============================================================================
+    # 🎯 6 TP LEVELS CONFIG (Phase 4 - Short оптимизация)
+    # ============================================================================
+    TP_LEVELS = [2.5, 4.0, 6.5, 9.0, 12.0, 17.0]  # Short: короче цели
+    TP_WEIGHTS = [30, 25, 20, 13, 8, 4]  # Больше ранних TP
+    
+    # ============================================================================
+    # 🚩 FEATURE FLAGS (Phase 3 - Institutional Analysis)
+    # ============================================================================
+    ENABLE_WYCKOFF_DETECTOR = os.getenv("ENABLE_WYCKOFF", "true").lower() == "true"
+    ENABLE_BSL_SCANNER = os.getenv("ENABLE_BSL", "true").lower() == "true"
+    ENABLE_OI_ANALYZER = os.getenv("ENABLE_OI", "true").lower() == "true"
+    ENABLE_LIQ_MAPPER = os.getenv("ENABLE_LIQ", "true").lower() == "true"
+    ENABLE_DELTA = os.getenv("ENABLE_DELTA", "true").lower() == "true"
+    
+    # BTC Correlation (КРИТИЧНО ДЛЯ SHORT!)
+    ENABLE_BTC_CORRELATION = os.getenv("ENABLE_BTC", "true").lower() == "true"
+    # Decoupling НЕ используется для short
+    ENABLE_DECOUPLING_BONUS = False
+    
+    # ============================================================================
+    # 🏭 SECTOR DIVERSIFICATION (Phase 5 - Sector Limits)
+    # ============================================================================
+    ENABLE_SECTOR_LIMITS = os.getenv("ENABLE_SECTOR_LIMITS", "true").lower() == "true"
+    MAX_PER_SECTOR_MEME = int(os.getenv("MAX_PER_SECTOR_MEME", "3"))  # Мемы лучше для шортов
+    MAX_PER_SECTOR_DEFI = int(os.getenv("MAX_PER_SECTOR_DEFI", "3"))
+    MAX_PER_SECTOR_GAMEFI = int(os.getenv("MAX_PER_SECTOR_GAMEFI", "3"))
+    MAX_PER_SECTOR_L1 = int(os.getenv("MAX_PER_SECTOR_L1", "3"))
+    MAX_PER_SECTOR_L2 = int(os.getenv("MAX_PER_SECTOR_L2", "3"))
+    MAX_PER_SECTOR_AI = int(os.getenv("MAX_PER_SECTOR_AI", "3"))
+    MAX_PER_SECTOR_RWA = int(os.getenv("MAX_PER_SECTOR_RWA", "2"))
+    MAX_PER_SECTOR_ORACLE = int(os.getenv("MAX_PER_SECTOR_ORACLE", "2"))
+    MAX_PER_SECTOR_INFRA = int(os.getenv("MAX_PER_SECTOR_INFRA", "2"))
     
     # 🆕 NEW: Momentum Detector (Dump Catching for Short)
     ENABLE_MOMENTUM_SHORT = os.getenv("ENABLE_MOMENTUM_SHORT", "true").lower() == "true"
@@ -219,10 +267,144 @@ class Config:
 
     # ✅ REDUCED: 300 → 80 монет (меньше запросов к API)
     # ✅ INCREASED: 300K → 1M (только ликвидные монеты, меньше ошибок)
-    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "1000000"))  # $1M минимум
+    MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "10000000"))  # 🔧 $10M минимум (was $1M)
     MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "80"))  # 80 монет max
     # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
     MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
+    # 🆕 STRICT: Минимальный объем для входа в сделку (отдельно от watchlist)
+    MIN_ENTRY_VOLUME_USDT = int(os.getenv("MIN_ENTRY_VOLUME_USDT", "10000000"))  # $10M
+
+
+# ============================================================================
+# 🆕 SMART DCA v2 ENGINE (Aegis Integration - Phase 2)
+# ============================================================================
+
+from dataclasses import dataclass
+
+@dataclass
+class DCALevel:
+    level: int
+    price_drop_pct: float
+    size_multiplier: float
+    max_position_pct: float
+
+
+class SmartDCAEngine:
+    """Smart DCA v2 из Aegis-bots для Short."""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.dca_levels = self._init_dca_levels()
+        self.total_exposure_pct = 0.0
+        self.circuit_breaker_triggered = False
+        
+    def _init_dca_levels(self) -> List:
+        levels = []
+        for i in range(1, 5):  # 4 уровня
+            level = DCALevel(
+                level=i,
+                price_drop_pct=i * self.config.DCA_ATR_MULT,
+                size_multiplier=self.config.DCA_SIZE_MULT ** (i - 1),
+                max_position_pct=min(0.10 * i, 0.40)
+            )
+            levels.append(level)
+        return levels
+    
+    def calculate_dca_orders(self, entry_price: float, position_size: float,
+                            atr: float, portfolio_value: float) -> List[Dict]:
+        if not self.config.ENABLE_SMART_DCA:
+            return []
+        if self.total_exposure_pct >= self.config.DCA_MAX_EXPOSURE_PCT:
+            print(f"⚠️ [DCA] Circuit breaker: exposure {self.total_exposure_pct:.1%}")
+            self.circuit_breaker_triggered = True
+            return []
+        orders = []
+        current_size = position_size
+        for level in self.dca_levels:
+            kelly_fraction = self.config.KELLY_FRACTION
+            level_size = current_size * level.size_multiplier * kelly_fraction
+            level_exposure = (level_size * entry_price) / portfolio_value
+            if self.total_exposure_pct + level_exposure > self.config.DCA_MAX_EXPOSURE_PCT:
+                print(f"⚠️ [DCA] Level {level.level} skipped: exposure limit")
+                break
+            # Для short: цена растет (против нас)
+            dca_price = entry_price * (1 + level.price_drop_pct / 100)
+            order = {
+                "level": level.level,
+                "price": dca_price,
+                "size": level_size,
+                "exposure_pct": level_exposure,
+                "atr_mult": level.price_drop_pct / atr if atr > 0 else 0
+            }
+            orders.append(order)
+            self.total_exposure_pct += level_exposure
+            current_size = level_size
+        return orders
+    
+    def reset_exposure(self):
+        self.total_exposure_pct = 0.0
+        self.circuit_breaker_triggered = False
+
+
+# ============================================================================
+# 🆕 SECTOR POSITION MANAGER (Phase 5)
+# ============================================================================
+
+class SectorPositionManager:
+    def __init__(self, config: Config, sector_mapper):
+        self.config = config
+        self.sector_mapper = sector_mapper
+        self.positions_by_sector: Dict[str, List[str]] = {}
+        
+    def can_open_position(self, symbol: str) -> Tuple[bool, str]:
+        if not self.config.ENABLE_SECTOR_LIMITS:
+            return True, "Sector limits disabled"
+        sector = self.sector_mapper.get_sector(symbol)
+        if not sector:
+            return True, "No sector assigned"
+        current_count = len(self.positions_by_sector.get(sector, []))
+        max_allowed = self._get_max_for_sector(sector)
+        if current_count >= max_allowed:
+            return False, f"Sector {sector} limit: {current_count}/{max_allowed}"
+        return True, f"Sector {sector}: {current_count}/{max_allowed}"
+    
+    def _get_max_for_sector(self, sector: str) -> int:
+        mapping = {
+            "Meme": self.config.MAX_PER_SECTOR_MEME,
+            "DeFi": self.config.MAX_PER_SECTOR_DEFI,
+            "GameFi": self.config.MAX_PER_SECTOR_GAMEFI,
+            "L1": self.config.MAX_PER_SECTOR_L1,
+            "L2": self.config.MAX_PER_SECTOR_L2,
+            "AI": self.config.MAX_PER_SECTOR_AI,
+            "RWA": self.config.MAX_PER_SECTOR_RWA,
+            "Oracle": self.config.MAX_PER_SECTOR_ORACLE,
+            "Infra": self.config.MAX_PER_SECTOR_INFRA
+        }
+        return mapping.get(sector, 3)
+    
+    def add_position(self, symbol: str):
+        sector = self.sector_mapper.get_sector(symbol)
+        if sector:
+            if sector not in self.positions_by_sector:
+                self.positions_by_sector[sector] = []
+            self.positions_by_sector[sector].append(symbol)
+            
+    def remove_position(self, symbol: str):
+        sector = self.sector_mapper.get_sector(symbol)
+        if sector and sector in self.positions_by_sector:
+            if symbol in self.positions_by_sector[sector]:
+                self.positions_by_sector[sector].remove(symbol)
+                
+    def get_sector_stats(self) -> Dict:
+        stats = {}
+        for sector, positions in self.positions_by_sector.items():
+            max_allowed = self._get_max_for_sector(sector)
+            stats[sector] = {
+                "current": len(positions),
+                "max": max_allowed,
+                "symbols": positions
+            }
+        return stats
 
 
 # ============================================================================
@@ -249,6 +431,32 @@ class BotState:
         self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
+        
+        # 🆕 NEW: Smart DCA v2 Engine
+        self.dca_engine: Optional[SmartDCAEngine] = None
+        
+        # 🆕 NEW: Sector Position Manager
+        self.sector_manager: Optional[SectorPositionManager] = None
+        self.sector_mapper = None
+        
+        # 🆕 NEW: Institutional Detectors (Phase 3)
+        self.wyckoff_detector = None
+        self.bsl_scanner = None
+        self.oi_analyzer = None
+        self.liq_mapper = None
+        self.delta_analyzer = None
+        
+        # Daily stats for risk tracking
+        self.daily_stats = {
+            "signals_generated": 0,
+            "positions_opened": 0,
+            "positions_closed": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "consecutive_losses": 0,
+            "daily_pnl": 0.0,
+            "max_daily_dd": 0.0
+        }
 
 
 # ============================================================================
@@ -570,6 +778,7 @@ async def lifespan(app: FastAPI):
                         risk_per_trade=Config.RISK_PER_TRADE,
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
+                        max_daily_risk=Config.MAX_DAILY_RISK,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -714,34 +923,22 @@ async def lifespan(app: FastAPI):
         config=Config, auto_trader=state.auto_trader,
     )
 
+    # 🧹 При старте очищаем zombie позиции (есть в Redis, но не на бирже)
+    print("🧹 [STARTUP] Проверка zombie позиций...")
+    try:
+        cleaned = await state.tracker.cleanup_zombies()
+        if cleaned > 0:
+            print(f"🧹 [STARTUP] Очищено {cleaned} ghost-позиций при старте")
+    except Exception as e:
+        print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
+
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
-
-    # ✅ SIGTERM HANDLER
-    import signal as _signal
-    def _sigterm_handler(signum, frame):
-        print("⚠️ [SIGTERM] Получен сигнал завершения — сохраняем состояние...")
-        try:
-            if state.redis:
-                if state.auto_trader:
-                    state.auto_trader._save_daily_pnl_to_redis()
-                state.redis.set(f"bot_status:{Config.BOT_TYPE}", "stopped", ex=300)
-                print("✅ [SIGTERM] Состояние сохранено в Redis")
-        except Exception as e:
-            print(f"❌ [SIGTERM] Ошибка сохранения: {e}")
-        state.is_running = False
-
-    _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
     yield
 
     state.is_running = False
     print("🛑 Shutting down SHORT Bot...")
-    try:
-        if state.redis and state.auto_trader:
-            state.auto_trader._save_daily_pnl_to_redis()
-    except Exception:
-        pass
     if state.binance:
         await state.binance.close()
     if state.auto_trader:
@@ -759,29 +956,9 @@ app = FastAPI(lifespan=lifespan, title="SHORT Bot v6.0")
 # ✅ HEAD + GET для UptimeRobot (405 → 200)
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    redis_ok = False
-    redis_latency_ms = -1
-    try:
-        t0 = time.monotonic()
-        state.redis.set("health_ping", "1", ex=10)
-        redis_latency_ms = round((time.monotonic() - t0) * 1000, 1)
-        redis_ok = True
-    except Exception as e:
-        print(f"⚠️ [HEALTH] Redis check failed: {e}")
-
-    status_code = 200 if redis_ok else 503
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "status": "ok" if redis_ok else "degraded",
-            "bot": "short",
-            "version": "2.9",
-            "watchlist": len(state.watchlist),
-            "active": state.active_signals,
-            "redis": {"ok": redis_ok, "latency_ms": redis_latency_ms},
-            "uptime_s": round((datetime.utcnow() - state.start_time).total_seconds()) if state.start_time else 0,
-        }
-    )
+    return JSONResponse({"status": "ok", "bot": "short", "version": "2.9",
+                         "watchlist": len(state.watchlist),
+                         "active": state.active_signals})
 
 # ✅ HEAD + GET для Render health checks (405 → 200)
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -968,30 +1145,19 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-SHORT] {symbol}: {w}")
 
-        # ✅ FIX #3: RSI GUARD — шорты только в зонах перекупленности/нейтрали
-        # Не открываем шорты когда RSI < 42 (рынок уже перепродан — рискованно шортить)
-        rsi_guard = md.rsi_1h or 50
-        rsi_min_short = float(os.getenv("SHORT_RSI_MIN", "42"))
-        if rsi_guard < rsi_min_short:
-            print(f"⛔ [RSI-GUARD-SHORT] {symbol}: RSI={rsi_guard:.1f} < {rsi_min_short} — перепроданность, не зона для шорта")
-            return None
-
         # 🆕 RSI Watchlist tracking — обновляем трекер
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: 15m + 30m + 2h + 4h
-        # ✅ FIX #8: Убираем дублирующий запрос 1h (уже есть в md через get_complete_market_data)
-        # ✅ FIX кол-во свечей: 100→200 для надёжного AMD/OB детектора
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 120)
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 150)
-        ohlcv_2h_task  = state.binance.get_klines(symbol, "2h",  50)
-        ohlcv_4h_task  = state.binance.get_klines(symbol, "4h",  40)
-        ohlcv_15m, ohlcv_30m, ohlcv_2h, ohlcv_4h = await asyncio.gather(
-            ohlcv_15m_task, ohlcv_30m_task, ohlcv_2h_task, ohlcv_4h_task
+        # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # Увеличили до 200
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
+        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
+        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 14)
+        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
+            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
         )
-        # Используем klines из MarketData для 1h вместо нового запроса
-        ohlcv_1h = getattr(md, 'klines_1h', None) or await state.binance.get_klines(symbol, "1h", 100)
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
         if hasattr(state, 'candle_manager') and state.candle_manager:
@@ -1012,12 +1178,19 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
                 if insufficient:
                     print(f"⚠️ {symbol}: Insufficient data for {insufficient}")
-                    # ✅ FIX #5: Добавляем в skip-лист если много TF без данных
-                    if len(insufficient) >= 3:
-                        if not hasattr(state, '_insufficient_symbols'):
-                            state._insufficient_symbols = set()
-                        state._insufficient_symbols.add(symbol)
-                        print(f"⛔ [DATA-SKIP] {symbol}: добавлен в skip-лист ({len(insufficient)} TF без данных)")
+                    
+                    # 🆕 TF FALLBACK: если 1h/30m нет данных, используем 15m
+                    if '30m' in insufficient or '1h' in insufficient:
+                        try:
+                            ohlcv_15m_fallback = await state.binance.get_klines(symbol, "15m", 200)
+                            if ohlcv_15m_fallback and len(ohlcv_15m_fallback) >= 50:
+                                state.candle_manager.update_candles(symbol, "15m", ohlcv_15m_fallback)
+                                print(f"   📊 [TF-FALLBACK] {symbol}: Using 15m data instead of {insufficient}")
+                                # Обновляем insufficient - 15m теперь есть
+                                quality = state.candle_manager.get_all_data_quality(symbol)
+                                insufficient = [tf for tf, q in quality.items() if q['status'] == 'insufficient']
+                        except Exception as e:
+                            print(f"   ⚠️ [TF-FALLBACK] {symbol}: Failed to get 15m: {e}")
             except Exception as e:
                 print(f"[CandleHistory] {symbol} error: {e}")
 
@@ -1053,7 +1226,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 # Адаптируем ТФ под профиль (если монета волатильная)
                 if symbol_profile.ideal_tf != primary_tf and symbol_profile.ideal_tf in ["5m", "15m", "1h"]:
                     # Перезагружаем данные на оптимальном ТФ
-                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 100)
+                    new_ohlcv = await state.binance.get_klines(symbol, symbol_profile.ideal_tf, 200)  # Увеличили до 200
                     if new_ohlcv and len(new_ohlcv) >= 20:
                         ohlcv_primary = new_ohlcv
                         primary_tf = symbol_profile.ideal_tf
@@ -1295,66 +1468,10 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
         ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
         
-        # ✅ FIX v7: Детальные логи score breakdown для диагностики
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
-
-        if not score_result.is_valid:
-            override_reason = None
-            boost = 0
-
-            # Уровень 1: TBS + OB >= 70 — сильный оверрайд
-            if tbs_found and ob_q_high:
-                override_reason = f"TBS+OB_Q{ob_quality}"
-                boost = 15
-            # Уровень 2: TBS + OB >= 60 — умеренный оверрайд
-            elif tbs_found and ob_quality_ok:
-                override_reason = f"TBS+OB_Q{ob_quality}"
-                boost = 10
-            # Уровень 3: только TBS без OB
-            elif tbs_found and base_score_bonus >= 5:
-                override_reason = f"TBS+confirmation"
-                boost = 8
-            # Уровень 4: OB >= 70 без TBS
-            elif ob_q_high and base_score_bonus >= 3:
-                override_reason = f"OB_Q{ob_quality}+confirmation"
-                boost = 5
-            # 🚨 FIX: OB >= 70 standalone — сильный OB даёт оверрайд даже без TBS!
-            elif ob_q_high:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 12  # Сильный буст для институционального OB
-            # Уровень 5: OB >= 60 без TBS — умеренный оверрайд
-            elif ob_quality_ok:
-                override_reason = f"OB_Q{ob_quality} (standalone)"
-                boost = 8
-
-            if override_reason:
-                print(f"💡 [SMART-SCORE] {symbol}: is_valid=False, но {override_reason} — ОВЕРРАЙД! Скор +{boost}")
-                from core.scorer import ScoreResult, Confidence
-                # Помечаем что использован оверрайд
-                override_used = True
-                override_type = override_reason
-                score_result = ScoreResult(
-                    total_score=max(70, score_result.total_score + boost),
-                    max_possible=score_result.max_possible,
-                    direction=score_result.direction,
-                    is_valid=True,
-                    confidence=Confidence.MEDIUM if boost < 12 else Confidence.HIGH,
-                    grade="B" if boost < 12 else "A",
-                    components=score_result.components,
-                    reasons=score_result.reasons + [f"🎯 {override_reason} — умный вход"],
-                )
-            else:
-                # ✅ FIX #2: Убираем Bear Pass — строгий порог MIN_SCORE
-                # Было: bear_threshold = max(35, Config.MIN_SCORE - 20) — пропускало мусор
-                print(f"🔴 [FILTER0-SCORE] {symbol}: score={score_result.total_score} <{Config.MIN_SCORE} skip")
-                return None
-
-        price       = md.price
-        base_score_before_override = score_result.total_score  # Сохраняем базовый скор
-        final_score = score_result.total_score + oi_score_adj + base_score_bonus
-        # ✅ FIX: добавляем RSI multi-TF бонусы
+        if confirmation["passed"] and confirmation["score"] >= 75:
+            # ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
+            base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
+            reasons = sweep["reasons"] + confirmation["reasons"]
         final_score += rsi_30m_score_adj + rsi_4h_score_adj
         if rsi_30m_score_adj != 0:
             print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
@@ -1385,7 +1502,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     return None
                 
                 # Применяем корректировку
-                final_score = min(100, max(0, final_score + market_context_adjustment))  # ✅ FIX #1: Score Cap
+                final_score += market_context_adjustment
                 
                 print(f"📊 [MARKET-INTEGRATOR] {symbol}: score adjusted by {market_context_adjustment:+d} "
                       f"(quality: {ctx.data_quality_score}%, confidence: {adjustment['confidence']})")
@@ -1481,7 +1598,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
                 wave_boost = 10 if wave_result.confidence > 0.75 else 5
-                final_score = min(100, final_score + wave_boost)  # ✅ FIX #1: Score Cap
+                final_score += wave_boost
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
                 print(f"🎯 [ELLIOTT-BOOST-SHORT] {symbol}: Идеальная волна {wave_result.wave}! "
@@ -1489,7 +1606,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             
             # 📈 ТРЕНД (Волна 3) — небольшой бонус
             elif wave_result.position == WavePosition.TREND:
-                final_score = min(100, final_score + 3)  # ✅ FIX #1: Score Cap
+                final_score += 3
                 reasons.append(f"🌊 Elliott Wave 3 (trend) +3")
                 print(f"📈 [ELLIOTT-TREND-SHORT] {symbol}: Волна 3 тренда")
             
@@ -1564,7 +1681,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 smc = get_smc_result(_ohlcv(ohlcv_primary), "short",
                                      base_sl_pct=Config.SL_BUFFER, base_entry=price)
                 if smc.score_bonus > 0:
-                    final_score = min(100, final_score + smc.score_bonus)  # ✅ FIX #1: Score Cap
+                    final_score += smc.score_bonus
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl > price:
                     stop_loss = smc.refined_sl
@@ -1636,23 +1753,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         if (stop_loss - price) / price < min_sl_dist:
             stop_loss = price * (1 + Config.SL_BUFFER / 100)
 
-        # ✅ FIX #10: ATR-валидация минимального SL — SL не может быть меньше ATR×1.5
-        atr_pct_val = getattr(md, 'atr_pct', 0.0) or 0.0
-        if atr_pct_val > 0:
-            min_sl_pct = max(Config.SL_BUFFER, atr_pct_val * 1.5)
-            actual_sl_pct = (stop_loss - price) / price * 100
-            if actual_sl_pct < min_sl_pct:
-                stop_loss = price * (1 + min_sl_pct / 100)
-                print(f"📐 [ATR-SL-SHORT] {symbol}: SL расширен {actual_sl_pct:.2f}%→{min_sl_pct:.2f}% (ATR={atr_pct_val:.2f}%)")
-
-        # ✅ FIX R:R: TP1 должен быть минимум в 1.3× от SL
-        if stop_loss > price:
-            sl_pct_check = (stop_loss - price) / price * 100
-            tp1_pct_check = Config.TP_LEVELS[0] if Config.TP_LEVELS else 2.5
-            if tp1_pct_check / max(sl_pct_check, 0.01) < 1.3:
-                print(f"🔴 [RR-FILTER-SHORT] {symbol}: R:R={tp1_pct_check/sl_pct_check:.2f} < 1.3 — плохое соотношение, skip")
-                return None
-
         # TP НИЖЕ входа для SHORT
         take_profits = [
             (round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
@@ -1698,8 +1798,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 best_pattern = "SMC_STRUCTURE"
         
         print(f"🟢 [SIGNAL-SHORT] {symbol}: score={final_score} pattern={best_pattern} — сигнал создан!")
-        # ✅ FIX #1: ФИНАЛЬНЫЙ HARD CAP — скор никогда не превышает 100%
-        final_score = max(0, min(100, final_score))
         return {
             "symbol": symbol, "direction": "short",
             "score": final_score, "grade": score_result.grade,
@@ -1814,10 +1912,6 @@ async def scan_market():
 
     for symbol in state.watchlist:
         try:
-            # ✅ FIX #5: Пропускаем символы с хронически недостаточными данными
-            if hasattr(state, '_insufficient_symbols') and symbol in state._insufficient_symbols:
-                continue
-
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
@@ -1859,8 +1953,22 @@ async def scan_market():
             primary_tf = signal.get("timeframe", "15m")
             tf_for_execution = True  # Разрешаем всем ТФ
 
-            # Биржевое исполнение: только если есть SHORT слоты, не на паузе
-            if (not exchange_full and Config.AUTO_TRADING and not state.is_paused):
+            # 🆕 STRICT: Проверка объема перед входом
+            quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
+            if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
+                print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
+                continue
+            
+            # 🆕 BTC FILTER: Не шортить если BTC растет (не шортим против тренда)
+            btc_trend_ok = True
+            if hasattr(state, 'btc_context') and state.btc_context:
+                btc_data = state.btc_context.get('trend', {})
+                if btc_data.get('direction') == 'UP' and btc_data.get('strength', 0) > 0.6:
+                    btc_trend_ok = False
+                    print(f"📊 [BTC-FILTER] {symbol}: BTC rising hard — skip SHORT")
+            
+            # Биржевое исполнение: только если есть SHORT слоты, не на паузе, BTC ок
+            if (not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok):
                 if state.auto_trader:
                     try:
                         await state.auto_trader.execute_signal(signal)
@@ -1870,6 +1978,9 @@ async def scan_market():
                         print(f"AutoTrader error {symbol}: {e}")
                 new_signals += 1
                 print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
+            elif not btc_trend_ok:
+                tg_only_count += 1
+                print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] [BTC rising]")
             else:
                 tg_only_count += 1
                 if exchange_full:
