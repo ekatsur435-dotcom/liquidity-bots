@@ -255,9 +255,12 @@ class Config:
 
     SIGNAL_TTL_HOURS = 24
 
-    AUTO_TRADING   = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
-    BINGX_DEMO     = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.0005"))
+    AUTO_TRADING         = os.getenv("AUTO_TRADING_ENABLED", "true").lower() == "true"
+    BINGX_DEMO           = os.getenv("BINGX_DEMO_MODE", "true").lower() == "true"
+    RISK_PER_TRADE       = float(os.getenv("RISK_PER_TRADE", "0.0005"))
+    # ✅ FIX: по умолчанию ВЫКЛЮЧЕН — паттерны REJECTION/SWEEP уже контртрендовые,
+    # EMA50<200 блокирует все лонги в медвежьем рынке (баг: ни одна позиция не открывалась)
+    TREND_FILTER_ENABLED = os.getenv("TREND_FILTER_ENABLED", "false").lower() == "true"
 
     USE_SMC        = os.getenv("USE_SMC", "true").lower() == "true"
     USE_COINGLASS  = bool(os.getenv("COINGLASS_API_KEY", ""))
@@ -806,6 +809,7 @@ async def lifespan(app: FastAPI):
                         min_score_for_trade=Config.MIN_SCORE,
                         bot_type=Config.BOT_TYPE,
                         max_daily_risk=Config.MAX_DAILY_RISK,
+                        trend_filter_enabled=Config.TREND_FILTER_ENABLED,
                     )
                     state.auto_trader = AutoTrader(
                         bingx_client=bingx, config=trade_cfg, telegram=state.telegram,
@@ -2076,8 +2080,8 @@ async def _scan_market_impl():
                             _signal_log_entry["executed_at"] = datetime.utcnow().isoformat()
                             print(f"✅ LONG executed: {symbol} Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
                         else:
-                            _signal_log_entry["skip_reason"] = "bingx_rejected"
-                            print(f"⚠️ LONG skipped (BingX rejected): {symbol}")
+                            _signal_log_entry["skip_reason"] = "trader_rejected"
+                            print(f"⚠️ LONG skipped (AutoTrader rejected — trend/cooldown/balance/duplicate): {symbol}")
                     except Exception as e:
                         _signal_log_entry["skip_reason"] = "error"
                         print(f"AutoTrader error {symbol}: {e}")

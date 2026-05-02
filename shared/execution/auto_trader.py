@@ -131,8 +131,10 @@ class AutoTrader:
             allowed, reason = await self.bingx.check_trend(symbol, direction)
             print(f"📊 [TREND][{symbol}] {reason}")
             if not allowed:
-                print(f"🚫 [AutoTrader][{symbol}] Сделка отклонена по фильтру тренда")
+                print(f"🚫 [AutoTrader][{symbol}] SKIP — TREND FILTER: {reason}")
                 return None
+        else:
+            print(f"📊 [TREND][{symbol}] Фильтр тренда отключён — вход разрешён")
         
         # 🎯 Phase 3: Limit Executor — проверяем возможность лимитного входа
         if self.limit_executor.should_use_limit(signal):
