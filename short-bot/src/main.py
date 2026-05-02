@@ -1155,11 +1155,13 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         _rsi_tracker.update(symbol, rsi_current)
 
         # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # Увеличили до 200
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
-        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
-        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
-        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 14)
+        # ✅ FIX: увеличены лимиты чтобы CandleHistoryManager не возвращал "insufficient"
+        # Required: 15m≥150, 30m≥120, 1h≥80, 2h≥50, 4h≥30
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # 200 ≥ 150 ✅
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 130) # 130 ≥ 120 ✅
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 90)    # 90 ≥ 80 ✅
+        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 55)    # 55 ≥ 50 ✅
+        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 35)    # 35 ≥ 30 ✅
         ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
             ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
         )
@@ -1246,10 +1248,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_result = None
         try:
             current_price = md.price
-            # ✅ FIX: OB detection всегда на 30m (не на 5m) — OB паттерны нужен старший ТФ
-            ob_ohlcv = ohlcv_30m if primary_tf == "5m" and ohlcv_30m else ohlcv_primary
             ob_result = detect_order_blocks(
-                ob_ohlcv, 
+                ohlcv_primary, 
                 direction="short",  # Для SHORT бота ищем bearish OB
                 current_price=current_price
             )
@@ -1500,7 +1500,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         adjusted_score = score_result.total_score + max(0, base_score_bonus)
         score_is_valid = score_result.is_valid or adjusted_score >= effective_min
 
-        # ✅ FIX v4.1: STRICT MODE — только валидные сигналы (как в long-bot)
+        # ✅ FIX v4.1: STRICT MODE — только валидные сигналы
         if not score_is_valid:
             print(f"🚫 [FILTER-SHORT] {symbol}: score invalid ({score_result.total_score:.1f}%+{base_score_bonus}={adjusted_score:.0f}% < {effective_min}), skipping (STRICT MODE)")
             return None
