@@ -1116,7 +1116,13 @@ class BinanceFuturesClient:
                 funding_accumulated=funding_acc,
                 price_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
                 price_change_1h=price_chg_1h,
-                volume_24h=float(ticker.get("volume", 0)) * price if ticker else 0.0,
+                # ✅ FIX: Bybit возвращает "quoteVolume" (= turnover24h, уже в USDT)
+                # Binance возвращает "volume" (в базовой валюте) × price
+                # getattr fallback: quoteVolume → volume*price → 0
+                volume_24h=(
+                    float(ticker.get("quoteVolume", 0))                     # Bybit: уже в USDT
+                    or float(ticker.get("volume", 0)) * price               # Binance: base × price
+                ) if ticker else 0.0,
                 volume_change_24h=float(ticker.get("priceChangePercent", 0)) * 0.5 if ticker else 0.0,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
