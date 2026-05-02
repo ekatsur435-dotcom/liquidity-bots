@@ -1675,11 +1675,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 ema9_4h  = sum(closes_4h_bias[-9:]) / 9
                 ema21_4h = sum(closes_4h_bias[-21:]) / 21
                 if ema9_4h < ema21_4h * 0.995:  # 4H EMA9 < EMA21×0.995 = подтверждённый даунтренд
-                    if final_score < 90:          # Разрешаем только сверхсильные сигналы ≥90
-                        print(f"🚫 [HTF-4H-LONG] {symbol}: EMA9({ema9_4h:.4f}) < EMA21({ema21_4h:.4f}) — 4H даунтренд, score={final_score}<90 → skip")
+                    if final_score < 75:          # Разрешаем сигналы ≥75 (снижено с 90)
+                        print(f"🚫 [HTF-4H-LONG] {symbol}: EMA9({ema9_4h:.4f}) < EMA21({ema21_4h:.4f}) — 4H даунтренд, score={final_score}<75 → skip")
                         return None
                     else:
-                        print(f"⚠️ [HTF-4H-LONG] {symbol}: 4H даунтренд, но score={final_score}≥90 — разрешаем")
+                        print(f"⚠️ [HTF-4H-LONG] {symbol}: 4H даунтренд, но score={final_score}≥75 — разрешаем")
         except Exception as e:
             print(f"⚠️ [HTF-4H-LONG] {symbol}: ошибка проверки 4H тренда: {e}")
 
