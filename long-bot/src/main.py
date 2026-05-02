@@ -1895,7 +1895,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             "long_short_ratio": round(md.long_short_ratio, 1),
             "volume_spike_ratio": round(getattr(md, "volume_spike_ratio", 1.0), 2),
             "atr_14_pct":       round(getattr(md, "atr_14_pct", 0.5), 3),
-            "quote_volume_24h": round(getattr(md, "quote_volume_24h", 0) or 0, 0),
             "pattern":          patterns[0].name if patterns else "",
             "smc_data":         smc_data,
             # ✅ v2.8: Order Block данные для лимитных входов
@@ -1910,6 +1909,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
+            # ✅ FIX: quote_volume нужен в scan_market() для volume-фильтра
+            "quote_volume_24h": getattr(md, 'quote_volume_24h', 0),
         }
     except Exception as e:
         import traceback
@@ -2024,7 +2025,7 @@ async def _scan_market_impl():
             _signal_log_entry = {**signal, "executed": False, "skip_reason": None}
 
             # 🆕 STRICT: Проверка объема перед входом
-            quote_volume = signal.get("quote_volume_24h", 0)
+            quote_volume = signal.get("quote_volume_24h", 0)  # ✅ FIX: md не доступен в scan_market()
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
                 _signal_log_entry["skip_reason"] = "volume_too_low"

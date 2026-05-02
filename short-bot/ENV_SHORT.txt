@@ -1,0 +1,167 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║        SHORT BOT — ЧИСТЫЕ ENV ПЕРЕМЕННЫЕ (только рабочие)       ║
+# ║  Проверено по коду short-bot/src/main.py + shared/*              ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔴 ОБЯЗАТЕЛЬНЫЕ (без них бот не запустится)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BINGX_API_KEY=5iORiBlyPHphq1YojnnKsrloaBkdumqMdBhwjfqn22qZa0uC8JS7uIbL21ihQhYvzFCeuG9yDyQvmVSTEYnSA
+BINGX_API_SECRET=2QC2B4N3ScUUeounmPZFzgTssfLDacSaytH2weENYUtLMJsaJw297i2VuzDEWCOMFEVyf0HtP66NEDllt2jQ
+REDIS_URL=rediss://default:gQAAAAAAAT_KAAIgcDFhODFkZGRmMzU2ZjQ0ZTk5YWJiYjljMDVhMDhlMTZkMg@skilled-bat-81866.upstash.io:6379
+RENDER_EXTERNAL_URL=https://liq-shortbot.onrender.com
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📱 TELEGRAM
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SHORT_TELEGRAM_BOT_TOKEN=7961030439:AAHAcqQPIJARWtpXmAkgwEOpyAJF4fdaoK0
+SHORT_TELEGRAM_CHAT_ID=-1003867089540
+SHORT_TELEGRAM_TOPIC_ID=48326
+SHORT_BOT_URL=https://liq-shortbot.onrender.com
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🟡 ТОРГОВЫЕ ПАРАМЕТРЫ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIN_SCORE_SHORT=80
+MAX_SHORT_POSITIONS=15
+RISK_PER_TRADE=0.0003
+SHORT_SL_BUFFER=2.0
+SHORT_LEVERAGE=5-50
+SHORT_TRAIL_ACTIVATION=0.030
+SCAN_INTERVAL=240
+SL_COOLDOWN_HOURS=2.0
+MAX_DAILY_RISK=15.0
+MAX_CONSECUTIVE_LOSSES=4
+BYBIT_API_KEY=UUdx5K9G1T9APrsA0v
+BYBIT_API_SECRET=or4KTzKAQN0taJPR4PjGDybFCmz3j3vrisBt
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🤖 РЕЖИМ ТОРГОВЛИ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUTO_TRADING_ENABLED=true
+BINGX_DEMO_MODE=true
+BINGX_FORCE_REAL=false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📊 ФИЛЬТРЫ ВОТЧЛИСТА
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIN_VOLUME_USDT=10000000
+MAX_WATCHLIST=100
+MIN_MARKET_CAP=900000
+MIN_ENTRY_VOLUME_USDT=10000000
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 💰 KELLY + РИСК-МЕНЕДЖМЕНТ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KELLY_FRACTION=0.25
+MAX_POSITION_PCT=0.25
+MAX_EXPOSURE_PCT=0.80
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔄 SMART DCA
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_SMART_DCA=true
+DCA_MAX_ADDITIONS=3
+DCA_MAX_PORTFOLIO_RISK=3.0
+DCA_ATR_MULT=1.5
+DCA_SIZE_MULT=1.5
+DCA_MAX_EXPOSURE_PCT=0.40
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🌐 ПРОКСИ (Singapore Render)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROXY_LIST=http://zP8vvv:dJM4gJ@89.185.88.164:8000,http://PMf0xA:no7LDQ@45.151.234.70:8000,http://hC1g9X:LX4qdF@199.247.15.159:12069,http://Sx9cjz:32eEyy@45.92.21.34:8000,http://jbmfxgbs:b6qdned11779@198.23.239.134:6540,http://jbmfxgbs:b6qdned11779@45.38.107.97:6014,http://jbmfxgbs:b6qdned11779@107.172.163.27:6543,http://jbmfxgbs:b6qdned11779@198.105.121.200:6462,http://jbmfxgbs:b6qdned11779@216.10.27.159:6837,http://USSAbk:RZDraH@45.153.21.6:8000,http://fYkajN:BXU3aW@103.78.188.1:8000,http://QbZmum:PwM5Jb@178.171.42.17:9912,http://1hYeQv:9NYPFk@45.129.184.180:8000
+USE_BINANCE=false
+USE_PROXY_FOR_OKX=true
+USE_PROXY_FOR_COINGECKO=true
+USE_PROXY_FOR_CMC=true
+USE_PROXY_FOR_COINGLASS=true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔑 ДОПОЛНИТЕЛЬНЫЕ API (опционально)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COINGLASS_API_KEY=cde31060a1264360b70c1549fb4a13c6
+COINMARKETCAP_API_KEY=b3d29844c0274e4698d92f936eae7202
+COINGECKO_API_KEY=CG-L34Cq8RSQCf1aJhVsvKJf2Jz
+BINANCE_API_KEY=
+CMC_API_KEY=b3d29844c0274e4698d92f936eae7202
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🧩 BTC КОРРЕЛЯЦИЯ (SHORT — блокируется при памп BTC)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_BTC=true
+BTC_BLOCK_SHORT_THRESHOLD=4.0       # Блокировать SHORT если BTC растёт >4%
+                                    # Ставь 99.0 чтобы НИКОГДА не блокировать
+BTC_CORRELATION_FILTER=false
+BTC_DROP_THRESHOLD=-3.0
+DAILY_LOSS_STOP_PCT=-5.0
+BLOCK_ASIAN_SESSION=false
+PYTHON_VERSION=3.11.0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🎯 MOMENTUM SHORT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_MOMENTUM_SHORT=true
+MOMENTUM_SHORT_MIN_1MIN_CHANGE=0.8
+MOMENTUM_SHORT_MIN_5MIN_CHANGE=2.0
+MOMENTUM_SHORT_VOLUME_SPIKE=2.5
+MOMENTUM_SHORT_RSI_MIN=60
+MOMENTUM_SHORT_RSI_MAX=85
+MOMENTUM_SHORT_SCORE_MIN=50
+MOMENTUM_SHORT_MAX_POSITIONS=5
+MOMENTUM_SHORT_RISK_PER_TRADE=0.0003
+MOMENTUM_SHORT_SL_BUFFER=1.0
+MOMENTUM_SHORT_TRAIL_START=0.5
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🏭 СЕКТОРНЫЕ ЛИМИТЫ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_SECTOR_LIMITS=true
+MAX_PER_SECTOR_MEME=3
+MAX_PER_SECTOR_DEFI=3
+MAX_PER_SECTOR_GAMEFI=3
+MAX_PER_SECTOR_L1=3
+MAX_PER_SECTOR_L2=3
+MAX_PER_SECTOR_AI=3
+MAX_PER_SECTOR_RWA=2
+MAX_PER_SECTOR_ORACLE=2
+MAX_PER_SECTOR_INFRA=2
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🕯 ИСТОРИЯ СВЕЧЕЙ (опционально, есть дефолты)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_CANDLE_HISTORY=true
+CANDLE_4H_COUNT=30
+CANDLE_2H_COUNT=50
+CANDLE_1H_COUNT=80
+CANDLE_30M_COUNT=120
+CANDLE_15M_COUNT=150
+CANDLE_5M_COUNT=300
+CANDLE_MIN_REQUIRED=20
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔧 ДОПОЛНИТЕЛЬНЫЕ МОДУЛИ (опционально, все true по умолчанию)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENABLE_GRID_DCA=true
+GRID_DCA_MAX_LEVELS=5
+ENABLE_AMD_DETECTOR=true
+ENABLE_XVP=true
+ENABLE_GRID_ENTRY=true
+ENABLE_SMART_SL=true
+SMART_SL_MIN_PCT=0.8
+SMART_SL_MAX_PCT=4.0
+ENABLE_DUMP_DETECTOR=true
+ENABLE_WYCKOFF=true
+ENABLE_BSL=true
+ENABLE_OI=true
+ENABLE_LIQ=true
+ENABLE_DELTA=true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ⚙️ СИСТЕМНЫЕ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PORT=10000
+LOG_LEVEL=INFO
+USE_SMC=true
+USE_COINGECKO=true
+ADMIN_USER_IDS=7617558315

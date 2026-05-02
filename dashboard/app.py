@@ -397,6 +397,7 @@ def api_positions():
                             dedup_key = f"{symbol_normalized}:{real_direction}:{entry_price}"
                             if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
+                                print(f"[DEDUP] Skipped {bot_name} key={key} → dedup_key={dedup_key}")
                                 continue
                             seen_positions.add(dedup_key)
 
