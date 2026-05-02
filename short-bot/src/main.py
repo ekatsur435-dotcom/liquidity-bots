@@ -2290,7 +2290,16 @@ async def virtual_position_monitor():
                             if not current_price or current_price <= 0:
                                 continue
 
-                            tp1 = float(take_profits[0]) if take_profits else None
+                            # ✅ FIX: take_profits[0] может быть float, list [price,weight] или dict
+                            tp1 = None
+                            if take_profits:
+                                tp_item = take_profits[0]
+                                if isinstance(tp_item, (list, tuple)):
+                                    tp1 = float(tp_item[0])
+                                elif isinstance(tp_item, dict):
+                                    tp1 = float(tp_item.get("price", 0)) or None
+                                else:
+                                    tp1 = float(tp_item)
 
                             if direction == "short":
                                 if stop_loss > 0 and current_price >= stop_loss:
