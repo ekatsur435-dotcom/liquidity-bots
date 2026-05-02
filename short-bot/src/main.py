@@ -1907,8 +1907,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
-            # ✅ FIX: quote_volume нужен в scan_market() для volume-фильтра
-            "quote_volume_24h": getattr(md, 'quote_volume_24h', 0),
+            # ✅ FIX: quote_volume нужен в scan_market() для volume-фильтра (поле = volume_24h)
+            "quote_volume_24h": getattr(md, 'volume_24h', 0),
         }
     except Exception as e:
         import traceback
