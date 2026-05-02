@@ -1171,8 +1171,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         _rsi_tracker.update(symbol, rsi_current)
 
         # ✅ Multi-TF загрузка: 30m + 1h параллельно (убран 15m — 50% стопов в бэктесте)
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)  # Увеличили до 200
-        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 50)
+        # ✅ FIX: увеличены лимиты чтобы CandleHistoryManager не возвращал "insufficient"
+        # Required: 30m≥120, 1h≥80
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 200)  # 200 ≥ 120 ✅
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 90)    # 90 ≥ 80 ✅
         ohlcv_30m, ohlcv_1h = await asyncio.gather(ohlcv_30m_task, ohlcv_1h_task)
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
@@ -1237,10 +1239,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_result = None
         try:
             current_price = md.price
-            # ✅ FIX: OB detection всегда на 30m (не на 5m) — OB паттерны нужен старший ТФ
-            ob_ohlcv = ohlcv_30m if primary_tf == "5m" and ohlcv_30m else ohlcv_primary
             ob_result = detect_order_blocks(
-                ob_ohlcv, 
+                ohlcv_primary, 
                 direction="long",  # Для LONG бота ищем bullish OB
                 current_price=current_price
             )
@@ -1383,7 +1383,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
         rsi_4h_adj = 0
         try:
-            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 14)
+            ohlcv_4h = await state.binance.get_klines(symbol, "4h", 35)
             if ohlcv_4h and len(ohlcv_4h) >= 14:
                 closes_4h = [c.close for c in ohlcv_4h[-14:]]
                 gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
@@ -1509,7 +1509,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if not score_is_valid:
             print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}%+{base_score_bonus}={adjusted_score:.0f}% < {effective_min}), skipping (STRICT MODE)")
             return None
-        
+
         reasons     = list(score_result.reasons)
         base_score_before_override = score_result.total_score  # Сохраняем базовый скор
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
