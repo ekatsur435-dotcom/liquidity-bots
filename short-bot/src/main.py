@@ -1310,6 +1310,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     
                     print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
+                    _p4d_sweep = md.price_change_24h * 4 if md.price_change_24h else 0
                     return {
                         "symbol": symbol,
                         "direction": "short",
@@ -1322,7 +1323,22 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
                         "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
-                        "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
+                        "rsi_1h": md.rsi_1h,
+                        "funding_rate": md.funding_rate,
+                        "oi_change": md.oi_change_4d,
+                        "long_short_ratio": md.long_short_ratio,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "status": "new",
+                        "taken_tps": 0,
+                        "indicators": {
+                            "SMC": "Sweep+TBS",
+                            "Confirmation": f"Score:{confirmation['score']}",
+                            "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
+                            "Funding": f"{md.funding_rate:+.3f}%",
+                            "L/S Ratio": f"{md.long_short_ratio:.0f}% longs",
+                            "OI Change": f"{md.oi_change_4d:+.1f}% (4d)",
+                            "Price 4d": f"{_p4d_sweep:+.1f}%",
+                        },
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
@@ -1480,7 +1496,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
               f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
 
         # ✅ FIX: Учитываем base_score_bonus (TBS/confirmation) при проверке порога
-        effective_min = 45 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 60
+        effective_min = 30 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 45
         adjusted_score = score_result.total_score + max(0, base_score_bonus)
         score_is_valid = score_result.is_valid or adjusted_score >= effective_min
 
