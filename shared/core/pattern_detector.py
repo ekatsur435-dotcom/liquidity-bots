@@ -174,7 +174,9 @@ class LongPatternDetector:
         high_cons     = max(c.high for c in consolidation)
         low_cons      = min(c.low  for c in consolidation)
         cons_range    = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        if cons_range > 3.0 or last.close <= high_cons:
+        # ✅ FIX: 3.0% → 7.0% — альткоины консолидируются в диапазонах 5-7%, не 3%
+        # Старый порог убивал FORM/XNY/AIXBT-type движения
+        if cons_range > 7.0 or last.close <= high_cons:
             return None
         vol_spike = _vol_spike(candles, 20)
         if vol_spike < 1.5:
@@ -212,7 +214,9 @@ class LongPatternDetector:
         if ema20 and last.close < ema20[-1]:
             return None
         rsi = getattr(md, "rsi_1h", None) if md else None
-        if rsi and (rsi < 40 or rsi > 78):
+        # ✅ FIX: 78 → 85 — самые сильные импульсы (+20-45%) дают RSI 78-85
+        # Старый cap убивал AIXBT (+20%), XNY (+45%) и все памп-движения
+        if rsi and (rsi < 40 or rsi > 85):
             return None
         pct_move = (last.close - last.open) / last.open * 100 if last.open else 0
         bonus    = min(20, int(12 + vol_spike * 1.5))
@@ -265,7 +269,8 @@ class LongPatternDetector:
         high_cons  = max(c.high for c in cons)
         low_cons   = min(c.low  for c in cons)
         range_pct  = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        if range_pct > 2.5 or last.close <= high_cons:
+        # ✅ FIX: 2.5% → 6.0% — реальные боковики у альткоинов: 4-6%
+        if range_pct > 6.0 or last.close <= high_cons:
             return None
         vol_spike    = _vol_spike(candles, 20)
         if vol_spike < 1.3:
@@ -413,7 +418,8 @@ class ShortPatternDetector:
         low_cons  = min(c.low  for c in cons)
         high_cons = max(c.high for c in cons)
         r_pct     = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        if r_pct > 3.0 or last.close >= low_cons:
+        # ✅ FIX: 3.0% → 7.0% — аналогично BREAKOUT_LONG
+        if r_pct > 7.0 or last.close >= low_cons:
             return None
         vol_spike = _vol_spike(candles, 20)
         if vol_spike < 1.5:
@@ -451,7 +457,9 @@ class ShortPatternDetector:
         if ema20 and last.close > ema20[-1]:
             return None
         rsi = getattr(md, "rsi_1h", None) if md else None
-        if rsi and (rsi > 65 or rsi < 25):
+        # ✅ FIX: 65 → 75 — XNY RSI=77, AIXBT RSI=82 на вершине = идеальный SHORT
+        # Старый cap 65 блокировал все перекупленные входы в шорт
+        if rsi and (rsi > 75 or rsi < 20):
             return None
         bonus = min(20, int(12 + vol_spike * 1.5))
         return PatternResult(

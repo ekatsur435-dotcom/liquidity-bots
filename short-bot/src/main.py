@@ -702,19 +702,16 @@ async def lifespan(app: FastAPI):
         print("[MOMENTUM] ⚠️ DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
+    # ✅ FIX: только TF которые реально загружаются (30m + 1h)
+    # 4h/2h/15m/5m не загружаются → убраны чтобы не спамить "Insufficient data"
     if Config.ENABLE_CANDLE_HISTORY:
         from core.candle_history_manager import CandleHistoryManager, TFConfig
         tf_configs = {
-            "4h": TFConfig("4h", Config.CANDLE_4H_COUNT, 240, 1),
-            "2h": TFConfig("2h", Config.CANDLE_2H_COUNT, 120, 2),
-            "1h": TFConfig("1h", Config.CANDLE_1H_COUNT, 60, 3),
-            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 4),
-            "15m": TFConfig("15m", Config.CANDLE_15M_COUNT, 15, 5),
-            "5m": TFConfig("5m", Config.CANDLE_5M_COUNT, 5, 6),
+            "1h":  TFConfig("1h",  Config.CANDLE_1H_COUNT,  60, 1),
+            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 2),
         }
         state.candle_manager = CandleHistoryManager(tf_configs)
-        print(f"✅ Candle History: {Config.CANDLE_4H_COUNT}/{Config.CANDLE_1H_COUNT}/{Config.CANDLE_30M_COUNT}/"
-              f"{Config.CANDLE_15M_COUNT}/{Config.CANDLE_5M_COUNT} candles per TF")
+        print(f"✅ Candle History: 1h={Config.CANDLE_1H_COUNT} / 30m={Config.CANDLE_30M_COUNT} candles")
     
     # Pump Detector (CVD уже в delta_analyzer)
     state.pump_detector_enabled = True
@@ -1381,50 +1378,65 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — информационный контекст (НЕ блокер!)
-        # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
-        rsi_30m = 50.0  # дефолт
-        rsi_30m_score_adj = 0
+        # =========================================================================
+        # ✅ MULTI-TIMEFRAME RSI CONFLUENCE — 30m + 1h + 4h (SHORT)
+        # XNY RSI=77 на 1H, AIXBT RSI=82 — если 4H тоже высокий → СИЛЬНЫЙ SHORT
+        # Точный анализ: совпадение перекупленности на нескольких TF
+        # =========================================================================
+        rsi_30m    = 50.0
+        rsi_4h     = 50.0
+        rsi_1h_val = md.rsi_1h or 50.0
+
+        # --- RSI 30m ---
         try:
-            if ohlcv_30m and len(ohlcv_30m) >= 14:
-                closes_30m = [c.close for c in ohlcv_30m[-14:]]
-                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
-                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
-                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+            if ohlcv_30m and len(ohlcv_30m) >= 15:
+                closes_30m = [c.close for c in ohlcv_30m[-15:]]
+                gains_30m  = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,15)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,15)]
+                ag_30m = sum(gains_30m)/14; al_30m = sum(losses_30m)/14
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # RSI 30m < 30 при падении = подтверждение медвежьего моментума
-                if rsi_30m < 20:
-                    rsi_30m_score_adj = +3   # очень перепродан — моментум сильный
-                elif rsi_30m < 30:
-                    rsi_30m_score_adj = +5   # перепродан — даунтренд подтверждён
-                elif rsi_30m > 70:
-                    rsi_30m_score_adj = -5   # перекуплен — откат вероятен, против шорта
         except Exception:
             pass
 
-        # ✅ Multi-TF RSI 4h — контекст высшего порядка (НЕ блокер!)
-        # RSI 4h < 30 = глубокий даунтренд = ЛУЧШИЙ SHORT (не блокируем!)
-        rsi_4h = 50.0  # дефолт
-        rsi_4h_score_adj = 0
+        # --- RSI 4h (ohlcv_4h уже загружен выше для HTF фильтра) ---
         try:
-            # ohlcv_4h уже загружен выше
-            if ohlcv_4h and len(ohlcv_4h) >= 14:
-                closes_4h = [c.close for c in ohlcv_4h[-14:]]
-                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
-                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
-                ag = sum(gains)/13; al = sum(losses)/13
-                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # RSI 4h < 30 = сильный медвежий тренд = бонусы для SHORT
-                if rsi_4h < 20:
-                    rsi_4h_score_adj = +15  # усилено для слабых рынков
-                elif rsi_4h < 30:
-                    rsi_4h_score_adj = +10  # глубокий даунтренд
-                elif rsi_4h < 40:
-                    rsi_4h_score_adj = +7   # даунтренд подтверждён
-                elif rsi_4h > 70:
-                    rsi_4h_score_adj = -8   # перекуплен на 4h — риск разворота против шорта
+            if ohlcv_4h and len(ohlcv_4h) >= 15:
+                closes_4h = [c.close for c in ohlcv_4h[-15:]]
+                gains_4h  = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,15)]
+                losses_4h = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,15)]
+                ag_4h = sum(gains_4h)/14; al_4h = sum(losses_4h)/14
+                rsi_4h = 100 - 100/(1 + ag_4h/al_4h) if al_4h > 0 else 50
         except Exception:
             pass
+
+        print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={rsi_1h_val:.1f} 30m={rsi_30m:.1f}")
+
+        # --- MTF Confluence для SHORT: перекупленность на нескольких TF ---
+        # XNY RSI=77 (1H) + если 4H тоже 70+ = классический SHORT вход после памп
+        mtf_rsi_bonus  = 0
+        mtf_rsi_reason = ""
+
+        if rsi_4h > 70 and rsi_1h_val > 68 and rsi_30m > 68:
+            mtf_rsi_bonus  = +18
+            mtf_rsi_reason = f"🎯 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} 30m={rsi_30m:.0f} — перекуплен везде! +18"
+        elif rsi_4h > 70 and rsi_1h_val > 65:
+            mtf_rsi_bonus  = +12
+            mtf_rsi_reason = f"🎯 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — конфлюенс перекупленности +12"
+        elif rsi_4h > 65 and rsi_1h_val > 70:
+            mtf_rsi_bonus  = +8
+            mtf_rsi_reason = f"📊 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — частичный конфлюенс +8"
+        elif rsi_4h > 60 and rsi_30m > 70:
+            mtf_rsi_bonus  = +5
+            mtf_rsi_reason = f"📊 MTF SHORT: 4H={rsi_4h:.0f} 30m={rsi_30m:.0f} — перекуплен 4H+30m +5"
+        elif rsi_4h < 30 and rsi_1h_val < 30:
+            mtf_rsi_bonus  = -10
+            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан 4H+1H, риск для SHORT -10"
+        elif rsi_4h < 35 and rsi_1h_val < 35:
+            mtf_rsi_bonus  = -5
+            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан, осторожно -5"
+
+        if mtf_rsi_reason:
+            print(f"   {mtf_rsi_reason}")
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_primary)
@@ -1473,6 +1485,9 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"OI Proxy error {symbol}: {e}")
 
         # ── Base score ────────────────────────────────────────────────────────
+        # ✅ Ликвидационный анализ для скора (из market_data_integrator)
+        _liq_analysis = getattr(md, 'liquidation_analysis', None)
+
         score_result = state.scorer.calculate_score(
             rsi_1h=md.rsi_1h or 50,
             funding_current=md.funding_rate / 100,
@@ -1485,6 +1500,9 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
+            liq_analysis=_liq_analysis,          # ✅ Ликвидации в скор
+            mtf_rsi_bonus=mtf_rsi_bonus,         # ✅ MTF RSI конфлюенс в скор
+            mtf_rsi_reason=mtf_rsi_reason,
         )
         # ✅ FIX v4.1: Логируем score breakdown (как в long-bot)
         ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)

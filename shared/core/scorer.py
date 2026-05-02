@@ -299,7 +299,17 @@ class ShortScorer(BaseScorer):
                         long_ratio, oi_change_4d, price_change_4d,
                         hourly_deltas, price_trend, patterns,
                         volume_spike_ratio: float = 1.0,
-                        atr_14_pct: float = 0.5) -> ScoreResult:
+                        atr_14_pct: float = 0.5,
+                        liq_analysis=None,
+                        mtf_rsi_bonus: int = 0,
+                        mtf_rsi_reason: str = "") -> ScoreResult:
+        """
+        Расчёт скора для SHORT входа.
+
+        liq_analysis: LiquidationAnalysis — магниты ликвидации (OKX/Coinglass)
+        mtf_rsi_bonus: MTF RSI конфлюенс (30m+1h+4h): для SHORT — оверкупленность
+        mtf_rsi_reason: описание MTF сигнала для логов
+        """
         components = []
         components.append(self.calculate_rsi_component(rsi_1h))
         components.append(self.calculate_funding_component(funding_current, funding_accumulated))
@@ -308,6 +318,11 @@ class ShortScorer(BaseScorer):
         components.append(self.calculate_delta_component(hourly_deltas, price_trend))
         pat_comp, pat_names = self.calculate_pattern_component(patterns)
         components.append(pat_comp)
+
+        # ✅ WIRE: Ликвидационные магниты подключены к скору (+/-15 pts)
+        liq_comp = self.calculate_liquidation_component(liq_analysis)
+        components.append(liq_comp)
+
         total = sum(c.score for c in components)
         max_p = sum(c.max_score for c in components)
         # Confluence bonus
@@ -320,6 +335,11 @@ class ShortScorer(BaseScorer):
         # ATR penalty
         atr_pen, atr_reason = self._atr_penalty(atr_14_pct)
         total += atr_pen
+
+        # ✅ MTF RSI конфлюенс (30m + 1h + 4h): для SHORT — перекупленность на нескольких TF
+        if mtf_rsi_bonus != 0:
+            total += mtf_rsi_bonus
+
         total = min(max(total, 0), 100)
         reasons = []
         if components[0].score >= 15: reasons.append(f"RSI перекуплен ({rsi_1h:.1f})")
@@ -328,8 +348,10 @@ class ShortScorer(BaseScorer):
         if components[3].score >= 10: reasons.append("Лонги перегружены (OI растёт)")
         if components[4].score >= 10: reasons.append("Медвежья дивергенция")
         if components[5].score >= 20: reasons.append(f"Сильный паттерн: {pat_names[0] if pat_names else 'N/A'}")
-        if vs_reason: reasons.append(vs_reason)
-        if atr_reason: reasons.append(atr_reason)
+        if liq_comp.score > 0:        reasons.append(f"🧲 Liq магнит: {liq_comp.description}")
+        if vs_reason:                 reasons.append(vs_reason)
+        if atr_reason:                reasons.append(atr_reason)
+        if mtf_rsi_reason:            reasons.append(mtf_rsi_reason)
         return ScoreResult(
             total_score=total, max_possible=max_p, direction=Direction.SHORT,
             is_valid=total >= self.min_score,
@@ -435,13 +457,18 @@ class LongScorer(BaseScorer):
                         volume_spike_ratio: float = 1.0,
                         atr_14_pct: float = 0.5,
                         symbol_change_1h: float = 0.0,
-                        btc_change_1h: float = 0.0) -> ScoreResult:
+                        btc_change_1h: float = 0.0,
+                        liq_analysis=None,
+                        mtf_rsi_bonus: int = 0,
+                        mtf_rsi_reason: str = "") -> ScoreResult:
         """
         Расчёт скора для LONG входа.
-        
+
         symbol_change_1h: изменение самого альта за 1ч (%)
         btc_change_1h: изменение BTC за 1ч (%)
-        Если альт растёт когда BTC падает — бонус за независимость.
+        liq_analysis: LiquidationAnalysis — магниты ликвидации (OKX/Coinglass)
+        mtf_rsi_bonus: бонус/штраф от MTF RSI конфлюенса (30m+1h+4h)
+        mtf_rsi_reason: описание MTF сигнала для логов
         """
         components = []
         components.append(self.calculate_rsi_component(rsi_1h))
@@ -451,6 +478,11 @@ class LongScorer(BaseScorer):
         components.append(self.calculate_delta_component(hourly_deltas, price_trend))
         pat_comp, pat_names = self.calculate_pattern_component(patterns)
         components.append(pat_comp)
+
+        # ✅ WIRE: Ликвидационные магниты подключены к скору (+/-15 pts)
+        liq_comp = self.calculate_liquidation_component(liq_analysis)
+        components.append(liq_comp)
+
         total = sum(c.score for c in components)
         max_p = sum(c.max_score for c in components)
         strong = sum(1 for c in components if c.score >= c.max_score * 0.6)
@@ -461,16 +493,17 @@ class LongScorer(BaseScorer):
         atr_pen, atr_reason = self._atr_penalty(atr_14_pct)
         total += atr_pen
 
+        # ✅ MTF RSI конфлюенс (30m + 1h + 4h)
+        if mtf_rsi_bonus != 0:
+            total += mtf_rsi_bonus
+
         # ✅ v4.0: Бонус за независимое движение альта от BTC
-        # Альткоин с собственным нарративом = лучший сигнал
         decoupling_reason = ""
         if btc_change_1h <= -1.0 and symbol_change_1h >= 0.3:
-            # BTC падает, альт держится или растёт — сильный бонус
             decoupling_bonus = min(12, int(abs(btc_change_1h) * 2 + symbol_change_1h * 2))
             total += decoupling_bonus
             decoupling_reason = f"💪 Альт независим от BTC (BTC {btc_change_1h:.1f}% alt {symbol_change_1h:.1f}%) +{decoupling_bonus}"
         elif btc_change_1h >= 1.0 and symbol_change_1h >= btc_change_1h * 1.5:
-            # BTC растёт, альт обгоняет — momentum бонус
             total += 5
             decoupling_reason = f"🚀 Альт обгоняет BTC ({symbol_change_1h:.1f}% vs {btc_change_1h:.1f}%) +5"
 
@@ -482,9 +515,11 @@ class LongScorer(BaseScorer):
         if components[3].score >= 10: reasons.append("Шорты закрываются (OI падает)")
         if components[4].score >= 10: reasons.append("Бычья дивергенция")
         if components[5].score >= 20: reasons.append(f"Сильный паттерн: {pat_names[0] if pat_names else 'N/A'}")
-        if vs_reason: reasons.append(vs_reason)
-        if atr_reason: reasons.append(atr_reason)
-        if decoupling_reason: reasons.append(decoupling_reason)
+        if liq_comp.score > 0:        reasons.append(f"🧲 Лiq магнит: {liq_comp.description}")
+        if vs_reason:                 reasons.append(vs_reason)
+        if atr_reason:                reasons.append(atr_reason)
+        if decoupling_reason:         reasons.append(decoupling_reason)
+        if mtf_rsi_reason:            reasons.append(mtf_rsi_reason)
         return ScoreResult(
             total_score=total, max_possible=max_p, direction=Direction.LONG,
             is_valid=total >= self.min_score,

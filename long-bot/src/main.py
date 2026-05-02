@@ -726,19 +726,16 @@ async def lifespan(app: FastAPI):
         print("[MOMENTUM] ⚠️ DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
+    # ✅ FIX: только TF которые реально загружаются (30m + 1h)
+    # 4h/2h/15m/5m не загружаются → убраны чтобы не спамить "Insufficient data"
     if Config.ENABLE_CANDLE_HISTORY:
         from core.candle_history_manager import CandleHistoryManager, TFConfig
         tf_configs = {
-            "4h": TFConfig("4h", Config.CANDLE_4H_COUNT, 240, 1),
-            "2h": TFConfig("2h", Config.CANDLE_2H_COUNT, 120, 2),
-            "1h": TFConfig("1h", Config.CANDLE_1H_COUNT, 60, 3),
-            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 4),
-            "15m": TFConfig("15m", Config.CANDLE_15M_COUNT, 15, 5),
-            "5m": TFConfig("5m", Config.CANDLE_5M_COUNT, 5, 6),
+            "1h":  TFConfig("1h",  Config.CANDLE_1H_COUNT,  60, 1),
+            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 2),
         }
         state.candle_manager = CandleHistoryManager(tf_configs)
-        print(f"✅ Candle History: {Config.CANDLE_4H_COUNT}/{Config.CANDLE_1H_COUNT}/{Config.CANDLE_30M_COUNT}/"
-              f"{Config.CANDLE_15M_COUNT}/{Config.CANDLE_5M_COUNT} candles per TF")
+        print(f"✅ Candle History: 1h={Config.CANDLE_1H_COUNT} / 30m={Config.CANDLE_30M_COUNT} candles")
     
     # Pump Detector (CVD уже в delta_analyzer)
     state.pump_detector_enabled = True
@@ -1361,47 +1358,65 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # ✅ RSI 30m — бонус/штраф к скору (v2.9: не блокер)
-        rsi_30m_adj = 0
+        # =========================================================================
+        # ✅ MULTI-TIMEFRAME RSI CONFLUENCE — 30m + 1h + 4h (LONG)
+        # Точный анализ: RSI на каждом ТФ разный → ищем СОВПАДЕНИЕ перепроданности
+        # =========================================================================
+        rsi_30m = 50.0
+        rsi_4h  = 50.0
+        rsi_1h_val = md.rsi_1h or 50.0
+
+        # --- RSI 30m ---
         try:
-            if ohlcv_30m and len(ohlcv_30m) >= 14:
-                closes_30m = [c.close for c in ohlcv_30m[-14:]]
-                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
-                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
-                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
+            if ohlcv_30m and len(ohlcv_30m) >= 15:
+                closes_30m = [c.close for c in ohlcv_30m[-15:]]
+                gains_30m  = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,15)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,15)]
+                ag_30m = sum(gains_30m)/14; al_30m = sum(losses_30m)/14
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
-                # v2.7: Не блокируем, корректируем скор
-                if rsi_30m < 30:
-                    rsi_30m_adj = +5  # Перепродан — хорошо для LONG
-                elif rsi_30m > 75:
-                    rsi_30m_adj = -5  # Перекуплен — плохо для LONG
-                elif rsi_30m > 65:
-                    rsi_30m_adj = -2  # Начало перекупленности
         except Exception:
             pass
-        
-        # ✅ Multi-TF RSI 4h — бонус/штраф (v2.7: не блокер)
-        rsi_4h_adj = 0
+
+        # --- RSI 4h ---
+        ohlcv_4h = []
         try:
             ohlcv_4h = await state.binance.get_klines(symbol, "4h", 35)
-            if ohlcv_4h and len(ohlcv_4h) >= 14:
-                closes_4h = [c.close for c in ohlcv_4h[-14:]]
-                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
-                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
-                ag = sum(gains)/13; al = sum(losses)/13
-                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
-                # v2.7: Не блокируем, корректируем скор
-                if rsi_4h < 35:
-                    rsi_4h_adj = +8   # Перепродан на 4h — отлично для LONG
-                elif rsi_4h > 70:
-                    rsi_4h_adj = -8   # Перекуплен на 4h — плохо для LONG
-                elif rsi_4h > 60:
-                    rsi_4h_adj = -3   # Начало перекупленности
+            if ohlcv_4h and len(ohlcv_4h) >= 15:
+                closes_4h = [c.close for c in ohlcv_4h[-15:]]
+                gains_4h  = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,15)]
+                losses_4h = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,15)]
+                ag_4h = sum(gains_4h)/14; al_4h = sum(losses_4h)/14
+                rsi_4h = 100 - 100/(1 + ag_4h/al_4h) if al_4h > 0 else 50
         except Exception:
             pass
-        
-        # Применяем RSI корректировки к базовому бонусу
-        base_score_bonus = base_score_bonus + rsi_30m_adj + rsi_4h_adj
+
+        print(f"📊 [MTF-RSI-LONG] {symbol}: 4H={rsi_4h:.1f} 1H={rsi_1h_val:.1f} 30m={rsi_30m:.1f}")
+
+        # --- MTF Confluence для LONG: перепроданность сразу на нескольких TF ---
+        mtf_rsi_bonus  = 0
+        mtf_rsi_reason = ""
+
+        if rsi_4h < 30 and rsi_1h_val < 35 and rsi_30m < 35:
+            mtf_rsi_bonus  = +18
+            mtf_rsi_reason = f"🎯 MTF LONG: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} 30m={rsi_30m:.0f} — перепродан везде! +18"
+        elif rsi_4h < 35 and rsi_1h_val < 40:
+            mtf_rsi_bonus  = +12
+            mtf_rsi_reason = f"🎯 MTF LONG: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — конфлюенс перепроданности +12"
+        elif rsi_4h < 40 and rsi_1h_val < 38:
+            mtf_rsi_bonus  = +7
+            mtf_rsi_reason = f"📊 MTF LONG: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — частичный конфлюенс +7"
+        elif rsi_4h < 40 and rsi_30m < 30:
+            mtf_rsi_bonus  = +5
+            mtf_rsi_reason = f"📊 MTF LONG: 4H={rsi_4h:.0f} 30m={rsi_30m:.0f} — перепродан 4H+30m +5"
+        elif rsi_4h > 72 and rsi_1h_val > 70:
+            mtf_rsi_bonus  = -10
+            mtf_rsi_reason = f"⚠️ MTF LONG: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перекуплен 4H+1H, риск для LONG -10"
+        elif rsi_4h > 65 and rsi_1h_val > 72:
+            mtf_rsi_bonus  = -5
+            mtf_rsi_reason = f"⚠️ MTF LONG: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — начало перекупленности -5"
+
+        if mtf_rsi_reason:
+            print(f"   {mtf_rsi_reason}")
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
@@ -1474,6 +1489,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         except Exception:
             pass
 
+        # ✅ Ликвидационный анализ для скора (из market_data_integrator)
+        _liq_analysis = getattr(md, 'liquidation_analysis', None)
+
         score_result = state.scorer.calculate_score(
             rsi_1h=md.rsi_1h or 50,
             funding_current=md.funding_rate / 100,
@@ -1486,8 +1504,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
-            symbol_change_1h=symbol_change_1h,        # ✅ v4.0: для decoupling bonus
-            btc_change_1h=btc_change_1h_score,        # ✅ v4.0: для decoupling bonus
+            symbol_change_1h=symbol_change_1h,
+            btc_change_1h=btc_change_1h_score,
+            liq_analysis=_liq_analysis,          # ✅ Ликвидации в скор
+            mtf_rsi_bonus=mtf_rsi_bonus,         # ✅ MTF RSI конфлюенс в скор
+            mtf_rsi_reason=mtf_rsi_reason,
         )
         
         # ✅ FIX v3.1: SMART SCORING — многоуровневый оверрайд для LONG
