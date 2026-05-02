@@ -2110,7 +2110,7 @@ async def _scan_market_impl():
                 except Exception:
                     pass
 
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(1.0)  # ✅ FIX: 0.4→1.0s — снижаем Bybit rate limit (get_price None)
         except Exception as e:
             print(f"Error {symbol}: {e}")
 
