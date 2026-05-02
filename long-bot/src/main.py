@@ -1484,13 +1484,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
               f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
               f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
 
-        # ✅ FIX: При extreme volatility (5m fallback) снижаем порог — ATR штраф несправедлив
+        # ✅ FIX: Учитываем base_score_bonus (TBS/confirmation) при проверке порога
         effective_min = 45 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 55
-        score_is_valid = score_result.is_valid or score_result.total_score >= effective_min
+        adjusted_score = score_result.total_score + max(0, base_score_bonus)
+        score_is_valid = score_result.is_valid or adjusted_score >= effective_min
 
         # 🛑 STRICT MODE: Нет оверрайдов! Только чистые валидные сигналы
         if not score_is_valid:
-            print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}% < {effective_min}), skipping (STRICT MODE)")
+            print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}%+{base_score_bonus}={adjusted_score:.0f}% < {effective_min}), skipping (STRICT MODE)")
             return None
         
         reasons     = list(score_result.reasons)
