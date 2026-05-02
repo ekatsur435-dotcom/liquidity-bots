@@ -118,6 +118,154 @@ class PositionTracker:
                 print(f"[PositionTracker] {sig.get('symbol')} error: {e}")
             await asyncio.sleep(0.3)
 
+        # ✅ VIRTUAL: Отслеживаем TG-only сигналы для статистики
+        await self._scan_virtual()
+
+    async def _scan_virtual(self):
+        """
+        Отслеживает виртуальные позиции (TG-only, не открытые на бирже).
+        Полный мониторинг TP/SL + статистика, без BingX API.
+        """
+        try:
+            virtual_positions = self.redis.get_virtual_positions(self.bot_type)
+        except Exception as e:
+            print(f"[VirtualTracker] redis error: {e}")
+            return
+
+        if not virtual_positions:
+            return
+
+        for field, pos in virtual_positions.items():
+            if pos.get("outcome") is not None:
+                continue  # уже закрыта
+            try:
+                await self._check_one_virtual(field, pos)
+            except Exception as e:
+                print(f"[VirtualTracker] {pos.get('symbol', '?')} error: {e}")
+            await asyncio.sleep(0.2)
+
+    async def _check_one_virtual(self, field: str, signal: Dict):
+        """Проверяет виртуальную позицию по текущей цене. Без BingX API."""
+        import json as _json
+
+        symbol    = signal.get("symbol", "")
+        entry     = _f(signal.get("entry_price", 0))
+        sl        = _f(signal.get("stop_loss", 0))
+        direction = signal.get("direction", "long")
+        tps_raw   = signal.get("take_profits", [])
+        taken     = list(signal.get("taken_tps", []))
+        bot_type  = signal.get("bot_type", self.bot_type)
+
+        if not symbol or not entry:
+            return
+
+        # Экспирация 48ч
+        opened_at = signal.get("virtual_opened_at", signal.get("timestamp", ""))
+        if opened_at:
+            try:
+                age = datetime.utcnow() - datetime.fromisoformat(opened_at)
+                if age > timedelta(hours=48):
+                    self.redis.close_virtual_position(bot_type, field, "expired", entry, 0.0)
+                    print(f"[VT] {symbol}: истёк срок 48ч, закрываем")
+                    return
+            except Exception:
+                pass
+
+        md = await self.binance.get_complete_market_data(symbol)
+        if not md:
+            return
+        price = _f(md.price)
+
+        d_str   = "LONG" if direction == "long" else "SHORT"
+        d_emoji = "🟢" if direction == "long" else "🔴"
+        total   = len(tps_raw)
+
+        print(f"[VT][{d_str}][{symbol}] цена={price:.6f} вход={entry:.6f} "
+              f"SL={sl:.6f} TP={len(taken)}/{total} [ВИРТУАЛ]")
+
+        # ── SL hit ──────────────────────────────────────────────────────────────
+        if sl and _sl_hit(direction, price, sl):
+            sl_loss     = _pnl(direction, entry, sl)
+            taken_pnl   = 0.0
+            rem_weight  = 1.0
+            for idx in taken:
+                if idx < len(tps_raw):
+                    tp_p, tp_w = _parse_tp(tps_raw[idx])
+                    w = tp_w / 100
+                    taken_pnl  += _pnl(direction, entry, tp_p) * w
+                    rem_weight -= w
+            total_pnl = taken_pnl + sl_loss * max(0, rem_weight)
+
+            signal["taken_tps"]  = taken
+            signal["close_price"] = price
+            signal["close_time"]  = datetime.utcnow().isoformat()
+            signal["pnl_pct"]     = round(total_pnl, 4)
+
+            await self._record_pnl(signal, total_pnl, "sl", "SL")
+            self.redis.close_virtual_position(bot_type, field, "sl", price, total_pnl)
+
+            taken_str = f" (TP взято: {len(taken)})" if taken else ""
+            await self._notify(signal, (
+                f"🛑 <b>[ВИРТУАЛ] SL сработал{taken_str}</b>\n\n"
+                f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
+                f"📍 Вход:   <b>${entry:,.6f}</b>\n"
+                f"🛑 SL:     <b>${sl:,.6f}</b>\n"
+                f"📊 P&L:    <b>{total_pnl:+.2f}%</b>\n"
+                f"<i>📋 Виртуал — не открыта на бирже</i>"
+            ))
+            return
+
+        # ── TP hit ──────────────────────────────────────────────────────────────
+        for i, tp_raw in enumerate(tps_raw):
+            if i in taken:
+                continue
+            tp_price, tp_weight = _parse_tp(tp_raw)
+            if tp_price <= 0:
+                continue
+            if _tp_hit(direction, price, tp_price):
+                pnl_pct = _pnl(direction, entry, tp_price)
+                taken.append(i)
+                signal["taken_tps"] = taken
+                is_last   = (len(taken) >= len(tps_raw))
+                tp_label  = f"TP{i+1}"
+
+                if is_last:
+                    total_pnl = _calc_weighted_pnl(direction, entry, tps_raw, taken)
+                    signal["close_price"] = tp_price
+                    signal["close_time"]  = datetime.utcnow().isoformat()
+                    signal["pnl_pct"]     = round(total_pnl, 4)
+
+                    await self._record_pnl(signal, total_pnl, "tp", tp_label)
+                    self.redis.close_virtual_position(bot_type, field, "tp", tp_price, total_pnl)
+
+                    await self._notify(signal, (
+                        f"🏆 <b>[ВИРТУАЛ] Все TP взяты!</b>\n\n"
+                        f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
+                        f"📍 Вход:         <b>${entry:,.6f}</b>\n"
+                        f"🎯 {tp_label}:        <b>${tp_price:,.6f}</b>\n"
+                        f"💰 Итоговый P&L: <b>+{total_pnl:.2f}%</b>\n"
+                        f"<i>📋 Виртуал — не открыта на бирже</i>"
+                    ))
+                else:
+                    # Обновляем taken_tps в Redis hash
+                    try:
+                        vkey = f"{bot_type}:virtual_positions"
+                        self.redis.client.hset(vkey, field, _json.dumps(signal))
+                    except Exception as e:
+                        print(f"[VT] update taken_tps error: {e}")
+
+                    remaining = total - len(taken)
+                    await self._notify(signal, (
+                        f"🎯 <b>[ВИРТУАЛ] {tp_label}/{total} взят!</b>\n\n"
+                        f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
+                        f"📍 Вход:        <b>${entry:,.6f}</b>\n"
+                        f"🎯 {tp_label}:  <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)\n"
+                        f"📊 P&L:         <b>+{pnl_pct:.2f}%</b>\n"
+                        f"⏳ Осталось TP: {remaining}\n"
+                        f"<i>📋 Виртуал — не открыта на бирже</i>"
+                    ))
+                break
+
     async def _cleanup_zombie_positions(self, signals: list):
         """
         ✅ v4.0: Удаляет из Redis позиции которых нет на бирже.
