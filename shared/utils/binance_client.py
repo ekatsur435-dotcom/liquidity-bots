@@ -1108,6 +1108,53 @@ class BinanceFuturesClient:
                 if low_24h > 0:
                     pct_from_low  = (float(price) - low_24h) / low_24h  * 100
 
+            # ── 24h Volume: 3 источника по приоритету ──────────────────────────
+            # 1) Из 1h свечей (самый надёжный — данные уже загружены)
+            vol_24h_from_klines = 0.0
+            if klines_1h and len(klines_1h) >= 24:
+                vol_24h_from_klines = sum(
+                    float(c.quote_volume if hasattr(c, 'quote_volume') else 0)
+                    for c in klines_1h[-24:]
+                )
+
+            # 2) Из Bybit ticker (turnover24h → "quoteVolume")
+            vol_24h_from_ticker = 0.0
+            if ticker and isinstance(ticker, dict):
+                vol_24h_from_ticker = (
+                    float(ticker.get("quoteVolume", 0))          # Bybit: turnover24h в USDT
+                    or float(ticker.get("volume", 0)) * float(price)  # Binance: base × price
+                )
+
+            # 3) OKX fallback — если оба выше дали 0
+            vol_24h_from_okx = 0.0
+            if vol_24h_from_klines < 1000 and vol_24h_from_ticker < 1000:
+                try:
+                    okx = get_okx_client()
+                    okx_ticker = await okx.get_ticker(symbol)
+                    if okx_ticker:
+                        vol_24h_from_okx = float(okx_ticker.get("volume_ccy_24h", 0))
+                except Exception:
+                    pass
+
+            # Берём максимальный ненулевой + логируем источник
+            if vol_24h_from_klines >= 1000:
+                volume_24h_final = vol_24h_from_klines
+                vol_src = "klines"
+            elif vol_24h_from_ticker >= 1000:
+                volume_24h_final = vol_24h_from_ticker
+                vol_src = "bybit_ticker"
+            elif vol_24h_from_okx >= 1000:
+                volume_24h_final = vol_24h_from_okx
+                vol_src = "okx"
+            else:
+                volume_24h_final = 0.0
+                vol_src = "none"
+            print(f"📊 [VOL-{symbol}] 24h=${volume_24h_final/1e6:.1f}M src={vol_src} "
+                  f"(klines={vol_24h_from_klines/1e6:.1f}M "
+                  f"ticker={vol_24h_from_ticker/1e6:.1f}M "
+                  f"okx={vol_24h_from_okx/1e6:.1f}M)")
+            # ── ─────────────────────────────────────────────────────────────────
+
             return MarketData(
                 symbol=symbol,
                 price=float(price),
@@ -1116,13 +1163,7 @@ class BinanceFuturesClient:
                 funding_accumulated=funding_acc,
                 price_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
                 price_change_1h=price_chg_1h,
-                # ✅ FIX: Bybit возвращает "quoteVolume" (= turnover24h, уже в USDT)
-                # Binance возвращает "volume" (в базовой валюте) × price
-                # getattr fallback: quoteVolume → volume*price → 0
-                volume_24h=(
-                    float(ticker.get("quoteVolume", 0))                     # Bybit: уже в USDT
-                    or float(ticker.get("volume", 0)) * price               # Binance: base × price
-                ) if ticker else 0.0,
+                volume_24h=volume_24h_final,
                 volume_change_24h=float(ticker.get("priceChangePercent", 0)) * 0.5 if ticker else 0.0,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
