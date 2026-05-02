@@ -1237,8 +1237,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_result = None
         try:
             current_price = md.price
+            # ✅ FIX: OB detection всегда на 30m (не на 5m) — OB паттерны нужен старший ТФ
+            ob_ohlcv = ohlcv_30m if primary_tf == "5m" and ohlcv_30m else ohlcv_primary
             ob_result = detect_order_blocks(
-                ohlcv_primary, 
+                ob_ohlcv, 
                 direction="long",  # Для LONG бота ищем bullish OB
                 current_price=current_price
             )
@@ -1482,9 +1484,13 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
               f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
               f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
 
+        # ✅ FIX: При extreme volatility (5m fallback) снижаем порог — ATR штраф несправедлив
+        effective_min = 45 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 55
+        score_is_valid = score_result.is_valid or score_result.total_score >= effective_min
+
         # 🛑 STRICT MODE: Нет оверрайдов! Только чистые валидные сигналы
-        if not score_result.is_valid:
-            print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}%), skipping (STRICT MODE)")
+        if not score_is_valid:
+            print(f"🚫 [FILTER-LONG] {symbol}: score invalid ({score_result.total_score:.1f}% < {effective_min}), skipping (STRICT MODE)")
             return None
         
         reasons     = list(score_result.reasons)
