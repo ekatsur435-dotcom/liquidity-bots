@@ -436,7 +436,18 @@ def api_positions():
                             take_profits_raw = pos.get("take_profits", pos.get("take_profit", pos.get("tp", [])))
                             tp1_price = 0.0
                             if isinstance(take_profits_raw, list) and take_profits_raw:
-                                tp1_price = float(take_profits_raw[0] or 0)
+                                first = take_profits_raw[0]
+                                try:
+                                    if isinstance(first, (int, float)):
+                                        tp1_price = float(first)
+                                    elif isinstance(first, (list, tuple)):
+                                        tp1_price = float(first[0])  # (price, weight) tuple
+                                    elif isinstance(first, dict):
+                                        tp1_price = float(first.get("price", 0) or 0)
+                                    else:
+                                        tp1_price = float(first or 0)
+                                except Exception:
+                                    tp1_price = 0.0
                             elif isinstance(take_profits_raw, (int, float)):
                                 tp1_price = float(take_profits_raw)
 
