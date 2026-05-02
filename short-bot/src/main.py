@@ -1530,12 +1530,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         base_score_before_override = score_result.total_score
         final_score = min(100, score_result.total_score + max(0, base_score_bonus))
 
-        # Добавляем MTF RSI бонусы
-        final_score += rsi_30m_score_adj + rsi_4h_score_adj
-        if rsi_30m_score_adj != 0:
-            print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
-        if rsi_4h_score_adj != 0:
-            print(f"[MTF] {symbol}: RSI4h={rsi_4h:.0f} adj={rsi_4h_score_adj:+d}")
+        # MTF RSI бонус уже передан в calculate_score() через mtf_rsi_bonus
         
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
