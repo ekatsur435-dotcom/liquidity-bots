@@ -124,6 +124,22 @@ def get_trading_stats(days=7):
                     print(f"Error reading virtual_trades for {bot_name}: {e}")
 
                 if trades_data:
+                    # ✅ FIX #3: дедупликация между all_trades и virtual_trades
+                    # В DEMO-режиме одна сделка может попасть в ОБЕ очереди → двойной счёт
+                    seen_raw: set = set()
+                    deduped_data = []
+                    for t in trades_data:
+                        sym = t.get("symbol", "")
+                        ep  = t.get("entry_price", 0)
+                        out = t.get("outcome") or t.get("exit_reason") or ""
+                        cat = t.get("closed_at") or t.get("exit_time") or t.get("close_time") or ""
+                        dk  = f"{sym}:{ep}:{out}:{str(cat)[:16]}"
+                        if dk in seen_raw:
+                            continue
+                        seen_raw.add(dk)
+                        deduped_data.append(t)
+                    trades_data = deduped_data
+
                     # ✅ Считаем только ЗАКРЫТЫЕ сделки
                     closed_statuses = {'closed_tp', 'closed_sl', 'closed_manual', 'closed'}
                     trades = [t for t in trades_data
@@ -205,21 +221,18 @@ def get_trading_stats(days=7):
 def get_micro_trail_stats():
     """Статистика Micro-Step Trailing"""
     total_active = 0
-    for redis_getter in [get_redis_short, get_redis_long]:
+    # ✅ FIX #1: каждый префикс читает ТОЛЬКО из своего Redis
+    # Было: 2 Redis × 2 prefix = 4 чтения → данные удваивались
+    for pfx, redis_getter in [("short", get_redis_short), ("long", get_redis_long)]:
         try:
             redis = redis_getter()
-            # Подсчитываем trailing из state (STRING)
-            for pfx in ["short", "long"]:
-                try:
-                    state_data = redis.execute(["GET", f"{pfx}:state"])
-                    if state_data:
-                        bot_state = json.loads(state_data)
-                        total_active += len(bot_state.get("active_positions", []))
-                except:
-                    pass
+            state_data = redis.execute(["GET", f"{pfx}:state"])
+            if state_data:
+                bot_state = json.loads(state_data)
+                total_active += len(bot_state.get("active_positions", []))
         except:
             pass
-    
+
     return {
         "active_positions": total_active,
         "trailing_enabled": True
@@ -309,27 +322,27 @@ def api_chart_data():
         day_short_pnl = 0
         day_long_pnl = 0
         
-        for redis_getter in [get_redis_short, get_redis_long]:
+        # FIX #2: каждый prefix читает ТОЛЬКО из своего Redis
+        # Было: 2 Redis x 2 prefix = 4 чтения — данные удваивались
+        for prefix, redis_getter in [("short", get_redis_short), ("long", get_redis_long)]:
             try:
                 redis = redis_getter()
-                # Пробуем новый формат stats:daily с префиксом
-                for prefix in ["short", "long"]:
-                    key = f"{prefix}:stats:daily:{date}"
-                    try:
-                        data = redis.get(key)
-                        if data:
-                            day_stats = json.loads(data)
-                            pnl = day_stats.get("pnl", 0)
-                            day_pnl += pnl
-                            day_wins += day_stats.get("wins", 0)
-                            day_losses += day_stats.get("losses", 0)
-                            day_trades += day_stats.get("trades", 0)
-                            if prefix == "short":
-                                day_short_pnl += pnl
-                            else:
-                                day_long_pnl += pnl
-                    except:
-                        pass
+                key = f"{prefix}:stats:daily:{date}"
+                try:
+                    data = redis.get(key)
+                    if data:
+                        day_stats = json.loads(data)
+                        pnl = day_stats.get("pnl", 0)
+                        day_pnl += pnl
+                        day_wins += day_stats.get("wins", 0)
+                        day_losses += day_stats.get("losses", 0)
+                        day_trades += day_stats.get("trades", 0)
+                        if prefix == "short":
+                            day_short_pnl += pnl
+                        else:
+                            day_long_pnl += pnl
+                except:
+                    pass
             except:
                 pass
         
