@@ -181,7 +181,13 @@ class BinanceFuturesClient:
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.session: Optional[aiohttp.ClientSession] = None
         self.last_request_time = 0.0
-        self.min_request_interval = 0.05
+        # ✅ FIX: 0.05→0.12s (было 20 req/сек → стало 8 req/сек)
+        # Bybit market data лимит ≈ 120 req/min = 2 req/сек per IP
+        # 0.12s даёт ~8 req/сек — с учётом burst-ов остаётся в лимите
+        self.min_request_interval = 0.12
+        # ✅ FIX: asyncio.Lock для _rate_limit — устраняет race condition
+        # Без Lock: 10+ корутин одновременно видят elapsed>interval → burst запросов
+        self._rate_lock: Optional[asyncio.Lock] = None  # создаётся в event loop
 
         use_binance_env  = os.getenv("USE_BINANCE", "false").lower()
         self._try_binance = use_binance_env == "true"
@@ -258,10 +264,15 @@ class BinanceFuturesClient:
         return self.session
 
     async def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.min_request_interval:
-            await asyncio.sleep(self.min_request_interval - elapsed)
-        self.last_request_time = time.time()
+        # ✅ FIX: Lock устраняет race condition — только одна корутина за раз
+        # проходит проверку и обновляет last_request_time
+        if self._rate_lock is None:
+            self._rate_lock = asyncio.Lock()
+        async with self._rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.min_request_interval:
+                await asyncio.sleep(self.min_request_interval - elapsed)
+            self.last_request_time = time.time()
 
     async def close(self):
         # 🆕 FIX: Не закрываем сессию если это singleton и другие боты могут использовать
