@@ -282,107 +282,65 @@ def api_slippage():
 
 @app.route("/api/chart_data")
 def api_chart_data():
-    """API: Данные для графиков (P&L, Win Rate по дням).
-    ✅ FIX v7: Строим из virtual_trades + all_trades (а не из stats:daily:* которые пустые в DEMO).
-    Возвращает КУМУЛЯТИВНЫЙ PnL по дням для красивого линейного графика.
-    """
+    """API: Данные для графиков (P&L, Win Rate по дням)"""
     days_param = request.args.get('days', '7')
-    days = 90 if days_param == 'all' else int(days_param)
-
-    # ── 1. Собираем все закрытые сделки из обоих ботов ────────────────────────
-    # Формат: { "YYYY-MM-DD": {"short_pnl": X, "long_pnl": Y, "wins": N, "trades": N} }
-    day_buckets = defaultdict(lambda: {"short_pnl": 0.0, "long_pnl": 0.0, "wins": 0, "trades": 0})
-
-    cutoff = datetime.utcnow() - timedelta(days=days)
-
-    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
-        prefix = bot_name.lower()
-        try:
-            redis = redis_getter()
-            # Читаем virtual_trades (основной источник в DEMO) + all_trades
-            for list_key in [f"{prefix}:virtual_trades", f"{prefix}:all_trades"]:
-                try:
-                    items = redis.execute(["LRANGE", list_key, "0", "499"])
-                    if not items:
-                        continue
-                    for raw in items:
-                        try:
-                            t = json.loads(raw)
-                            # Только закрытые сделки
-                            outcome = t.get("outcome") or t.get("exit_reason") or ""
-                            close_price = t.get("close_price") or t.get("exit_price") or t.get("outcome_price")
-                            if not outcome and not close_price:
-                                continue
-
-                            # Дата закрытия
-                            closed_ts = (t.get("closed_at") or t.get("exit_time")
-                                         or t.get("close_time") or t.get("timestamp") or "")
-                            if not closed_ts:
-                                continue
-                            try:
-                                closed_dt = datetime.fromisoformat(
-                                    str(closed_ts).replace("Z", "+00:00")
-                                )
-                                # Strip tz for comparison
-                                closed_naive = closed_dt.replace(tzinfo=None)
-                            except Exception:
-                                # Try unix timestamp
-                                try:
-                                    closed_naive = datetime.utcfromtimestamp(float(closed_ts))
-                                except Exception:
-                                    continue
-
-                            if closed_naive < cutoff:
-                                continue
-
-                            date_key = closed_naive.strftime("%Y-%m-%d")
-                            pnl = float(t.get("pnl_pct") or t.get("pnl") or 0)
-
-                            if prefix == "short":
-                                day_buckets[date_key]["short_pnl"] += pnl
-                            else:
-                                day_buckets[date_key]["long_pnl"] += pnl
-
-                            day_buckets[date_key]["trades"] += 1
-                            if pnl > 0:
-                                day_buckets[date_key]["wins"] += 1
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"[chart_data] {list_key} read error: {e}")
-        except Exception as e:
-            print(f"[chart_data] {bot_name} redis error: {e}")
-
-    # ── 2. Строим временной ряд и считаем КУМУЛЯТИВНЫЙ PnL ────────────────────
+    
+    # Handle 'all' period - get all available data
+    if days_param == 'all':
+        days = 90  # Default to 90 days for 'all' (3 months)
+    else:
+        days = int(days_param)
+    
     dates = []
-    short_pnl_data = []
-    long_pnl_data = []
     pnl_data = []
     win_rate_data = []
     trades_data = []
-
-    cum_short = 0.0
-    cum_long  = 0.0
-
-    for i in range(days - 1, -1, -1):
+    short_pnl_data = []
+    long_pnl_data = []
+    
+    for i in range(days-1, -1, -1):
         date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
-        bucket = day_buckets.get(date, {})
-
-        day_short = bucket.get("short_pnl", 0.0)
-        day_long  = bucket.get("long_pnl",  0.0)
-        day_tr    = bucket.get("trades", 0)
-        day_wins  = bucket.get("wins", 0)
-
-        cum_short = round(cum_short + day_short, 2)
-        cum_long  = round(cum_long  + day_long,  2)
-
+        
+        # Агрегируем данные из обоих ботов
+        day_pnl = 0
+        day_wins = 0
+        day_losses = 0
+        day_trades = 0
+        day_short_pnl = 0
+        day_long_pnl = 0
+        
+        for redis_getter in [get_redis_short, get_redis_long]:
+            try:
+                redis = redis_getter()
+                # Пробуем новый формат stats:daily с префиксом
+                for prefix in ["short", "long"]:
+                    key = f"{prefix}:stats:daily:{date}"
+                    try:
+                        data = redis.get(key)
+                        if data:
+                            day_stats = json.loads(data)
+                            pnl = day_stats.get("pnl", 0)
+                            day_pnl += pnl
+                            day_wins += day_stats.get("wins", 0)
+                            day_losses += day_stats.get("losses", 0)
+                            day_trades += day_stats.get("trades", 0)
+                            if prefix == "short":
+                                day_short_pnl += pnl
+                            else:
+                                day_long_pnl += pnl
+                    except:
+                        pass
+            except:
+                pass
+        
         dates.append(date[5:])  # MM-DD
-        short_pnl_data.append(cum_short)
-        long_pnl_data.append(cum_long)
-        pnl_data.append(round(cum_short + cum_long, 2))
-        win_rate_data.append(round(day_wins / day_tr * 100, 1) if day_tr > 0 else 0)
-        trades_data.append(day_tr)
-
+        pnl_data.append(round(day_pnl, 2))
+        short_pnl_data.append(round(day_short_pnl, 2))
+        long_pnl_data.append(round(day_long_pnl, 2))
+        win_rate = (day_wins / day_trades * 100) if day_trades > 0 else 0
+        win_rate_data.append(round(win_rate, 1))
+        trades_data.append(day_trades)
+    
     return jsonify({
         "dates": dates,
         "pnl": pnl_data,
@@ -619,15 +577,6 @@ def api_positions():
             print(f"Error reading positions for {bot_name}: {e}")
     
     # ✅ Добавляем ВИРТУАЛЬНЫЕ открытые позиции (TG-only, без биржи)
-    # ✅ FIX v7: Пропускаем виртуальную позицию если exchange-позиция для того же
-    #            symbol+direction уже добавлена — иначе каждая позиция дублируется.
-    # Строим set быстрого поиска из уже добавленных exchange позиций
-    exchange_pos_keys = {
-        f"{p['symbol'].upper()}:{p['direction'].lower()}"
-        for p in positions
-        if p.get("source") == "exchange"
-    }
-
     live_prices_for_virt = live_prices  # уже получены выше
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
@@ -684,10 +633,6 @@ def api_positions():
                                     pass
 
                             dedup_key = f"{symbol}:{direction}:virt"
-                            # ✅ FIX: не добавляем виртуальную если exchange уже есть
-                            exchange_key = f"{symbol.upper()}:{direction.lower()}"
-                            if exchange_key in exchange_pos_keys:
-                                continue
                             if dedup_key not in seen_positions:
                                 seen_positions.add(dedup_key)
                                 positions.append({
