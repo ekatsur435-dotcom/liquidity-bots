@@ -924,31 +924,44 @@ def api_virtual_trades():
             try:
                 redis = redis_getter()
                 items = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", str(limit - 1)])
+
+                # Считаем статистику по RAW данным, затем стрипаем до нужных полей
+                tp_c = sl_c = exp_c = 0
+                pnls = []
                 trades = []
                 if items:
                     for raw in items:
                         try:
                             t = json.loads(raw)
-                            t["bot"] = prefix
                             outcome = t.get("outcome", "unknown")
-                            t["outcome_label"] = {
-                                "tp": "✅ TP",
-                                "sl": "❌ SL",
-                                "expired": "⏰ Expired",
-                            }.get(outcome, outcome)
-                            trades.append(t)
+                            pnl_pct = t.get("pnl_pct")
+
+                            # Статистика
+                            if outcome == "tp":   tp_c += 1
+                            elif outcome == "sl": sl_c += 1
+                            elif outcome == "expired": exp_c += 1
+                            if pnl_pct is not None:
+                                pnls.append(float(pnl_pct))
+
+                            # ✅ Стрипаем до полей нужных фронтенду
+                            trades.append({
+                                "bot":              prefix,
+                                "symbol":           t.get("symbol", ""),
+                                "direction":        t.get("direction", prefix),
+                                "outcome":          outcome,
+                                "pnl_pct":          round(float(pnl_pct), 3) if pnl_pct is not None else None,
+                                "entry_price":      t.get("entry_price", 0),
+                                "score":            t.get("score", 0),
+                                "virtual_opened_at": t.get("virtual_opened_at") or t.get("timestamp") or t.get("created_at"),
+                            })
                         except Exception:
                             pass
 
                 result[prefix] = trades
 
-                total = len(trades)
-                tp_c  = sum(1 for t in trades if t.get("outcome") == "tp")
-                sl_c  = sum(1 for t in trades if t.get("outcome") == "sl")
-                exp_c = sum(1 for t in trades if t.get("outcome") == "expired")
-                closed = tp_c + sl_c  # expired не считаем в winrate
+                total  = len(trades)
+                closed = tp_c + sl_c
                 winrate = round(tp_c / closed * 100, 1) if closed > 0 else None
-                pnls = [t.get("pnl_pct", 0) for t in trades if t.get("pnl_pct") is not None]
                 avg_pnl = round(sum(pnls) / len(pnls), 2) if pnls else None
 
                 result["stats"][prefix] = {
@@ -956,19 +969,25 @@ def api_virtual_trades():
                     "winrate": winrate, "avg_pnl": avg_pnl,
                 }
 
-                # Также читаем АКТИВНЫЕ виртуальные позиции
+                # Также читаем АКТИВНЫЕ виртуальные позиции (тоже стрипаем)
                 try:
                     active_raw = redis.execute(["HGETALL", f"{prefix}:virtual_positions"])
                     if active_raw and isinstance(active_raw, list):
-                        # HGETALL возвращает [field, value, field, value, ...]
                         active_list = []
                         for i in range(0, len(active_raw), 2):
                             try:
                                 pos = json.loads(active_raw[i + 1])
-                                pos["bot"] = prefix
-                                pos["outcome"] = "open"
-                                pos["outcome_label"] = "🔄 Active"
-                                active_list.append(pos)
+                                pnl_pct = pos.get("pnl_pct")
+                                active_list.append({
+                                    "bot":              prefix,
+                                    "symbol":           pos.get("symbol", ""),
+                                    "direction":        pos.get("direction", prefix),
+                                    "outcome":          "open",
+                                    "pnl_pct":          round(float(pnl_pct), 3) if pnl_pct is not None else None,
+                                    "entry_price":      pos.get("entry_price", 0),
+                                    "score":            pos.get("score", 0),
+                                    "virtual_opened_at": pos.get("virtual_opened_at") or pos.get("timestamp") or pos.get("created_at"),
+                                })
                             except Exception:
                                 pass
                         result[f"{prefix}_active"] = active_list

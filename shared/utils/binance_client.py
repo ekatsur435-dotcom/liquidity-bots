@@ -198,11 +198,6 @@ class BinanceFuturesClient:
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
         
-        # ✅ FIX v8: "Dead symbol" кэш — символы которых нет на Bybit futures.
-        # После 3 подряд неудачных get_price → пропускаем без 8 API-вызовов.
-        # Сбрасывается при успехе (символ вернулся) или перезапуске бота.
-        self._price_fail_count: Dict[str, int] = {}
-
         # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool, permanent: bool}
         self._circuit_breaker: Dict[str, Dict] = {}
         # ✅ FIX: Навсегда отключённые эндпоинты (постоянно 404, нет смысла пробовать)
@@ -559,20 +554,14 @@ class BinanceFuturesClient:
         if self._use_binance:
             d = await self._binance("/fapi/v1/ticker/price", {"symbol": symbol})
             if d:
-                price = float(d["price"])
-                self._price_fail_count.pop(symbol, None)  # сброс при успехе
-                return price
+                return float(d["price"])
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
             items = result.get("list", [])
             if items:
                 p = items[0].get("lastPrice")
-                if p:
-                    self._price_fail_count.pop(symbol, None)  # сброс при успехе
-                    return float(p)
-        # ✅ FIX v8: трекаем сбои — символ может не существовать на Bybit futures
-        self._price_fail_count[symbol] = self._price_fail_count.get(symbol, 0) + 1
+                return float(p) if p else None
         return None
 
     # =========================================================================
@@ -1033,16 +1022,6 @@ class BinanceFuturesClient:
         Полные рыночные данные.
         v2.1: добавлены breakout поля из 15м свечей.
         """
-        # ✅ FIX v8: Dead symbol guard — пропускаем символов которых нет на Bybit.
-        # 3+ подряд провала get_price → не тратим 8 параллельных API-вызовов.
-        _DEAD_THRESHOLD = 3
-        if self._price_fail_count.get(symbol, 0) >= _DEAD_THRESHOLD:
-            # Раз в 50 вызовов сбрасываем счётчик чтобы перепроверить (делист → листинг)
-            if self._price_fail_count.get(symbol, 0) % 50 == 0:
-                print(f"🔄 [DEAD-SYM] {symbol}: перепроверяем (был мёртв {self._price_fail_count[symbol]} раз)")
-                self._price_fail_count[symbol] = _DEAD_THRESHOLD  # сбрасываем до порога
-            else:
-                return None  # быстрый выход без API-вызовов
         print(f"🔍 [API-CALL] get_complete_market_data({symbol}) called")  # DEBUG ENTRY
         try:
             await self._init_source()

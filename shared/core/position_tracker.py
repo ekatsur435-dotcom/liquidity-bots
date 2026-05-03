@@ -651,12 +651,7 @@ class PositionTracker:
             try:
                 bingx_symbol = symbol + "-USDT" if "-USDT" not in symbol else symbol
                 print(f"🔍 [PT] _move_sl: symbol={symbol}, bingx_symbol={bingx_symbol}, position_side={position_side}")
-                # ✅ FIX v8: RETRY loop с обработкой code=110412 (SL уже пройден)
-                # update_stop_loss возвращает:
-                #   True  → успех
-                #   False → ошибка, можно retry
-                #   None  → SL breached (code=110412), нужен emergency close
-                sl_breached = False
+                # ✅ RETRY: 3 попытки с паузой 1 секунда (v2.7)
                 for attempt in range(3):
                     print(f"🔍 [PT] Attempt {attempt + 1}/3")
                     for sym_fmt in [bingx_symbol, symbol.replace("USDT", "-USDT"), symbol]:
@@ -665,39 +660,15 @@ class PositionTracker:
                             sym_fmt, position_side, new_sl, direction
                         )
                         print(f"🔍 [PT] update_stop_loss returned: {ok}")
-                        if ok is True:
+                        if ok:
                             exchange_updated = True
                             print(f"✅ [PT] SL updated successfully with sym_fmt={sym_fmt}")
                             break
-                        if ok is None:
-                            # 110412: SL уже пройден — retry бессмысленен
-                            sl_breached = True
-                            print(f"🚨 [PT] {symbol}: SL BREACHED — прерываем retry, нужен emergency close!")
-                            break
-                    if exchange_updated or sl_breached:
+                    if exchange_updated:
                         break
-                    if attempt < 2:
+                    if attempt < 2:  # Пауза между попытками (не после последней)
                         print(f"🔍 [PT] Waiting 1s before next attempt...")
                         await asyncio.sleep(1)
-
-                # ✅ FIX v8: Если SL пройден — принудительно закрываем позицию
-                if sl_breached:
-                    print(f"🚨 [PT] {symbol}: EMERGENCY CLOSE — SL breached, закрываем по рынку!")
-                    pos_side = "SHORT" if direction == "short" else "LONG"
-                    try:
-                        closed = await self.auto_trader.bingx.close_position(symbol, pos_side)
-                        print(f"{'✅' if closed else '❌'} [PT] Emergency close {symbol}: {closed}")
-                    except Exception as ec:
-                        print(f"❌ [PT] Emergency close error {symbol}: {ec}")
-                    # Получаем актуальную цену для P&L записи
-                    try:
-                        md = await self.binance.get_complete_market_data(symbol)
-                        close_price = md.price if md else _f(signal.get("stop_loss", 0))
-                    except Exception:
-                        close_price = _f(signal.get("stop_loss", 0))
-                    await self._close_sl(signal, close_price)
-                    return  # ← дальнейшая обработка не нужна
-
                 if not exchange_updated:
                     print(f"⚠️  [PT] SL на бирже не обновлён для {symbol} после 3 попыток — только Redis")
             except Exception as e:

@@ -605,15 +605,6 @@ class BingXClient:
             print(f"🔍 [BingX] Placing SL order: {body}")
             result = await self._make_request("POST", "/openApi/swap/v2/trade/order", body=body)
             print(f"🔍 [BingX] API result: {result}")
-
-            # ✅ FIX v8: code=110412 → SL price уже пройден текущей ценой.
-            # Retry бесполезен. Возвращаем None как сигнал position_tracker-у
-            # что нужно принудительно закрыть позицию по рынку.
-            if result and result.get("code") == 110412:
-                print(f"🚨 [BingX] SL BREACHED (110412): {symbol} | "
-                      f"SL={rounded_sl} уже ниже текущей цены — нужен emergency close!")
-                return None  # ← sentinel: позиция должна быть закрыта принудительно
-
             ok = result and result.get("code") == 0
             if ok:
                 order_id = result.get("data", {}).get("order", {}).get("orderId", "?")
