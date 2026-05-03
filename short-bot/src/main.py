@@ -1794,18 +1794,64 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             pass
 
         # ═══════════════════════════════════════════════════════════════════
+        # ✅ Phase 8: WYCKOFF UPTHRUST SL — SL за хай ложного пробоя распределения
+        # ═══════════════════════════════════════════════════════════════════
+        wyckoff_sl = None
+        try:
+            wyckoff_pattern = next((p for p in patterns if p.name == "WYCKOFF_UPTHRUST"), None)
+            if wyckoff_pattern and wyckoff_pattern.suggested_sl_pct > 0:
+                wyckoff_sl = price * (1 + wyckoff_pattern.suggested_sl_pct / 100)
+                print(f"🌀 [WYCKOFF-SL] {symbol}: Upthrust → SL={wyckoff_sl:.6f} ({wyckoff_pattern.suggested_sl_pct:.2f}%)")
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ Phase 7: XVP VOL PROFILE SL — SL над VAH (Value Area High)
+        # VAH = верхняя граница зоны стоимости → структурное сопротивление
+        # ═══════════════════════════════════════════════════════════════════
+        xvp_sl = None
+        try:
+            xvp_candles = []
+            for c in (ohlcv_4h_bias or []):
+                if hasattr(c, 'open'):
+                    xvp_candles.append({"open": float(c.open), "high": float(c.high),
+                                        "low": float(c.low), "close": float(c.close),
+                                        "volume": float(getattr(c, 'volume', 0) or 0)})
+                elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                    xvp_candles.append({"open": float(c[1]), "high": float(c[2]),
+                                        "low": float(c[3]), "close": float(c[4]),
+                                        "volume": float(c[5])})
+            if len(xvp_candles) >= 10:
+                xvp_result = get_xvp_analyzer().analyze(xvp_candles)
+                if xvp_result.vah > 0 and xvp_result.vah > price * 1.01:
+                    xvp_sl = xvp_result.vah * 1.003   # чуть выше VAH с буфером
+                    print(f"📊 [XVP-SL] {symbol}: VAH={xvp_result.vah:.6f} POC={xvp_result.poc:.6f} → SL={xvp_sl:.6f}")
+        except Exception as e:
+            print(f"[XVP-SL] {symbol} error: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════
         # ✅ v5: ИЕРАРХИЯ SL для SHORT (зеркально LONG)
-        # 1. Swing High → 2. Sweep Tail → 3. ATR-adaptive default
+        # 1. Swing High (структура 4H)      — структурная инвалидация
+        # 2. Sweep Tail (ликвидность 15m)   — за хвост ликвидности
+        # 3. Wyckoff Upthrust High          — за ложный пробой
+        # 4. XVP VAH (Volume Profile)       — за зону стоимости
+        # 5. ATR-adaptive default           — адаптивный фолбэк
         # ═══════════════════════════════════════════════════════════════════
         min_sl_dist = atr_price * 0.8
         max_sl_dist = atr_price * 4.0
 
-        if swing_sl and (swing_sl - price) >= min_sl_dist and (swing_sl - price) <= max_sl_dist:
+        if swing_sl and min_sl_dist <= (swing_sl - price) <= max_sl_dist:
             stop_loss = swing_sl
             reasons.append(f"📐 Swing High SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
-        elif sweep_sl and (sweep_sl - price) >= min_sl_dist and (sweep_sl - price) <= max_sl_dist:
+        elif sweep_sl and min_sl_dist <= (sweep_sl - price) <= max_sl_dist:
             stop_loss = sweep_sl
             reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
+        elif wyckoff_sl and min_sl_dist <= (wyckoff_sl - price) <= max_sl_dist:
+            stop_loss = wyckoff_sl
+            reasons.append(f"🌀 Wyckoff Upthrust SL: ${stop_loss:.6f}")
+        elif xvp_sl and min_sl_dist <= (xvp_sl - price) <= max_sl_dist:
+            stop_loss = xvp_sl
+            reasons.append(f"📊 XVP VAH SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
             reasons.append(f"📊 ATR SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
@@ -1829,6 +1875,28 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                             "score_bonus": smc.score_bonus}
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
+
+        # ✅ Phase 5: EQH/EQL Scanner + EQH Buffer для SHORT
+        # EQH = равные максимумы = зона retail-ловушки сверху
+        # Если наш SL ниже EQH — он будет снесён manipulation spike
+        try:
+            pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
+            if pool_scan.active_sweeps:
+                final_score = min(100, final_score + 10)
+                reasons.append(f"🌊 Liquidity sweep detected (+10)")
+            # EQH Buffer: если SL между ценой и EQH — смещаем за EQH
+            if pool_scan.nearest_eqh and pool_scan.nearest_eqh.level > price * 1.005:
+                eqh_level = pool_scan.nearest_eqh.level
+                # Если SL ниже EQH+0.3% (в ловушке между ценой и EQH)
+                if stop_loss < eqh_level * 0.997:
+                    new_sl = eqh_level * 1.003   # за EQH с буфером 0.3%
+                    sl_new_dist = new_sl - price
+                    if min_sl_dist <= sl_new_dist <= max_sl_dist:
+                        print(f"🌊 [EQH-BUF] {symbol}: SL {stop_loss:.6f} в ловушке EQH {eqh_level:.6f} → смещён до {new_sl:.6f}")
+                        stop_loss = new_sl
+                        reasons.append(f"🌊 EQH Buffer SL: ${new_sl:.6f} (за ликвидную зону)")
+        except Exception as e:
+            print(f"🌊 [EQH-BUF] {symbol} error: {e}")
 
         # 🆕 Aegis: Z-Score Pump Detector (критично для SHORT!)
         try:

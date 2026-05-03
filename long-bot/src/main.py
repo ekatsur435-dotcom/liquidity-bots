@@ -1772,7 +1772,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             pass
 
         # ═══════════════════════════════════════════════════════════════════
-        # ✅ v5: SWEEP TAIL SL — за хвост ликвидностного свипа (уже было)
+        # ✅ v5: SWEEP TAIL SL — за хвост ликвидностного свипа
         # ═══════════════════════════════════════════════════════════════════
         sweep_sl = None
         try:
@@ -1786,22 +1786,66 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             pass
 
         # ═══════════════════════════════════════════════════════════════════
+        # ✅ Phase 8: WYCKOFF SPRING SL — SL за лоу ложного пробоя накопления
+        # ═══════════════════════════════════════════════════════════════════
+        wyckoff_sl = None
+        try:
+            wyckoff_pattern = next((p for p in patterns if p.name == "WYCKOFF_SPRING"), None)
+            if wyckoff_pattern and wyckoff_pattern.suggested_sl_pct > 0:
+                wyckoff_sl = price * (1 - wyckoff_pattern.suggested_sl_pct / 100)
+                print(f"🌀 [WYCKOFF-SL] {symbol}: Spring → SL={wyckoff_sl:.6f} ({wyckoff_pattern.suggested_sl_pct:.2f}%)")
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ Phase 7: XVP VOL PROFILE SL — SL под VAL (Value Area Low)
+        # VAL = нижняя граница зоны стоимости (70% объёма) → сильная поддержка
+        # ═══════════════════════════════════════════════════════════════════
+        xvp_sl = None
+        try:
+            xvp_candles = []
+            for c in (ohlcv_4h_bias or []):
+                if hasattr(c, 'open'):
+                    xvp_candles.append({"open": float(c.open), "high": float(c.high),
+                                        "low": float(c.low), "close": float(c.close),
+                                        "volume": float(getattr(c, 'volume', 0) or 0)})
+                elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                    xvp_candles.append({"open": float(c[1]), "high": float(c[2]),
+                                        "low": float(c[3]), "close": float(c[4]),
+                                        "volume": float(c[5])})
+            if len(xvp_candles) >= 10:
+                xvp_result = get_xvp_analyzer().analyze(xvp_candles)
+                if xvp_result.val > 0 and xvp_result.val < price * 0.99:
+                    xvp_sl = xvp_result.val * 0.997   # чуть ниже VAL с буфером
+                    print(f"📊 [XVP-SL] {symbol}: VAL={xvp_result.val:.6f} POC={xvp_result.poc:.6f} → SL={xvp_sl:.6f}")
+        except Exception as e:
+            print(f"[XVP-SL] {symbol} error: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════
         # ✅ v5: ИЕРАРХИЯ ВЫБОРА SL (Институциональный стандарт):
-        # 1. Swing Low (структура 4H)  — наивысший приоритет
-        # 2. Sweep Tail (ликвидность 15m)
-        # 3. ATR-adaptive default (адаптивный фолбэк)
+        # 1. Swing Low (структура 4H)      — структурная инвалидация
+        # 2. Sweep Tail (ликвидность 15m)  — за хвост ликвидности
+        # 3. Wyckoff Spring Low            — за ложный пробой
+        # 4. XVP VAL (Volume Profile)      — за зону стоимости
+        # 5. ATR-adaptive default          — адаптивный фолбэк
         # Потом SMC может уточнить через OB.low или FVG.lower
-        # Финальная проверка: SL должен быть в ATR-диапазоне [0.8×ATR — 4×ATR]
+        # Финальная проверка: SL в диапазоне [0.8×ATR — 4×ATR]
         # ═══════════════════════════════════════════════════════════════════
         min_sl_dist = atr_price * 0.8   # минимум: 0.8×ATR от цены
         max_sl_dist = atr_price * 4.0   # максимум: 4×ATR от цены
 
-        if swing_sl and (price - swing_sl) >= min_sl_dist and (price - swing_sl) <= max_sl_dist:
+        if swing_sl and min_sl_dist <= (price - swing_sl) <= max_sl_dist:
             stop_loss = swing_sl
             reasons.append(f"📐 Swing Low SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
-        elif sweep_sl and (price - sweep_sl) >= min_sl_dist and (price - sweep_sl) <= max_sl_dist:
+        elif sweep_sl and min_sl_dist <= (price - sweep_sl) <= max_sl_dist:
             stop_loss = sweep_sl
             reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
+        elif wyckoff_sl and min_sl_dist <= (price - wyckoff_sl) <= max_sl_dist:
+            stop_loss = wyckoff_sl
+            reasons.append(f"🌀 Wyckoff Spring SL: ${stop_loss:.6f}")
+        elif xvp_sl and min_sl_dist <= (price - xvp_sl) <= max_sl_dist:
+            stop_loss = xvp_sl
+            reasons.append(f"📊 XVP VAL SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
             reasons.append(f"📊 ATR SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
@@ -1830,7 +1874,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
 
-        # 🌊 Phase 3: EQH/EQL Scanner — детекция пулов ликвидности
+        # 🌊 Phase 3 + Phase 5: EQH/EQL Scanner — детекция пулов ликвидности + буфер SL
         pool_data = {}
         try:
             pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
@@ -1843,6 +1887,18 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     "eql_levels": len(pool_scan.eql_levels),
                     "active_sweeps": len(pool_scan.active_sweeps)
                 }
+            # ✅ Phase 5: EQL Buffer — если SL сидит НА уровне retail-ловушки,
+            # смещаем его ЗА EQL зону, чтобы manipulation spike не вынес нас
+            if pool_scan.nearest_eql and pool_scan.nearest_eql.level < price * 0.995:
+                eql_level = pool_scan.nearest_eql.level
+                # Если наш SL выше EQL + 0.3% (т.е. между ценой и EQL — розничная ловушка)
+                if stop_loss > eql_level * 1.003:
+                    new_sl = eql_level * 0.997   # за EQL с буфером 0.3%
+                    sl_new_dist = price - new_sl
+                    if min_sl_dist <= sl_new_dist <= max_sl_dist:
+                        print(f"🌊 [EQL-BUF] {symbol}: SL {stop_loss:.6f} в ловушке EQL {eql_level:.6f} → смещён до {new_sl:.6f}")
+                        stop_loss = new_sl
+                        reasons.append(f"🌊 EQL Buffer SL: ${new_sl:.6f} (за ликвидную зону)")
         except Exception as e:
             print(f"🌊 [v2.9] Pool scan error {symbol}: {e}")
 
