@@ -1744,27 +1744,71 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         )
 
         # ── SL ВЫШЕ входа, TP НИЖЕ входа (SHORT) ─────────────────────────────
-        
-        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: ATR-АДАПТИВНЫЙ SL для SHORT
+        # ═══════════════════════════════════════════════════════════════════
+        atr_pct = 1.5
+        vol_class = "medium"
+        if symbol_profile and symbol_profile.atr_14_pct > 0:
+            atr_pct   = symbol_profile.atr_14_pct
+            vol_class = symbol_profile.volatility_class
+        atr_multiplier = {"low": 1.5, "medium": 2.0, "high": 2.5, "extreme": 3.0}.get(vol_class, 2.0)
+        adaptive_sl_pct = round(min(max(atr_pct * atr_multiplier, 1.2), 8.0), 2)
+        atr_price = price * atr_pct / 100
+        default_sl = price * (1 + adaptive_sl_pct / 100)
+        print(f"📐 [SL-ATR] {symbol}: ATR={atr_pct:.2f}% vol={vol_class} mult={atr_multiplier}× → SL={adaptive_sl_pct:.2f}%")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: SWING HIGH SL — структурный стоп за последний значимый максимум
+        # ═══════════════════════════════════════════════════════════════════
+        swing_sl = None
+        try:
+            if ohlcv_4h_bias and len(ohlcv_4h_bias) >= 8:
+                highs_4h = [float(c.high if hasattr(c, 'high') else c[1]) for c in ohlcv_4h_bias]
+                swing_highs = []
+                for idx in range(2, len(highs_4h) - 2):
+                    if highs_4h[idx] == max(highs_4h[idx - 2: idx + 3]):
+                        swing_highs.append(highs_4h[idx])
+                # Берём наинизший свинг-хай ВЫШЕ текущей цены (ближайшее структурное сопротивление)
+                valid = [sh for sh in swing_highs if sh > price * 1.003]
+                if valid:
+                    nearest_swing = min(valid)
+                    swing_sl = nearest_swing + atr_price * 0.5      # +0.5×ATR буфер
+                    print(f"📐 [SWING-SL] {symbol}: SwingHigh={nearest_swing:.6f} → SL={swing_sl:.6f} (+0.5×ATR)")
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: SWEEP TAIL SL
+        # ═══════════════════════════════════════════════════════════════════
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
             ld = LiquidityDetector(_ohlcv(ohlcv_15m))
             sweep_result = ld.detect_sweep(direction="short")
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_high > 0:
-                # Стоп за хвост свечи sweep + 0.3% buffer (выше для SHORT)
                 sweep_sl = sweep_result.sweep_high * 1.003
-                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_high=${sweep_result.sweep_high:.6f})")
-        except Exception as e:
-            pass  # Fallback на стандартный расчёт
-        
-        # Используем sweep-based стоп если он лучше (выше цены но не слишком далеко)
-        default_sl = price * (1 + Config.SL_BUFFER / 100)
-        if sweep_sl and sweep_sl > price and sweep_sl < price * 1.03:  # Не более 3% от цены
+                print(f"🎯 [SWEEP-SL] {symbol}: sweep_high={sweep_result.sweep_high:.6f} → SL={sweep_sl:.6f}")
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: ИЕРАРХИЯ SL для SHORT (зеркально LONG)
+        # 1. Swing High → 2. Sweep Tail → 3. ATR-adaptive default
+        # ═══════════════════════════════════════════════════════════════════
+        min_sl_dist = atr_price * 0.8
+        max_sl_dist = atr_price * 4.0
+
+        if swing_sl and (swing_sl - price) >= min_sl_dist and (swing_sl - price) <= max_sl_dist:
+            stop_loss = swing_sl
+            reasons.append(f"📐 Swing High SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
+        elif sweep_sl and (sweep_sl - price) >= min_sl_dist and (sweep_sl - price) <= max_sl_dist:
             stop_loss = sweep_sl
-            reasons.append(f"🎯 v2.9 Sweep Tail SL: ${stop_loss:.6f}")
+            reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
+            reasons.append(f"📊 ATR SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
             
         entry_price = price
         smc_data    = {}
@@ -1779,7 +1823,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl > price:
                     stop_loss = smc.refined_sl
-                if smc.ob_entry:
+                if smc.ob_entry and smc.ob_entry > price * 0.999:  # ✅ FIX v5: OB должен быть ВЫШЕ или на цене для SHORT
                     entry_price = smc.ob_entry
                 smc_data = {"has_ob": smc.has_ob, "has_fvg": smc.has_fvg,
                             "score_bonus": smc.score_bonus}
@@ -1842,10 +1886,16 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"🔴 [FILTER2-SMC] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
-        # ✅ SL для SHORT: минимум = SL_BUFFER%, не захардкоженный 1%
-        min_sl_dist = Config.SL_BUFFER / 100
-        if (stop_loss - price) / price < min_sl_dist:
-            stop_loss = price * (1 + Config.SL_BUFFER / 100)
+        # ✅ v5: ATR-clamping SL для SHORT — SL не может быть меньше 0.8×ATR или больше 4×ATR от цены
+        sl_dist = stop_loss - price
+        if sl_dist < min_sl_dist:
+            # SL слишком близко — расширяем до ATR-адаптивного дефолта
+            stop_loss = default_sl
+            print(f"⚠️ [SL-CLAMP-MIN] {symbol}: SL слишком близко ({sl_dist/price*100:.2f}% < {atr_pct*0.8:.2f}%) → ATR default {adaptive_sl_pct:.2f}%")
+        elif sl_dist > max_sl_dist:
+            # SL слишком далеко — ограничиваем до 4×ATR
+            stop_loss = price + max_sl_dist
+            print(f"⚠️ [SL-CLAMP-MAX] {symbol}: SL слишком далеко ({sl_dist/price*100:.2f}% > {atr_pct*4:.2f}%) → ограничен 4×ATR")
 
         # TP НИЖЕ входа для SHORT
         take_profits = [
@@ -1854,6 +1904,15 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ]
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
+
+        # ✅ v5: RR Gate — не брать сделку если Risk:Reward < 1.5
+        if take_profits:
+            tp1_pct = (price - take_profits[0][0]) / price * 100  # для SHORT: цена падает к TP1
+            rr_ratio = tp1_pct / sl_pct if sl_pct > 0 else 0
+            if rr_ratio < 1.5:
+                print(f"🚫 [RR-GATE] {symbol}: RR={rr_ratio:.2f} (TP1={tp1_pct:.2f}% / SL={sl_pct:.2f}%) < 1.5 → сделку не брать")
+                return None
+            print(f"✅ [RR-GATE] {symbol}: RR={rr_ratio:.2f} (TP1={tp1_pct:.2f}% / SL={sl_pct:.2f}%) — OK")
         
         # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
         # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!

@@ -1422,6 +1422,15 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         if mtf_rsi_reason:
             print(f"   {mtf_rsi_reason}")
 
+        # 🛑 HARD BLOCK: жёсткий запрет на LONG в экстремальной перекупленности
+        # Логика: при RSI 4H>80 движение уже на излёте, LONG = покупка на пике
+        if rsi_4h > 80:
+            print(f"🛑 [RSI-CEIL-LONG] {symbol}: RSI 4H={rsi_4h:.0f} > 80 — пик памп, LONG заблокирован")
+            return None
+        if rsi_4h > 74 and rsi_1h_val > 72:
+            print(f"🛑 [RSI-CEIL-LONG] {symbol}: RSI 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — оба перекуплены, LONG заблокирован")
+            return None
+
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
         patterns      = state.pattern_detector.detect_all(ohlcv_30m, hourly_deltas, md)
@@ -1700,11 +1709,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 ema9_4h  = sum(closes_4h_bias[-9:]) / 9
                 ema21_4h = sum(closes_4h_bias[-21:]) / 21
                 if ema9_4h < ema21_4h * 0.995:  # 4H EMA9 < EMA21×0.995 = подтверждённый даунтренд
-                    if final_score < 75:          # Разрешаем сигналы ≥75 (снижено с 90)
-                        print(f"🚫 [HTF-4H-LONG] {symbol}: EMA9({ema9_4h:.4f}) < EMA21({ema21_4h:.4f}) — 4H даунтренд, score={final_score}<75 → skip")
+                    if final_score < 85:          # ✅ FIX v4: поднято с 75 → 85 (почти никогда не пропускать против тренда)
+                        print(f"🚫 [HTF-4H-LONG] {symbol}: EMA9({ema9_4h:.4f}) < EMA21({ema21_4h:.4f}) — 4H даунтренд, score={final_score}<85 → skip")
                         return None
                     else:
-                        print(f"⚠️ [HTF-4H-LONG] {symbol}: 4H даунтренд, но score={final_score}≥75 — разрешаем")
+                        print(f"⚠️ [HTF-4H-LONG] {symbol}: 4H даунтренд, но score={final_score}≥85 — редкий сигнал, разрешаем")
         except Exception as e:
             print(f"⚠️ [HTF-4H-LONG] {symbol}: ошибка проверки 4H тренда: {e}")
 
@@ -1721,28 +1730,81 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         tp_weights = Config.TP_WEIGHTS
 
         # ── SL НИЖЕ входа, TP ВЫШЕ входа (LONG) ──────────────────────────────
-        price       = md.price
-        
-        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
+        price = md.price
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: ATR-АДАПТИВНЫЙ SL — разные активы требуют разных стопов
+        # BTC (ATR~1.5%) ≠ мем-коин (ATR~5%). Фиксированный 2% — ошибка.
+        # Источник: symbol_profile.atr_14_pct (считается в symbol_profiler.py)
+        # ═══════════════════════════════════════════════════════════════════
+        atr_pct = 1.5  # дефолт если профиль недоступен
+        vol_class = "medium"
+        if symbol_profile and symbol_profile.atr_14_pct > 0:
+            atr_pct   = symbol_profile.atr_14_pct
+            vol_class = symbol_profile.volatility_class
+        # Мультипликатор по волатильности: тихий рынок — меньше буфер, экстрем — больше
+        atr_multiplier = {"low": 1.5, "medium": 2.0, "high": 2.5, "extreme": 3.0}.get(vol_class, 2.0)
+        adaptive_sl_pct = round(min(max(atr_pct * atr_multiplier, 1.2), 8.0), 2)  # зажато: 1.2%–8%
+        atr_price = price * atr_pct / 100          # ATR в единицах цены
+        default_sl = price * (1 - adaptive_sl_pct / 100)
+        print(f"📐 [SL-ATR] {symbol}: ATR={atr_pct:.2f}% vol={vol_class} mult={atr_multiplier}× → SL={adaptive_sl_pct:.2f}%")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: SWING LOW SL — структурный стоп за последний значимый минимум
+        # Данные 4H уже получены выше (ohlcv_4h_bias). Цена ломает свинг = сценарий инвалидирован.
+        # ═══════════════════════════════════════════════════════════════════
+        swing_sl = None
+        try:
+            if ohlcv_4h_bias and len(ohlcv_4h_bias) >= 8:
+                lows_4h = [float(c.low if hasattr(c, 'low') else c[2]) for c in ohlcv_4h_bias]
+                # Свинг-лоу: локальный минимум с lookback=2 (ниже 2 соседей с каждой стороны)
+                swing_lows = []
+                for idx in range(2, len(lows_4h) - 2):
+                    if lows_4h[idx] == min(lows_4h[idx - 2: idx + 3]):
+                        swing_lows.append(lows_4h[idx])
+                # Берём наивысший свинг-лоу НИЖЕ текущей цены (ближайшая структурная поддержка)
+                valid = [sl for sl in swing_lows if sl < price * 0.997]
+                if valid:
+                    nearest_swing = max(valid)                           # ближайший снизу
+                    swing_sl = nearest_swing - atr_price * 0.5          # -0.5×ATR буфер
+                    print(f"📐 [SWING-SL] {symbol}: SwingLow={nearest_swing:.6f} → SL={swing_sl:.6f} (-0.5×ATR)")
+        except Exception as e:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: SWEEP TAIL SL — за хвост ликвидностного свипа (уже было)
+        # ═══════════════════════════════════════════════════════════════════
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
             ld = LiquidityDetector(_ohlcv(ohlcv_15m))
             sweep_result = ld.detect_sweep(direction="long")
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_low > 0:
-                # Стоп за хвост свечи sweep + 0.3% buffer
                 sweep_sl = sweep_result.sweep_low * 0.997
-                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_low=${sweep_result.sweep_low:.6f})")
-        except Exception as e:
-            pass  # Fallback на стандартный расчёт
-        
-        # Используем sweep-based стоп если он лучше (ниже цены но не слишком далеко)
-        default_sl = price * (1 - Config.SL_BUFFER / 100)
-        if sweep_sl and sweep_sl < price and sweep_sl > price * 0.97:  # Не более 3% от цены
+                print(f"🎯 [SWEEP-SL] {symbol}: sweep_low={sweep_result.sweep_low:.6f} → SL={sweep_sl:.6f}")
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: ИЕРАРХИЯ ВЫБОРА SL (Институциональный стандарт):
+        # 1. Swing Low (структура 4H)  — наивысший приоритет
+        # 2. Sweep Tail (ликвидность 15m)
+        # 3. ATR-adaptive default (адаптивный фолбэк)
+        # Потом SMC может уточнить через OB.low или FVG.lower
+        # Финальная проверка: SL должен быть в ATR-диапазоне [0.8×ATR — 4×ATR]
+        # ═══════════════════════════════════════════════════════════════════
+        min_sl_dist = atr_price * 0.8   # минимум: 0.8×ATR от цены
+        max_sl_dist = atr_price * 4.0   # максимум: 4×ATR от цены
+
+        if swing_sl and (price - swing_sl) >= min_sl_dist and (price - swing_sl) <= max_sl_dist:
+            stop_loss = swing_sl
+            reasons.append(f"📐 Swing Low SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
+        elif sweep_sl and (price - sweep_sl) >= min_sl_dist and (price - sweep_sl) <= max_sl_dist:
             stop_loss = sweep_sl
-            reasons.append(f"🎯 v2.7 Sweep Tail SL: ${stop_loss:.6f}")
+            reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
+            reasons.append(f"📊 ATR SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
             
         entry_price = price
         smc_data    = {}
@@ -1757,8 +1819,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl < price:      # ✅ FIX: SL must be below
                     stop_loss = smc.refined_sl
-                if smc.ob_entry:
+                # ✅ FIX v4: для LONG ob_entry должен быть НИЖЕ текущей цены
+                # Если OB выше цены — это пропущенная зона (цена уже ушла), не гоняться!
+                if smc.ob_entry and smc.ob_entry < price * 1.001:  # не более +0.1% от цены
                     entry_price = smc.ob_entry
+                elif smc.ob_entry and smc.ob_entry >= price * 1.001:
+                    print(f"⚠️ [SMC-OB-SKIP] {symbol}: ob_entry={smc.ob_entry:.6f} > price={price:.6f} — OB выше цены, entry=price")
                 smc_data = {"has_ob": smc.has_ob, "has_fvg": smc.has_fvg,
                             "score_bonus": smc.score_bonus}
             except Exception as e:
@@ -1836,9 +1902,18 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"🔴 [FILTER2-SMC-LONG] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
-        # ✅ FIX: Проверка SL для LONG — должен быть НИЖЕ цены
-        if (price - stop_loss) / price < 0.005:       # минимум 0.5% SL
-            stop_loss = price * (1 - Config.SL_BUFFER / 100)
+        # ✅ v5: SMC может уточнить SL через OB.low / FVG.lower
+        # Принимаем только если укладывается в ATR-диапазон
+        if stop_loss != default_sl and Config.USE_SMC:
+            pass  # SMC уже обработан выше
+        # Дополнительно: если SMC дал refined_sl — проверяем его качество
+        sl_dist = price - stop_loss
+        if sl_dist < min_sl_dist:
+            print(f"⚠️ [SL-CLAMP-MIN] {symbol}: SL слишком близко ({sl_dist/price*100:.2f}% < {min_sl_dist/price*100:.2f}%) → ATR default")
+            stop_loss = default_sl
+        elif sl_dist > max_sl_dist:
+            print(f"⚠️ [SL-CLAMP-MAX] {symbol}: SL слишком далеко ({sl_dist/price*100:.2f}% > {max_sl_dist/price*100:.2f}%) → 4×ATR cap")
+            stop_loss = price - max_sl_dist
 
         # ✅ FIX: TP ВЫШЕ входа для LONG
         take_profits = [
@@ -1846,7 +1921,20 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             for i, tp in enumerate(tp_levels)
         ]
 
-        sl_pct = round((price - stop_loss) / price * 100, 2)  # ✅ FIX: правильный расчёт %
+        sl_pct = round((price - stop_loss) / price * 100, 2)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v5: RR GATE — не брать сделку если Risk:Reward < 1.5
+        # Золотое правило: TP1 должен быть минимум в 1.5× дальше чем SL
+        # ═══════════════════════════════════════════════════════════════════
+        if take_profits and sl_pct > 0:
+            tp1_price = take_profits[0][0]
+            tp1_pct = (tp1_price - price) / price * 100
+            rr_ratio = tp1_pct / sl_pct if sl_pct > 0 else 0
+            if rr_ratio < 1.5:
+                print(f"🚫 [RR-GATE] {symbol}: RR={rr_ratio:.2f} (TP1={tp1_pct:.2f}% / SL={sl_pct:.2f}%) < 1.5 → сделку не брать")
+                return None
+            print(f"✅ [RR-GATE] {symbol}: RR={rr_ratio:.2f} ≥ 1.5 — OK")
         
         # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
         # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!

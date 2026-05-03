@@ -363,7 +363,7 @@ class ShortScorer(BaseScorer):
 
 class LongScorer(BaseScorer):
 
-    def __init__(self, min_score: int = 55):  # ✅ FIX: 55 (было 65) — больше сигналов
+    def __init__(self, min_score: int = 65):  # ✅ FIX v4: возврат к 65 — меньше но качественней
         super().__init__(min_score, Direction.LONG)
 
     def calculate_rsi_component(self, rsi_1h: float) -> ScoreComponent:
