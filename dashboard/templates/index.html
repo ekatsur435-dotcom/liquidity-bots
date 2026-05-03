@@ -1232,7 +1232,7 @@
 
         async function loadSignalLog() {
             try {
-                const res  = await fetch('/api/signal_log?limit=200');
+                const res  = await fetch('/api/signal_log?limit=100');
                 const data = await res.json();
                 // Backend returns {short:[...], long:[...], stats:{...}}
                 const all = [...(data.short || []), ...(data.long || [])];
