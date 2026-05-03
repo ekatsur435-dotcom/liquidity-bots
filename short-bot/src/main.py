@@ -1411,6 +1411,13 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
 
         print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={rsi_1h_val:.1f} 30m={rsi_30m:.1f}")
 
+        # ✅ FIX: RSI 1H хард-флор — не шортим перепроданные монеты
+        # SIREN(37), ZEREBRO(37), ARIA(32), NOM(44) — все шли на отскок вверх!
+        # RSI < 45 на 1H = перепроданность, HIGH вероятность отскока против шорта
+        if rsi_1h_val < 45:
+            print(f"🚫 [RSI-FLOOR-SHORT] {symbol}: RSI 1H={rsi_1h_val:.1f} < 45 — уже перепродан, риск отскока → skip")
+            return None
+
         # --- MTF Confluence для SHORT: перекупленность на нескольких TF ---
         # XNY RSI=77 (1H) + если 4H тоже 70+ = классический SHORT вход после памп
         mtf_rsi_bonus  = 0
@@ -1428,12 +1435,17 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         elif rsi_4h > 60 and rsi_30m > 70:
             mtf_rsi_bonus  = +5
             mtf_rsi_reason = f"📊 MTF SHORT: 4H={rsi_4h:.0f} 30m={rsi_30m:.0f} — перекуплен 4H+30m +5"
+        elif rsi_4h < 40 and rsi_1h_val < 45:
+            # ✅ FIX: усилен штраф — оба TF в низкой зоне (RSI-FLOOR уже не пустит если 1H<45)
+            # Но если всё же прошло дальше — максимальный штраф
+            mtf_rsi_bonus  = -20
+            mtf_rsi_reason = f"🚨 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — ПЕРЕПРОДАН на обоих TF, не шортить! -20"
         elif rsi_4h < 30 and rsi_1h_val < 30:
-            mtf_rsi_bonus  = -10
-            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан 4H+1H, риск для SHORT -10"
+            mtf_rsi_bonus  = -20
+            mtf_rsi_reason = f"🚨 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан 4H+1H, экстремальный риск -20"
         elif rsi_4h < 35 and rsi_1h_val < 35:
-            mtf_rsi_bonus  = -5
-            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан, осторожно -5"
+            mtf_rsi_bonus  = -15
+            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан, осторожно -15"
 
         if mtf_rsi_reason:
             print(f"   {mtf_rsi_reason}")
@@ -1697,11 +1709,23 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 ema9_4h  = sum(closes_4h_bias[-9:]) / 9
                 ema21_4h = sum(closes_4h_bias[-21:]) / 21
                 if ema9_4h > ema21_4h * 1.005:  # 4H EMA9 > EMA21×1.005 = подтверждённый аптренд
-                    if final_score < 75:          # Разрешаем сигналы ≥75 (снижено с 90)
-                        print(f"🚫 [HTF-4H-SHORT] {symbol}: EMA9({ema9_4h:.4f}) > EMA21({ema21_4h:.4f}) — 4H аптренд, score={final_score}<75 → skip")
+                    # ✅ FIX: 75→82 — повышен порог входа против тренда
+                    # BSBUSDT, SPACEUSDT, LABUSDT — шортили в разгар аптренда
+                    if final_score < 82:
+                        print(f"🚫 [HTF-4H-SHORT] {symbol}: EMA9({ema9_4h:.4f}) > EMA21({ema21_4h:.4f}) — 4H аптренд, score={final_score}<82 → skip")
                         return None
                     else:
-                        print(f"⚠️ [HTF-4H-SHORT] {symbol}: 4H аптренд, но score={final_score}≥75 — разрешаем")
+                        print(f"⚠️ [HTF-4H-SHORT] {symbol}: 4H аптренд, но score={final_score}≥82 — разрешаем")
+
+                # ✅ FIX: Violent pump guard — цена далеко выше EMA21 = экстремальный памп
+                # BSBUSDT +250%, FHEUSDT вертикальный памп → блокируем без ≥90 score
+                price_vs_ema21_4h = price / ema21_4h if ema21_4h > 0 else 1.0
+                if price_vs_ema21_4h > 1.15:  # цена >15% выше EMA21 4H = насильственный памп
+                    if final_score < 90:
+                        print(f"🚫 [HTF-4H-PUMP] {symbol}: цена {(price_vs_ema21_4h-1)*100:.1f}% выше EMA21 4H — экстремальный памп, score={final_score}<90 → skip")
+                        return None
+                    else:
+                        print(f"⚠️ [HTF-4H-PUMP] {symbol}: {(price_vs_ema21_4h-1)*100:.1f}% выше EMA21, score={final_score}≥90 — разрешаем")
         except Exception as e:
             print(f"⚠️ [HTF-4H-SHORT] {symbol}: ошибка проверки 4H тренда: {e}")
 
@@ -2262,6 +2286,24 @@ async def virtual_position_monitor():
             virtual_positions = state.redis.get_virtual_positions(Config.BOT_TYPE)
             if virtual_positions:
                 print(f"🔍 [VIRTUAL-SHORT] Monitoring {len(virtual_positions)} virtual positions")
+
+                # ✅ FIX: Дедупликация символов — получаем цену каждого символа ОДИН РАЗ
+                # Было: 114 позиций → 114 get_price вызовов без паузы → rate limit
+                # Стало: ~50 уникальных символов → 50 вызовов с паузой 0.3s = ~15 сек
+                unique_symbols = list({
+                    pos.get("symbol") for pos in virtual_positions.values()
+                    if pos.get("symbol")
+                })
+                prices_cache: Dict[str, float] = {}
+                for sym in unique_symbols:
+                    try:
+                        p = await state.binance.get_price(sym)
+                        if p and p > 0:
+                            prices_cache[sym] = p
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.3)  # пауза между запросами цены
+
                 for field, pos in list(virtual_positions.items()):
                     try:
                         symbol        = pos.get("symbol")
@@ -2285,8 +2327,8 @@ async def virtual_position_monitor():
                                 pass
 
                         if outcome is None:
-                            # Получаем текущую цену
-                            current_price = await state.binance.get_price(symbol)
+                            # ✅ FIX: Берём из кэша цен (не вызываем API повторно!)
+                            current_price = prices_cache.get(symbol, 0)
                             if not current_price or current_price <= 0:
                                 continue
 

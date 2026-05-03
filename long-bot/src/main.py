@@ -2268,6 +2268,24 @@ async def virtual_position_monitor():
             virtual_positions = state.redis.get_virtual_positions(Config.BOT_TYPE)
             if virtual_positions:
                 print(f"🔍 [VIRTUAL-LONG] Monitoring {len(virtual_positions)} virtual positions")
+
+                # ✅ FIX: Дедупликация символов — получаем цену каждого символа ОДИН РАЗ
+                # Было: 38 позиций → 38 get_price вызовов без паузы → rate limit
+                # Стало: ~20 уникальных символов с паузой 0.3s = ~6 сек
+                unique_symbols = list({
+                    pos.get("symbol") for pos in virtual_positions.values()
+                    if pos.get("symbol")
+                })
+                prices_cache: Dict[str, float] = {}
+                for sym in unique_symbols:
+                    try:
+                        p = await state.binance.get_price(sym)
+                        if p and p > 0:
+                            prices_cache[sym] = p
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.3)  # пауза между запросами цены
+
                 for field, pos in list(virtual_positions.items()):
                     try:
                         symbol        = pos.get("symbol")
@@ -2291,8 +2309,8 @@ async def virtual_position_monitor():
                                 pass
 
                         if outcome is None:
-                            # Получаем текущую цену
-                            current_price = await state.binance.get_price(symbol)
+                            # ✅ FIX: Берём из кэша цен (не вызываем API повторно!)
+                            current_price = prices_cache.get(symbol, 0)
                             if not current_price or current_price <= 0:
                                 continue
 

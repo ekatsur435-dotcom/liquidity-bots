@@ -97,49 +97,73 @@ def get_trading_stats(days=7):
             redis = redis_getter()
             prefix = bot_name.lower()
             
+            # ✅ FIX: Читаем ОБА источника — реальные и виртуальные сделки
+            # all_trades    = реальные BingX DEMO позиции (от position_tracker)
+            # virtual_trades = TG-only сигналы (от virtual_position_monitor)
             all_trades_key = f"{prefix}:all_trades"
+            virt_trades_key = f"{prefix}:virtual_trades"
             try:
-                # Читаем all_trades как LIST (не JSON!)
-                # Боты сохраняют через LPUSH в redis_client.py
+                trades_data = []
+                # 1) Реальные сделки с биржи
                 try:
-                    trades_json = redis.execute(["LRANGE", all_trades_key, "0", "49"])
-                    trades_data = [json.loads(t) for t in trades_json] if trades_json else []
+                    trades_json = redis.execute(["LRANGE", all_trades_key, "0", "99"])
+                    trades_data += [json.loads(t) for t in trades_json] if trades_json else []
                 except Exception as e:
-                    print(f"Error reading list for {bot_name}: {e}")
-                    trades_data = []
-                
+                    print(f"Error reading all_trades for {bot_name}: {e}")
+
+                # 2) Виртуальные сделки (TG-only) — основной источник в DEMO режиме!
+                try:
+                    virt_json = redis.execute(["LRANGE", virt_trades_key, "0", "299"])
+                    virt_trades = [json.loads(t) for t in virt_json] if virt_json else []
+                    # Помечаем как virtual для различия
+                    for vt in virt_trades:
+                        vt["_source"] = "virtual"
+                    trades_data += virt_trades
+                    print(f"[Dashboard] {bot_name} virtual_trades: {len(virt_trades)} records")
+                except Exception as e:
+                    print(f"Error reading virtual_trades for {bot_name}: {e}")
+
                 if trades_data:
-                    # ✅ FIX v7: Считаем только ЗАКРЫТЫЕ сделки (status=closed_*)
-                    # Активные позиции имеют pnl=0 (unrealized) и искажают статистику
-                    all_t = trades_data[-100:] if len(trades_data) > 100 else trades_data
+                    # ✅ Считаем только ЗАКРЫТЫЕ сделки
                     closed_statuses = {'closed_tp', 'closed_sl', 'closed_manual', 'closed'}
-                    trades = [t for t in all_t
+                    trades = [t for t in trades_data
                               if t.get('status', 'active') in closed_statuses
-                              or t.get('close_price') is not None]
-                    # Fallback: если нет закрытых — берём все (старые данные без status)
+                              or t.get('close_price') is not None
+                              or t.get('outcome') in ('tp', 'sl', 'expired')]
+                    # Fallback: если нет закрытых — берём все
                     if not trades:
-                        trades = all_t[-50:]
+                        trades = trades_data[-100:]
+
+                    # Нормализуем pnl — virtual_trades пишут pnl_pct, all_trades — pnl_pct или pnl
+                    def _get_pnl(t):
+                        v = t.get('pnl_pct') or t.get('pnl') or 0
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return 0.0
 
                     total = len(trades)
-                    wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
-                    losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
-                    pnl = sum((t.get('pnl_pct') or t.get('pnl') or 0) for t in trades)
-                    
+                    wins   = sum(1 for t in trades if _get_pnl(t) > 0)
+                    losses = sum(1 for t in trades if _get_pnl(t) <= 0)
+                    pnl    = sum(_get_pnl(t) for t in trades)
+
                     stats["total_trades"] += total
-                    stats["win_count"] += wins
-                    stats["loss_count"] += losses
-                    stats["total_pnl"] += pnl
-                    
+                    stats["win_count"]    += wins
+                    stats["loss_count"]   += losses
+                    stats["total_pnl"]    += pnl
+
                     if bot_name == "SHORT":
-                        stats["short_trades"] = total
+                        stats["short_trades"]  = total
                         stats["short_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
-                        stats["short_pnl"] = round(pnl, 2)
+                        stats["short_pnl"]     = round(pnl, 2)
+                        print(f"[Dashboard] SHORT: {total} trades, WR={stats['short_winrate']}%, PnL={pnl:.1f}%")
                     else:
-                        stats["long_trades"] = total
+                        stats["long_trades"]  = total
                         stats["long_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
-                        stats["long_pnl"] = round(pnl, 2)
+                        stats["long_pnl"]     = round(pnl, 2)
+                        print(f"[Dashboard] LONG: {total} trades, WR={stats['long_winrate']}%, PnL={pnl:.1f}%")
             except Exception as e:
-                print(f"Error reading all_trades for {bot_name}: {e}")
+                print(f"Error reading trades for {bot_name}: {e}")
                     
             # Micro-step saves (LIST)
             try:
@@ -329,25 +353,61 @@ def api_chart_data():
 
 @app.route("/api/trades")
 def api_trades():
-    """API: Последние 20 сделок SHORT и LONG с деталями"""
+    """API: Последние 50 сделок SHORT и LONG (реальные + виртуальные) с деталями TP/SL"""
     trades = {"short": [], "long": []}
-    
+
     for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
         try:
             redis = redis_getter()
             prefix = bot_name.lower()
-            
-            # Читаем all_trades как LIST (последние 20)
+            combined = []
+
+            # 1) Реальные биржевые сделки
             try:
-                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "19"])
+                trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "49"])
                 if trades_json:
-                    all_trades = [json.loads(t) for t in trades_json]
-                    trades[prefix] = all_trades[:20]
-            except:
-                pass
+                    for t in [json.loads(x) for x in trades_json]:
+                        t["_source"] = "exchange"
+                        combined.append(t)
+            except Exception as e:
+                print(f"Error reading all_trades for {bot_name}: {e}")
+
+            # 2) Виртуальные сделки — основной источник в DEMO
+            try:
+                virt_json = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", "49"])
+                if virt_json:
+                    for t in [json.loads(x) for x in virt_json]:
+                        t["_source"] = "virtual"
+                        combined.append(t)
+            except Exception as e:
+                print(f"Error reading virtual_trades for {bot_name}: {e}")
+
+            # Нормализуем поля для единого формата
+            normalized = []
+            for t in combined:
+                outcome = t.get("outcome") or t.get("exit_reason") or t.get("tp_level") or "?"
+                pnl = float(t.get("pnl_pct") or t.get("pnl") or 0)
+                normalized.append({
+                    "symbol":      t.get("symbol", ""),
+                    "direction":   t.get("direction", prefix),
+                    "entry":       float(t.get("entry_price") or 0),
+                    "exit_price":  float(t.get("outcome_price") or t.get("exit_price") or t.get("close_price") or 0),
+                    "pnl":         round(pnl, 2),
+                    "outcome":     outcome,  # tp / sl / expired / TP1..TP6
+                    "taken_tps":   t.get("taken_tps", []),
+                    "tp_levels":   len(t.get("take_profits", [])),
+                    "closed_at":   t.get("closed_at") or t.get("exit_time") or t.get("close_time") or "",
+                    "source":      t.get("_source", "?"),
+                    "score":       t.get("score", 0),
+                })
+
+            # Сортируем по времени (свежие первые) и берём 50
+            normalized.sort(key=lambda x: x.get("closed_at", ""), reverse=True)
+            trades[prefix] = normalized[:50]
+
         except Exception as e:
             print(f"Error reading trades for {bot_name}: {e}")
-    
+
     return jsonify(trades)
 
 
@@ -498,7 +558,91 @@ def api_positions():
         except Exception as e:
             print(f"Error reading positions for {bot_name}: {e}")
     
-    print(f"[API Positions] Found {len(positions)} active positions. Debug: {debug_info}")
+    # ✅ Добавляем ВИРТУАЛЬНЫЕ открытые позиции (TG-only, без биржи)
+    live_prices_for_virt = live_prices  # уже получены выше
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            virt_key = f"{prefix}:virtual_positions"
+            try:
+                virt_raw = redis.execute(["HGETALL", virt_key])
+                if virt_raw and isinstance(virt_raw, list):
+                    # HGETALL возвращает [field, value, field, value, ...]
+                    it = iter(virt_raw)
+                    for field, val in zip(it, it):
+                        try:
+                            pos = json.loads(val)
+                            if pos.get("outcome"):  # уже закрыта
+                                continue
+                            symbol = pos.get("symbol", "")
+                            entry_price = float(pos.get("entry_price") or 0)
+                            sl_price    = float(pos.get("stop_loss") or 0)
+                            direction   = pos.get("direction", prefix)
+                            taken_tps   = pos.get("taken_tps", [])
+                            tps_raw     = pos.get("take_profits", [])
+
+                            current_price = live_prices_for_virt.get(symbol.upper(), 0)
+                            if entry_price > 0 and current_price > 0:
+                                chg = (current_price - entry_price) / entry_price * 100
+                                if direction == "short":
+                                    chg = -chg
+                                lev = float(str(pos.get("leverage", "1")).split("-")[0] or 1)
+                                live_pnl = round(chg * lev, 2)
+                            else:
+                                live_pnl = 0
+
+                            sl_pct = round(abs(sl_price - entry_price) / entry_price * 100, 2) if entry_price > 0 and sl_price > 0 else 0
+                            tp1_price = 0.0
+                            if tps_raw:
+                                first = tps_raw[0]
+                                try:
+                                    tp1_price = float(first[0] if isinstance(first, (list, tuple)) else first.get("price", 0) if isinstance(first, dict) else first)
+                                except Exception:
+                                    pass
+                            tp_pct = round(abs(tp1_price - entry_price) / entry_price * 100, 2) if entry_price > 0 and tp1_price > 0 else 0
+
+                            opened_at = pos.get("virtual_opened_at", pos.get("timestamp", ""))
+                            duration_min = 0
+                            if opened_at:
+                                try:
+                                    from datetime import timezone
+                                    opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                                    if opened_dt.tzinfo is None:
+                                        opened_dt = opened_dt.replace(tzinfo=timezone.utc)
+                                    duration_min = int((datetime.now(timezone.utc) - opened_dt).total_seconds() / 60)
+                                except Exception:
+                                    pass
+
+                            dedup_key = f"{symbol}:{direction}:virt"
+                            if dedup_key not in seen_positions:
+                                seen_positions.add(dedup_key)
+                                positions.append({
+                                    "symbol":       symbol,
+                                    "direction":    direction,
+                                    "entry":        entry_price,
+                                    "current_price": round(current_price, 6) if current_price else 0,
+                                    "current_pnl":  live_pnl,
+                                    "tp":           tp_pct,
+                                    "sl":           sl_pct,
+                                    "tp_price":     tp1_price,
+                                    "sl_price":     sl_price,
+                                    "leverage":     float(str(pos.get("leverage", "1")).split("-")[0] or 1),
+                                    "duration_min": duration_min,
+                                    "taken_tps":    taken_tps,
+                                    "tp_total":     len(tps_raw),
+                                    "score":        pos.get("score", 0),
+                                    "opened_at":    opened_at,
+                                    "source":       "virtual",  # маркер для UI
+                                })
+                        except Exception as e:
+                            print(f"[API] Error parsing virtual pos {field}: {e}")
+            except Exception as e:
+                print(f"[API] Error reading virtual_positions for {bot_name}: {e}")
+        except Exception as e:
+            print(f"[API] Error in virtual positions for {bot_name}: {e}")
+
+    print(f"[API Positions] Found {len(positions)} active positions (incl. virtual). Debug: {debug_info}")
     return jsonify({"positions": positions, "count": len(positions), "debug": debug_info})
 
 

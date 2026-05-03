@@ -44,11 +44,12 @@ class PositionTracker:
 
     # ── Трейлинг (активируется ПОСЛЕ BE, не сразу) ───────────────────────────
     TRAIL_DISTANCE  = 0.008   # 0.8% ниже текущей цены (для LONG)
-    BREAKEVEN_BUFFER = 0.001  # SL в безубыток = entry + 0.1%
 
-    # ── Безубыток: переносим SL после этого тейка ────────────────────────────
-    # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
-    BREAKEVEN_AFTER_TP = 2   # ✅ FIX v5: BE после TP2 — позиции живут дольше
+    # ── Двухступенчатый безубыток ─────────────────────────────────────────────
+    # Шаг 1: После TP1 → SL в точку входа (breakeven = 0%)
+    # Шаг 2: После TP2 → SL в entry + 0.2% (гарантированная небольшая прибыль)
+    BREAKEVEN_BUFFER_TP1 = 0.000  # SL = entry (ровно точка входа)
+    BREAKEVEN_BUFFER_TP2 = 0.002  # SL = entry + 0.2% после TP2
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -247,7 +248,33 @@ class PositionTracker:
                         f"<i>📋 Виртуал — не открыта на бирже</i>"
                     ))
                 else:
-                    # Обновляем taken_tps в Redis hash
+                    # ✅ BE Stop для виртуальных позиций
+                    # После TP1 → SL в точку входа (breakeven)
+                    # После TP2 → SL в entry + 0.2% (small profit locked)
+                    old_sl = signal.get("stop_loss", sl)
+                    new_sl_virtual = None
+                    be_msg = ""
+
+                    if i == 0:  # TP1 взят → BE
+                        if direction == "long":
+                            new_sl_virtual = entry  # SL = точка входа
+                        else:
+                            new_sl_virtual = entry  # SL = точка входа
+                        be_msg = f"🔒 SL → ТВХ (BE)"
+
+                    elif i == 1:  # TP2 взят → BE + 0.2%
+                        if direction == "long":
+                            new_sl_virtual = entry * 1.002
+                        else:
+                            new_sl_virtual = entry * 0.998
+                        be_msg = f"🔒 SL → ТВХ+0.2% (гарантия прибыли)"
+
+                    if new_sl_virtual:
+                        signal["stop_loss"] = new_sl_virtual
+                        sl = new_sl_virtual  # обновляем локальную переменную
+                        print(f"[VT] {symbol}: {be_msg} | SL: {old_sl:.6f} → {new_sl_virtual:.6f}")
+
+                    # Обновляем taken_tps + stop_loss в Redis hash
                     try:
                         vkey = f"{bot_type}:virtual_positions"
                         self.redis.client.hset(vkey, field, _json.dumps(signal))
@@ -255,14 +282,16 @@ class PositionTracker:
                         print(f"[VT] update taken_tps error: {e}")
 
                     remaining = total - len(taken)
+                    be_line = f"\n{be_msg}" if be_msg else ""
                     await self._notify(signal, (
                         f"🎯 <b>[ВИРТУАЛ] {tp_label}/{total} взят!</b>\n\n"
                         f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
                         f"📍 Вход:        <b>${entry:,.6f}</b>\n"
                         f"🎯 {tp_label}:  <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)\n"
                         f"📊 P&L:         <b>+{pnl_pct:.2f}%</b>\n"
-                        f"⏳ Осталось TP: {remaining}\n"
-                        f"<i>📋 Виртуал — не открыта на бирже</i>"
+                        f"⏳ Осталось TP: {remaining}"
+                        + be_line +
+                        f"\n<i>📋 Виртуал — не открыта на бирже</i>"
                     ))
                 break
 
@@ -480,96 +509,109 @@ class PositionTracker:
     # =========================================================================
 
     async def _check_trailing(self, signal: Dict, price: float):
-        symbol          = signal.get("symbol", "")   # ✅ FIX: NameError fix
+        symbol          = signal.get("symbol", "")
         entry           = _f(signal.get("entry_price", 0))
         direction       = signal.get("direction", "long")
         current_sl      = _f(signal.get("stop_loss", 0))
         trailing_active = signal.get("trailing_active", False)
-        be_done         = signal.get("be_done", False)   # безубыток уже выставлен
+        be_done         = signal.get("be_done", False)    # TP1 → BE (entry) выставлен
+        be2_done        = signal.get("be2_done", False)   # TP2 → BE+0.2% выставлен
         taken_tps       = signal.get("taken_tps", [])
+        taken_count     = len(taken_tps)
 
         if not entry or not current_sl:
             return
 
-        # ✅ FIX: Проверяем be_done — если уже в безубытке, не обновляем повторно
         if be_done:
-            trailing_active = True  # активируем трейлинг если BE уже был
+            trailing_active = True  # трейлинг активен после BE
 
         if direction == "long":
             profit_pct = (price - entry) / entry
 
-            # Безубыток выставляем только после TP2 (BREAKEVEN_AFTER_TP)
-            taken_count = len(taken_tps)
-
-            if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
-                new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
-                # ✅ FIX: Минимальный порог 0.05% для изменения SL (избегаем микро-движений)
-                min_move_threshold = current_sl * 0.0005  # 0.05%
-                
-                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
-                if abs(current_sl - new_sl) <= min_move_threshold:
+            # ── Шаг 1: TP1 взят → SL в точку входа (breakeven) ─────────────
+            if not be_done and taken_count >= 1:
+                new_sl = entry * (1 + self.BREAKEVEN_BUFFER_TP1)  # = entry
+                if new_sl > current_sl * 1.0001:  # SL реально движется вверх
+                    print(f"[PT][LONG][{symbol}] 🔒 BE-TP1 → entry | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
+                    await self._move_sl(signal, current_sl, new_sl, "BE после TP1")
+                    signal["be_done"]         = True
+                    signal["trailing_active"] = True
+                    current_sl = new_sl
+                    return
+                else:
+                    # SL уже на уровне entry или выше — просто помечаем
                     signal["be_done"] = True
                     signal["trailing_active"] = True
                     self._save(symbol, signal)
-                    return
-                
-                if new_sl > current_sl + min_move_threshold:
-                    print(f"[PT][LONG][{symbol}] 🔒 BE АКТИВИРОВАН | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f} | "
-                          f"взято TP={len(taken_tps)}")
-                    await self._move_sl(signal, current_sl, new_sl, "безубыток")
-                    signal["be_done"]         = True
-                    signal["trailing_active"] = True
-                    return
 
-            # Трейлинг только после BE
-            # Trail activation threshold из config (по умолчанию 2.5%)
+            # ── Шаг 2: TP2 взят → SL в entry + 0.2% ────────────────────────
+            if be_done and not be2_done and taken_count >= 2:
+                new_sl = entry * (1 + self.BREAKEVEN_BUFFER_TP2)  # entry + 0.2%
+                if new_sl > current_sl * 1.0001:
+                    print(f"[PT][LONG][{symbol}] 🔒 BE2-TP2 → entry+0.2% | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
+                    await self._move_sl(signal, current_sl, new_sl, "BE+0.2% после TP2")
+                    signal["be2_done"] = True
+                    current_sl = new_sl
+                    return
+                else:
+                    signal["be2_done"] = True
+                    self._save(symbol, signal)
+
+            # ── Трейлинг после BE ────────────────────────────────────────────
             if trailing_active and profit_pct > self.long_trail_threshold:
-                    # ✅ FIX: Определяем new_sl для LONG (трейлинг вверх)
-                    new_sl = price * (1 - self.TRAIL_DISTANCE)
-                    if new_sl > current_sl * 1.003:  # двигаем только если значительно выше
-                        self._log(symbol, direction,
-                                  f"📈 TRAIL SL MOVE | "
-                                  f"{current_sl:.6f} → {new_sl:.6f} | "
-                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
-                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                new_sl = price * (1 - self.TRAIL_DISTANCE)
+                if new_sl > current_sl * 1.003:
+                    self._log(symbol, direction,
+                              f"📈 TRAIL SL MOVE | "
+                              f"{current_sl:.6f} → {new_sl:.6f} | "
+                              f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
+                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
         else:  # SHORT
             profit_pct = (entry - price) / entry
-            taken_count = len(taken_tps)
 
-            if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
-                new_sl = entry * (1 - self.BREAKEVEN_BUFFER)
-                # ✅ FIX: Минимальный порог 0.05% для изменения SL
-                min_move_threshold = current_sl * 0.0005  # 0.05%
-                
-                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
-                if abs(current_sl - new_sl) <= min_move_threshold:
+            # ── Шаг 1: TP1 взят → SL в точку входа (breakeven) ─────────────
+            if not be_done and taken_count >= 1:
+                new_sl = entry * (1 - self.BREAKEVEN_BUFFER_TP1)  # = entry
+                if new_sl < current_sl * 0.9999:  # SL реально движется вниз
+                    print(f"[PT][SHORT][{symbol}] 🔒 BE-TP1 → entry | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
+                    await self._move_sl(signal, current_sl, new_sl, "BE после TP1")
+                    signal["be_done"]         = True
+                    signal["trailing_active"] = True
+                    current_sl = new_sl
+                    return
+                else:
                     signal["be_done"] = True
                     signal["trailing_active"] = True
                     self._save(symbol, signal)
-                    return
-                
-                if new_sl < current_sl - min_move_threshold:
-                    print(f"[PT][SHORT][{symbol}] 🔒 BE АКТИВИРОВАН | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f} | "
-                          f"взято TP={len(taken_tps)}")
-                    await self._move_sl(signal, current_sl, new_sl, "безубыток")
-                    signal["be_done"]         = True
-                    signal["trailing_active"] = True
-                    return
 
-            # Трейлинг только после BE — пороги из config
-            trail_threshold = self.short_trail_threshold if direction == "short" else self.long_trail_threshold
+            # ── Шаг 2: TP2 взят → SL в entry - 0.2% ────────────────────────
+            if be_done and not be2_done and taken_count >= 2:
+                new_sl = entry * (1 - self.BREAKEVEN_BUFFER_TP2)  # entry - 0.2%
+                if new_sl < current_sl * 0.9999:
+                    print(f"[PT][SHORT][{symbol}] 🔒 BE2-TP2 → entry-0.2% | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
+                    await self._move_sl(signal, current_sl, new_sl, "BE-0.2% после TP2")
+                    signal["be2_done"] = True
+                    current_sl = new_sl
+                    return
+                else:
+                    signal["be2_done"] = True
+                    self._save(symbol, signal)
+
+            # ── Трейлинг после BE ────────────────────────────────────────────
+            trail_threshold = self.short_trail_threshold
             if trailing_active and profit_pct > trail_threshold:
-                    # ✅ FIX: Определяем new_sl для SHORT (трейлинг вниз)
-                    new_sl = price * (1 + self.TRAIL_DISTANCE)
-                    if new_sl < current_sl * 0.997:  # двигаем только если значительно ниже
-                        self._log(symbol, direction,
-                                  f"📈 TRAIL SL MOVE | "
-                                  f"{current_sl:.6f} → {new_sl:.6f} | "
-                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
-                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                new_sl = price * (1 + self.TRAIL_DISTANCE)
+                if new_sl < current_sl * 0.997:
+                    self._log(symbol, direction,
+                              f"📈 TRAIL SL MOVE | "
+                              f"{current_sl:.6f} → {new_sl:.6f} | "
+                              f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
+                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
     async def _move_sl(self, signal: Dict, old_sl: float, new_sl: float, move_type: str):
         """
