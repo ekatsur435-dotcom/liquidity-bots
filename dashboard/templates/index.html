@@ -267,8 +267,46 @@
             border-left: 3px solid;
         }
         
-        .position-short { border-left-color: #ff6b6b; }
-        .position-long { border-left-color: #00d4ff; }
+        .position-short {
+            border-left-color: #ff4444;
+            background: rgba(255, 68, 68, 0.07);
+        }
+        .position-long {
+            border-left-color: #00d4ff;
+            background: rgba(0, 212, 255, 0.07);
+        }
+        .dir-badge {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+        .dir-badge-short { background: rgba(255,68,68,0.25); color: #ff6b6b; border: 1px solid rgba(255,68,68,0.4); }
+        .dir-badge-long  { background: rgba(0,212,255,0.2);  color: #00d4ff; border: 1px solid rgba(0,212,255,0.4); }
+        .virt-badge {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: 600;
+            background: rgba(255,200,0,0.15);
+            color: #ffc800;
+            border: 1px solid rgba(255,200,0,0.3);
+            vertical-align: middle;
+            margin-left: 3px;
+        }
+        .tp-pip {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 2px;
+        }
+        .tp-pip-hit  { background: #00ff88; }
+        .tp-pip-open { background: rgba(255,255,255,0.2); }
         
         .position-header {
             display: flex;
@@ -692,7 +730,16 @@
             
             <!-- Active Positions -->
             <div class="section-card">
-                <div class="section-title">⚡ Текущие позиции (<span id="active-positions-count">0</span>)</div>
+                <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span>⚡ Текущие позиции (<span id="active-positions-count">0</span>)</span>
+                    <span style="font-size:11px;font-weight:400;opacity:0.8;">
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ff4444;margin-right:4px;vertical-align:middle;"></span>SHORT
+                        &nbsp;
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00d4ff;margin-right:4px;vertical-align:middle;"></span>LONG
+                        &nbsp;
+                        <span style="display:inline-block;padding:0 5px;border-radius:4px;background:rgba(255,200,0,0.15);color:#ffc800;border:1px solid rgba(255,200,0,0.3);font-size:10px;vertical-align:middle;">TG</span>=виртуальная
+                    </span>
+                </div>
                 <div id="active-positions-list" class="positions-scrollable">
                     <div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">
                         📊 Здесь отображаются все открытые позиции<br>
@@ -1026,26 +1073,51 @@
             if (activePosCard) activePosCard.textContent = count;
 
             if (data.positions && data.positions.length > 0) {
-                // Сортируем: отрицательный P&L сверху (требуют внимания)
-                const sorted = data.positions.sort((a, b) => (a.current_pnl || 0) - (b.current_pnl || 0));
+                // Сортируем: сначала SHORT (сгруппированы), потом LONG, внутри — по P&L (убыточные сверху)
+                const sorted = data.positions.sort((a, b) => {
+                    const aShort = (a.direction || '').toLowerCase() === 'short' ? 0 : 1;
+                    const bShort = (b.direction || '').toLowerCase() === 'short' ? 0 : 1;
+                    if (aShort !== bShort) return aShort - bShort;
+                    return (a.current_pnl || 0) - (b.current_pnl || 0);
+                });
 
                 list.innerHTML = sorted.map(p => {
-                    const isShort = (p.direction || '').toLowerCase() === 'short';
-                    const dirEmoji = isShort ? '🔴' : '🟢';
-                    const dirText  = isShort ? 'SHORT' : 'LONG';
-                    const pnl      = p.current_pnl || 0;
-                    const pnlClass = pnl >= 0 ? 'positive' : 'negative';
-                    const pnlSign  = pnl >= 0 ? '+' : '';
+                    const isShort   = (p.direction || '').toLowerCase() === 'short';
+                    const dirClass  = isShort ? 'short' : 'long';
+                    const dirBadge  = isShort
+                        ? '<span class="dir-badge dir-badge-short">SHORT</span>'
+                        : '<span class="dir-badge dir-badge-long">LONG</span>';
+                    const virtBadge = p.source === 'virtual'
+                        ? '<span class="virt-badge">TG</span>'
+                        : '';
+                    const pnl       = p.current_pnl || 0;
+                    const pnlClass  = pnl >= 0 ? 'positive' : 'negative';
+                    const pnlSign   = pnl >= 0 ? '+' : '';
                     const scoreHtml = p.score ? `<span class="position-score">⭐${p.score}</span>` : '';
-                    const levHtml   = p.leverage ? `<span class="position-lev">${p.leverage}x</span>` : '';
-                    const curPrice  = p.current_price ? `<span>Цена: $${Number(p.current_price).toFixed(4)}</span>` : '';
-                    const tpVal     = p.tp != null ? `TP: ${Number(p.tp).toFixed(1)}%` : 'TP: —';
+                    const levHtml   = p.leverage && p.leverage > 1 ? `<span class="position-lev">${p.leverage}x</span>` : '';
+                    const curPrice  = p.current_price ? `<span>Цена: $${Number(p.current_price).toPrecision(5)}</span>` : '';
+                    const tpVal     = p.tp != null ? `TP1: ${Number(p.tp).toFixed(1)}%` : 'TP1: —';
                     const slVal     = p.sl != null ? `SL: ${Number(p.sl).toFixed(1)}%` : 'SL: —';
-                    const durMin    = p.duration_min != null ? `${p.duration_min}м` : '';
+                    const durMin    = p.duration_min != null ? `⏱${p.duration_min}м` : '';
+
+                    // TP пипсы: показываем какие TP уже взяты
+                    let tpPips = '';
+                    const takenArr = Array.isArray(p.taken_tps) ? p.taken_tps : [];
+                    const takenCount = typeof p.taken_tps === 'number' ? p.taken_tps : takenArr.length;
+                    const tpTotal = p.tp_total || 6;
+                    if (tpTotal > 0) {
+                        let pips = '';
+                        for (let i = 0; i < tpTotal; i++) {
+                            const hit = i < takenCount;
+                            pips += `<span class="tp-pip ${hit ? 'tp-pip-hit' : 'tp-pip-open'}" title="TP${i+1}"></span>`;
+                        }
+                        tpPips = `<span title="${takenCount}/${tpTotal} TP взято">${pips}</span>`;
+                    }
+
                     return `
-                    <div class="position-item position-${isShort ? 'short' : 'long'}">
+                    <div class="position-item position-${dirClass}">
                         <div class="position-header">
-                            <span class="position-symbol">${dirEmoji} ${p.symbol} <small style="opacity:0.7">(${dirText})</small>${scoreHtml}${levHtml}</span>
+                            <span class="position-symbol">${p.symbol}${dirBadge}${virtBadge}${scoreHtml}${levHtml}</span>
                             <span class="position-pnl ${pnlClass}">${pnlSign}${pnl.toFixed(2)}%</span>
                         </div>
                         <div class="position-details">
@@ -1053,6 +1125,7 @@
                             ${curPrice}
                             <span>${tpVal}</span>
                             <span>${slVal}</span>
+                            ${tpPips}
                             <span>${durMin}</span>
                         </div>
                     </div>`;

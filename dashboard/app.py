@@ -452,9 +452,12 @@ def api_positions():
 
                             entry_price = float(pos.get("entry_price", 0) or 0)
 
-                            # ✅ FIX: Дедупликация включает направление+цену входа
-                            # Это отсеивает зеркальные позиции если оба бота в одном Redis
-                            dedup_key = f"{symbol_normalized}:{real_direction}:{entry_price}"
+                            # ✅ FIX: Дедупликация включает ПРЕФИКС КЛЮЧА + направление + цену входа
+                            # Это критично когда оба бота работают на ОДНОМ Redis:
+                            # short:positions:CRVUSDT и long:positions:CRV-USDT — РАЗНЫЕ позиции,
+                            # без префикса они давали один dedup_key и LONG позиция пропускалась!
+                            key_prefix = key.split(":")[0]  # "short" или "long"
+                            dedup_key = f"{key_prefix}:{symbol_normalized}:{real_direction}:{entry_price}"
                             if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
                                 print(f"[DEDUP] Skipped {bot_name} key={key} → dedup_key={dedup_key}")
@@ -534,6 +537,7 @@ def api_positions():
                                 except Exception:
                                     duration_min = pos.get("duration_min", 0)
 
+                            tps_list = take_profits_raw if isinstance(take_profits_raw, list) else []
                             positions.append({
                                 "symbol": symbol_normalized,
                                 "direction": real_direction,
@@ -547,8 +551,10 @@ def api_positions():
                                 "leverage": leverage,
                                 "duration_min": duration_min,
                                 "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
+                                "tp_total": len(tps_list),  # сколько TP уровней всего
                                 "score": pos.get("score", pos.get("signal_score", 0)),
                                 "opened_at": opened_at,
+                                "source": "exchange",
                             })
                         except Exception as e:
                             print(f"[API] Error parsing position {key}: {e}")
