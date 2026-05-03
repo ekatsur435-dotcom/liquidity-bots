@@ -366,11 +366,31 @@ class UpstashRedisClient:
         Сохраняет виртуальную позицию для мониторинга TP/SL.
         Используется для сигналов, не открытых на бирже (exchange_full, paused и т.д.)
         Структура: HASH {bot}:virtual_positions, field = {symbol}:{unix_ts}
+
+        ✅ FIX: Дедупликация — не создаём новую виртуальную позицию если по этому символу
+        уже есть открытая (outcome=None). Без этого бот каждый скан (~3 мин) добавлял
+        дубликат CHIPUSDT/MEGAUSDT → в дашборде одна монета появлялась 3-4 раза.
         """
         try:
+            key = f"{bot_type}:virtual_positions"
+
+            # ✅ Проверяем: нет ли уже открытой виртуальной позиции по этому символу
+            existing = self.client.hgetall(key)
+            if existing:
+                for field_key, val in existing.items():
+                    try:
+                        pos = json.loads(val)
+                        pos_symbol = pos.get("symbol", "")
+                        pos_outcome = pos.get("outcome")
+                        # Совпадение символа + нет исхода (позиция ещё открыта)
+                        if pos_symbol == symbol and pos_outcome is None:
+                            print(f"[VIRT-DEDUP] {bot_type}: {symbol} уже в virtual_positions — пропускаем дубликат")
+                            return False
+                    except Exception:
+                        continue
+
             ts = int(datetime.utcnow().timestamp())
             field = f"{symbol}:{ts}"
-            key = f"{bot_type}:virtual_positions"
             entry = {
                 **signal_data,
                 "virtual_key": field,

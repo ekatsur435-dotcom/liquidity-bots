@@ -384,19 +384,31 @@ def api_trades():
 
             # Нормализуем поля для единого формата
             normalized = []
+            seen_trades = set()  # ✅ FIX: дедупликация дублей (одна монета открыта N раз)
             for t in combined:
                 outcome = t.get("outcome") or t.get("exit_reason") or t.get("tp_level") or "?"
                 pnl = float(t.get("pnl_pct") or t.get("pnl") or 0)
+                sym = t.get("symbol", "")
+                entry_p = float(t.get("entry_price") or 0)
+                closed_t = t.get("closed_at") or t.get("exit_time") or t.get("close_time") or ""
+
+                # ✅ Уникальный ключ: символ + точка входа + исход + время закрытия
+                # Это отфильтрует дубликаты виртуальных позиций по одной монете
+                trade_dedup = f"{sym}:{entry_p:.6f}:{outcome}:{closed_t[:16]}"
+                if trade_dedup in seen_trades:
+                    continue
+                seen_trades.add(trade_dedup)
+
                 normalized.append({
-                    "symbol":      t.get("symbol", ""),
+                    "symbol":      sym,
                     "direction":   t.get("direction", prefix),
-                    "entry":       float(t.get("entry_price") or 0),
+                    "entry":       entry_p,
                     "exit_price":  float(t.get("outcome_price") or t.get("exit_price") or t.get("close_price") or 0),
                     "pnl":         round(pnl, 2),
                     "outcome":     outcome,  # tp / sl / expired / TP1..TP6
                     "taken_tps":   t.get("taken_tps", []),
                     "tp_levels":   len(t.get("take_profits", [])),
-                    "closed_at":   t.get("closed_at") or t.get("exit_time") or t.get("close_time") or "",
+                    "closed_at":   closed_t,
                     "source":      t.get("_source", "?"),
                     "score":       t.get("score", 0),
                 })
