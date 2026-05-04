@@ -455,6 +455,31 @@ class UpstashRedisClient:
             print(f"Error getting virtual trades: {e}")
             return []
 
+    def has_open_position_for_symbol(self, bot_type: str, symbol: str) -> bool:
+        """
+        Проверяет, есть ли уже открытая реальная или виртуальная позиция
+        по данному символу для этого бота.
+
+        Используется для предотвращения дублирующих сигналов:
+        если SOLUSDT уже в позиции — новый сигнал не отправляем.
+
+        Returns True если позиция существует (реальная или виртуальная).
+        """
+        try:
+            # 1. Проверяем реальную позицию
+            if self.get_position(bot_type, symbol):
+                return True
+            # 2. Проверяем виртуальные позиции (hash)
+            virt = self.get_virtual_positions(bot_type)
+            for field_key, pos in virt.items():
+                if (pos.get("symbol") == symbol and
+                        pos.get("outcome") is None):
+                    return True
+            return False
+        except Exception as e:
+            print(f"[Redis] has_open_position_for_symbol error: {e}")
+            return False  # При ошибке — не блокируем
+
     def get_memory_usage(self) -> Dict:
         try:
             info = self.client.info("memory")
