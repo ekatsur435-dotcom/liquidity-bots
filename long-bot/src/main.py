@@ -97,6 +97,11 @@ from core.amd_detector import get_amd_detector, AMDDetector, AMDPhase  # ✅ NEW
 from core.xvp import get_xvp_analyzer, XVPAnalyzer  # ✅ NEW: Extended Volume Profile
 from core.grid_entry import get_grid_entry, GridEntry  # ✅ NEW: Grid Entry System
 from core.smart_sl_detector import get_smart_sl_detector, SmartSLDetector  # ✅ NEW: Smart Multi-TF SL
+from core.session_vwap_sl import (                                          # ✅ NEW: Session/VWAP/Adaptive SL
+    calculate_session_sl, calculate_vwap_sl,
+    get_adaptive_atr_bounds, calculate_adx_from_candles,
+    calculate_sl_confluence,
+)
 from core.dump_detector import get_dump_detector, DumpDetector, DumpType  # ✅ NEW: Dump Detector
 from core.momentum_detector import get_momentum_detector, MomentumDetector  # ✅ NEW: Momentum Detector
 from core.candle_history_manager import (
@@ -1747,7 +1752,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         adaptive_sl_pct = round(min(max(atr_pct * atr_multiplier, 1.2), 8.0), 2)  # зажато: 1.2%–8%
         atr_price = price * atr_pct / 100          # ATR в единицах цены
         default_sl = price * (1 - adaptive_sl_pct / 100)
-        print(f"📐 [SL-ATR] {symbol}: ATR={atr_pct:.2f}% vol={vol_class} mult={atr_multiplier}× → SL={adaptive_sl_pct:.2f}%")
+
+        # ✅ NEW: Volatility-adaptive ATR bounds через ADX (сила тренда 4H)
+        # Трендовый рынок → тайтные границы [0.6–2.5×ATR] → лучше R:R
+        # Боковик → широкие [1.0–5.0×ATR] → меньше ложных стопов
+        adx_4h = calculate_adx_from_candles(ohlcv_4h_bias if 'ohlcv_4h_bias' in locals() else [])
+        min_sl_dist, max_sl_dist = get_adaptive_atr_bounds(atr_price, adx_4h)
+        print(f"📐 [SL-ATR] {symbol}: ATR={atr_pct:.2f}% vol={vol_class} mult={atr_multiplier}× "
+              f"→ SL={adaptive_sl_pct:.2f}% | ADX={adx_4h:.1f} bounds=[{min_sl_dist/atr_price:.1f}×, {max_sl_dist/atr_price:.1f}×]ATR")
 
         # ═══════════════════════════════════════════════════════════════════
         # ✅ v5: SWING LOW SL — структурный стоп за последний значимый минимум
@@ -1768,8 +1780,25 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     nearest_swing = max(valid)                           # ближайший снизу
                     swing_sl = nearest_swing - atr_price * 0.5          # -0.5×ATR буфер
                     print(f"📐 [SWING-SL] {symbol}: SwingLow={nearest_swing:.6f} → SL={swing_sl:.6f} (-0.5×ATR)")
-        except Exception as e:
+        except Exception:
             pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ NEW: SESSION LOW SL — SL за Low Азиатской сессии (00:00–08:00 UTC)
+        # Институциональные игроки ставят стопы за Session Low — мы тоже.
+        # ═══════════════════════════════════════════════════════════════════
+        session_sl = None
+        try:
+            session_sl = calculate_session_sl(
+                candles_1h=ohlcv_1h,
+                side="long",
+                price=price,
+                atr_price=atr_price,
+                min_sl_dist=min_sl_dist,
+                max_sl_dist=max_sl_dist,
+            )
+        except Exception as e:
+            print(f"[SESSION-SL] {symbol} error: {e}")
 
         # ═══════════════════════════════════════════════════════════════════
         # ✅ v5: SWEEP TAIL SL — за хвост ликвидностного свипа
@@ -1784,6 +1813,57 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 print(f"🎯 [SWEEP-SL] {symbol}: sweep_low={sweep_result.sweep_low:.6f} → SL={sweep_sl:.6f}")
         except Exception:
             pass
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ SmartSL: Multi-TF Manipulation Candle Detector
+        # Сканирует 4 TF, ищет свечи с длинными нижними хвостами,
+        # кластеризует по цене, выбирает лучший кластер (макс скор)
+        # ═══════════════════════════════════════════════════════════════════
+        smart_sl_price = None
+        try:
+            if hasattr(state, 'smart_sl') and state.smart_sl:
+                def _to_sl_dicts(raw):
+                    out = []
+                    for c in (raw or []):
+                        if hasattr(c, 'open'):
+                            out.append({"open": float(c.open), "high": float(c.high),
+                                        "low": float(c.low), "close": float(c.close),
+                                        "volume": float(getattr(c, 'volume', 0) or 0),
+                                        "timestamp": int(getattr(c, 'timestamp', 0) or 0)})
+                        elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                            out.append({"open": float(c[1]), "high": float(c[2]),
+                                        "low": float(c[3]), "close": float(c[4]),
+                                        "volume": float(c[5]), "timestamp": int(c[0])})
+                    return out
+                sl_res = state.smart_sl.calculate_sl(
+                    symbol=symbol, side="long", entry_price=price,
+                    candles_15m=_to_sl_dicts(ohlcv_15m) if 'ohlcv_15m' in locals() else None,
+                    candles_30m=_to_sl_dicts(ohlcv_30m),
+                    candles_1h=_to_sl_dicts(ohlcv_1h),
+                    candles_4h=_to_sl_dicts(ohlcv_4h_bias),
+                    atr=atr_pct
+                )
+                if sl_res.is_valid and sl_res.sl_price > 0 and sl_res.sl_price < price:
+                    smart_sl_price = sl_res.sl_price
+                    print(f"🎯 [SMART-SL] {symbol}: {sl_res.based_on} → SL={smart_sl_price:.6f} ({sl_res.sl_distance_pct:.2f}%)")
+        except Exception as e:
+            print(f"[SMART-SL] {symbol} error: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ NEW: VWAP SL — Anchored VWAP от начала UTC-дня
+        # VWAP = динамическая поддержка, за которой стоят институциональные лонги
+        # ═══════════════════════════════════════════════════════════════════
+        vwap_sl = None
+        try:
+            vwap_sl = calculate_vwap_sl(
+                candles_1h=ohlcv_1h,
+                side="long",
+                price=price,
+                min_sl_dist=min_sl_dist,
+                max_sl_dist=max_sl_dist,
+            )
+        except Exception as e:
+            print(f"[VWAP-SL] {symbol} error: {e}")
 
         # ═══════════════════════════════════════════════════════════════════
         # ✅ Phase 8: WYCKOFF SPRING SL — SL за лоу ложного пробоя накопления
@@ -1822,21 +1902,43 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             print(f"[XVP-SL] {symbol} error: {e}")
 
         # ═══════════════════════════════════════════════════════════════════
-        # ✅ v5: ИЕРАРХИЯ ВЫБОРА SL (Институциональный стандарт):
-        # 1. Swing Low (структура 4H)      — структурная инвалидация
-        # 2. Sweep Tail (ликвидность 15m)  — за хвост ликвидности
-        # 3. Wyckoff Spring Low            — за ложный пробой
-        # 4. XVP VAL (Volume Profile)      — за зону стоимости
-        # 5. ATR-adaptive default          — адаптивный фолбэк
-        # Потом SMC может уточнить через OB.low или FVG.lower
-        # Финальная проверка: SL в диапазоне [0.8×ATR — 4×ATR]
+        # ✅ NEW: MULTI-TF SL CONFLUENCE — если несколько методов дают похожий
+        # уровень (±0.6%), это сильная зона → бонус к скору сигнала
         # ═══════════════════════════════════════════════════════════════════
-        min_sl_dist = atr_price * 0.8   # минимум: 0.8×ATR от цены
-        max_sl_dist = atr_price * 4.0   # максимум: 4×ATR от цены
+        _confluence_count, _confluence_bonus = calculate_sl_confluence(
+            sl_candidates=[swing_sl, session_sl, smart_sl_price, vwap_sl, sweep_sl, wyckoff_sl, xvp_sl],
+            price=price,
+            tolerance_pct=0.6,
+        )
+        if _confluence_bonus > 0:
+            final_score = min(100, final_score + _confluence_bonus)
+            reasons.append(f"🔗 SL Confluence x{_confluence_count} уровней +{_confluence_bonus}")
+            print(f"🔗 [SL-CONFLUENCE-LONG] {symbol}: {_confluence_count} SL кластеризованы → +{_confluence_bonus} к скору")
 
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ v6: ИЕРАРХИЯ ВЫБОРА SL (Институциональный стандарт):
+        # 1. Swing Low (структура 4H)            — структурная инвалидация
+        # 2. Session Low (Asia 00–08 UTC)        — ✅ NEW: сессионный минимум
+        # 3. SmartSL (манипуляция Multi-TF)      — свечи с хвостами
+        # 4. VWAP (Anchored VWAP дня)            — ✅ NEW: динамическая поддержка
+        # 5. Sweep Tail (ликвидность)            — за хвост ликвидности
+        # 6. Wyckoff Spring Low                  — за ложный пробой
+        # 7. XVP VAL (Volume Profile)            — за зону стоимости
+        # 8. ATR-adaptive default                — адаптивный фолбэк
+        # Границы: Volatility-Adaptive [ADX-based] — ✅ NEW
+        # ═══════════════════════════════════════════════════════════════════
         if swing_sl and min_sl_dist <= (price - swing_sl) <= max_sl_dist:
             stop_loss = swing_sl
             reasons.append(f"📐 Swing Low SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
+        elif session_sl and min_sl_dist <= (price - session_sl) <= max_sl_dist:
+            stop_loss = session_sl
+            reasons.append(f"🌅 Session Low SL: ${stop_loss:.6f}")
+        elif smart_sl_price and min_sl_dist <= (price - smart_sl_price) <= max_sl_dist:
+            stop_loss = smart_sl_price
+            reasons.append(f"🎯 SmartSL (манипуляция): ${stop_loss:.6f}")
+        elif vwap_sl and min_sl_dist <= (price - vwap_sl) <= max_sl_dist:
+            stop_loss = vwap_sl
+            reasons.append(f"📊 VWAP SL: ${stop_loss:.6f}")
         elif sweep_sl and min_sl_dist <= (price - sweep_sl) <= max_sl_dist:
             stop_loss = sweep_sl
             reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
@@ -2162,6 +2264,15 @@ async def _scan_market_impl():
             try:
                 sl_cd = state.redis.get(f"sl_cooldown:long:{symbol}")
                 if sl_cd:
+                    continue
+            except Exception:
+                pass
+
+            # ✅ NEW: 1 позиция на символ — не открываем если уже есть LONG по этому активу
+            # (реальная или виртуальная). SHORT бот может открывать SHORT по тому же символу.
+            try:
+                if state.redis.has_open_position_for_symbol(Config.BOT_TYPE, symbol):
+                    print(f"⏭️ [1-POS] {symbol}: уже есть открытая LONG позиция/виртуал — пропускаем")
                     continue
             except Exception:
                 pass
