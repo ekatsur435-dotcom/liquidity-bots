@@ -477,22 +477,31 @@ def api_positions():
 
                             entry_price = float(pos.get("entry_price", 0) or 0)
 
-                            # ✅ FIX: Дедупликация включает ПРЕФИКС КЛЮЧА + направление + цену входа
-                            # Это критично когда оба бота работают на ОДНОМ Redis:
-                            # short:positions:CRVUSDT и long:positions:CRV-USDT — РАЗНЫЕ позиции,
-                            # без префикса они давали один dedup_key и LONG позиция пропускалась!
-                            key_prefix = key.split(":")[0]  # "short" или "long"
-                            dedup_key = f"{key_prefix}:{symbol_normalized}:{real_direction}:{entry_price}"
+                            # FIX DEDUP: убираем key_prefix — дубли были из-за разных ключей
+                            # одной позиции. symbol+direction+entry уникально идентифицируют позицию.
+                            dedup_key = f"{symbol_normalized}:{real_direction}:{entry_price}"
                             if dedup_key in seen_positions:
                                 debug_info["skipped_dup"] += 1
-                                print(f"[DEDUP] Skipped {bot_name} key={key} → dedup_key={dedup_key}")
                                 continue
                             seen_positions.add(dedup_key)
 
-                            status = pos.get('status', 'active')
-                            if status not in ['active', 'filled', 'open']:
+                            status = pos.get("status", "active")
+                            if status not in ["active", "filled", "open"]:
                                 debug_info["skipped_status"] += 1
                                 continue
+
+                            # FIX CLOSED: position_tracker не удаляет positions:{symbol} при закрытии.
+                            # Кросс-проверяем через signals: если последний сигнал closed/expired/zombie — скип.
+                            try:
+                                sig_raw = redis.execute(["LINDEX", f"{prefix}:signals:{symbol_normalized}", "0"])
+                                if sig_raw:
+                                    sig_status = json.loads(sig_raw).get("status", "")
+                                    if any(c in sig_status for c in ["closed", "expired", "zombie"]):
+                                        debug_info["skipped_status"] += 1
+                                        print(f"[CLOSED-POS] {symbol_normalized} sig_status={sig_status} skip")
+                                        continue
+                            except Exception:
+                                pass
 
                             stored_pnl  = float(pos.get("unrealized_pnl", pos.get("pnl", 0)) or 0)
 
