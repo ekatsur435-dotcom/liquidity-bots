@@ -1423,6 +1423,84 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"🚫 [RSI-FLOOR-SHORT] {symbol}: RSI 1H={rsi_1h_val:.1f} < 45 — уже перепродан, риск отскока → skip")
             return None
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🆕 УМНЫЕ ФИЛЬТРЫ v5.0 — защита от шортов на отскоках и восстановлениях
+        # ═══════════════════════════════════════════════════════════════════════
+
+        def _rsi_w(closes, period=14):
+            """RSI для произвольного массива closes."""
+            if len(closes) < period + 1:
+                return 50.0
+            gains  = [max(0.0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
+            losses = [max(0.0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
+            ag = sum(gains[-period:]) / period
+            al = sum(losses[-period:]) / period
+            return 100.0 - 100.0 / (1.0 + ag / al) if al > 0 else 100.0
+
+        # F1: RSI 4H вырос > 5 пунктов за 3 бара И > 50 → восстановление, шорт запрещён
+        # Защищает от: DOTUSDT (RSI 4H рос с 35 → 63 пока бот шортил)
+        try:
+            if ohlcv_4h and len(ohlcv_4h) >= 22:
+                _cl4 = [c.close for c in ohlcv_4h]
+                _rsi4_now  = _rsi_w(_cl4[-17:])
+                _rsi4_3ago = _rsi_w(_cl4[-20:-3])
+                if (_rsi4_now - _rsi4_3ago) > 5.0 and _rsi4_now > 50:
+                    print(f"🚫 [F1-RSI4H-RISING] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} (+{_rsi4_now-_rsi4_3ago:.1f}) + >50 → восстановление, шорт запрещён")
+                    return None
+        except Exception as _fe:
+            print(f"[F1] {symbol}: {_fe}")
+
+        # F2: RSI 1H был < 30 в последних 8 барах И сейчас > 45 → отскок в процессе
+        # Защищает от: PAXGUSDT (RSI упал до 20, бот зашёл в шорт на дне)
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 25:
+                _cl1 = [c.close for c in ohlcv_1h]
+                _rsi1_hist = [_rsi_w(_cl1[-(17+i):-(i) if i > 0 else None]) for i in range(1, 9)]
+                _rsi1_min  = min(_rsi1_hist)
+                if _rsi1_min < 30 and rsi_1h_val > 45:
+                    print(f"🚫 [F2-OVERSOLD-BOUNCE] {symbol}: RSI 1H был {_rsi1_min:.1f} за посл. 8 баров, сейчас {rsi_1h_val:.1f} → отскок в процессе")
+                    return None
+        except Exception as _fe:
+            print(f"[F2] {symbol}: {_fe}")
+
+        # F3: Цена выросла > 3% от лоя последних 12 свечей 1H → отскок
+        # Защищает от: DOTUSDT (цена выросла +4.5% от дна за 12 часов)
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 12:
+                _low_12h = min(c.low for c in ohlcv_1h[-12:])
+                if _low_12h > 0:
+                    _bounce_pct = (price - _low_12h) / _low_12h * 100
+                    if _bounce_pct > 3.0:
+                        print(f"🚫 [F3-ANTI-BOUNCE] {symbol}: +{_bounce_pct:.1f}% от 12H лоя {_low_12h:.6f} → отскок, шорт запрещён")
+                        return None
+        except Exception as _fe:
+            print(f"[F3] {symbol}: {_fe}")
+
+        # F4: RSI 4H застрял 42-58 на 5 барах (боковик) + RSI 1H < 65 → слабый сигнал
+        # Защищает от: LTCUSDT (боковик 54-57, RSI нейтральный)
+        try:
+            if ohlcv_4h and len(ohlcv_4h) >= 22:
+                _cl4b = [c.close for c in ohlcv_4h]
+                _rsi4_5bars = [_rsi_w(_cl4b[-(17+i):-(i) if i > 0 else None]) for i in range(0, 5)]
+                if all(42 < r < 58 for r in _rsi4_5bars) and rsi_1h_val < 65:
+                    print(f"🚫 [F4-RANGE-MODE] {symbol}: 4H боковик RSI=[{','.join(f'{r:.0f}' for r in _rsi4_5bars)}] RSI 1H={rsi_1h_val:.1f} < 65 → ждём перекупленности")
+                    return None
+        except Exception as _fe:
+            print(f"[F4] {symbol}: {_fe}")
+
+        # F5: RSI 1H вырос > 8 пунктов за 2 бара + RSI > 55 → бычий импульс, ждём пика
+        # Защищает от: DOTUSDT 1H RSI быстро рос (46→63 за 2 часа)
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 19:
+                _cl1b = [c.close for c in ohlcv_1h]
+                _rsi1_now  = _rsi_w(_cl1b[-15:])
+                _rsi1_2ago = _rsi_w(_cl1b[-17:-2])
+                if (_rsi1_now - _rsi1_2ago) > 8.0 and _rsi1_now > 55:
+                    print(f"🚫 [F5-RSI1H-MOMENTUM] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} (+{_rsi1_now-_rsi1_2ago:.1f}) за 2 бара → бычий импульс, ждём пика")
+                    return None
+        except Exception as _fe:
+            print(f"[F5] {symbol}: {_fe}")
+
         # --- MTF Confluence для SHORT: перекупленность на нескольких TF ---
         # XNY RSI=77 (1H) + если 4H тоже 70+ = классический SHORT вход после памп
         mtf_rsi_bonus  = 0
@@ -1526,14 +1604,15 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_quality_ok = ob_quality >= 50
         ob_q_high     = ob_quality >= 65
 
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
-
-        # ✅ FIX: Учитываем base_score_bonus (TBS/confirmation) при проверке порога
+        # ✅ FIX: считаем adjusted_score ДО лога, чтобы valid отражал реальное решение
         effective_min = 30 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 45
         adjusted_score = score_result.total_score + max(0, base_score_bonus)
         score_is_valid = score_result.is_valid or adjusted_score >= effective_min
+
+        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_is_valid} "
+              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}"
+              f" adj={adjusted_score:.0f}% min={effective_min}")
 
         # ✅ FIX v4.1: STRICT MODE — только валидные сигналы
         if not score_is_valid:
@@ -2244,7 +2323,14 @@ async def _scan_market_impl():
     new_signals   = 0
     tg_only_count = 0
 
+    _scanned_this_run: set = set()  # ✅ FIX: защита от дублей в watchlist
+
     for symbol in state.watchlist:
+        # ✅ FIX: пропускаем если уже сканировали этот символ в текущем цикле
+        if symbol in _scanned_this_run:
+            continue
+        _scanned_this_run.add(symbol)
+
         try:
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
