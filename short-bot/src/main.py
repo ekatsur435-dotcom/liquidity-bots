@@ -1432,7 +1432,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
-                wave_boost = 10 if wave_result.confidence > 0.75 else 5
+                wave_boost = 10 if wave_result.confidence > 0.75 else 7
                 final_score += wave_boost
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
