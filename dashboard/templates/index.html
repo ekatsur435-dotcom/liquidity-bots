@@ -515,7 +515,7 @@
                 ● Онлайн
             </div>
             <div style="color: rgba(255,255,255,0.4); font-size: 12px; display:flex; align-items:center; gap:10px;">
-                <span>Обновление: 15мин | Обновлен: <span id="last-update">--:--:--</span></span>
+                <span>Обновление: 5мин | Обновлен: <span id="last-update">--:--:--</span></span>
                 <button onclick="cleanupPositions()" style="background:rgba(255,60,60,0.15);border:1px solid rgba(255,60,60,0.4);color:rgba(255,120,120,0.9);border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;" title="Удалить старые закрытые позиции из Redis">🗑️ Очистить позиции</button>
             </div>
         </div>
@@ -1117,15 +1117,15 @@
                 const reason    = s.skip_reason || s.reason || '';
                 const reasonTxt = reason ? '<span class="sig-reason">• ' + reason + '</span>' : '';
                 const ts        = s.log_ts ? new Date(s.log_ts).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
-                return \`<div class="sig-item">
-                    <span class="sig-badge \${badgeCls}">\${badgeTxt}</span>
-                    <span class="\${dirClass}">\${dirLabel}</span>
-                    <span class="sig-sym">\${sym}</span>
-                    <span class="sig-score">★\${score}</span>
-                    \${reasonTxt}
-                    <span class="sig-price">\${priceStr}</span>
-                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">\${ts}</span>
-                </div>\`;
+                return `<div class="sig-item">
+                    <span class="sig-badge ${badgeCls}">${badgeTxt}</span>
+                    <span class="${dirClass}">${dirLabel}</span>
+                    <span class="sig-sym">${sym}</span>
+                    <span class="sig-score">★${score}</span>
+                    ${reasonTxt}
+                    <span class="sig-price">${priceStr}</span>
+                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">${ts}</span>
+                </div>`;
             }).join('');
         }
 
@@ -1168,19 +1168,19 @@
                 let pnlHtml = '';
                 if (pnl != null) {
                     const v = parseFloat(pnl);
-                    pnlHtml = \`<span class="\${v>=0?'sig-pnl-pos':'sig-pnl-neg'}">\${v>=0?'+':''}\${v.toFixed(2)}%</span>\`;
+                    pnlHtml = `<span class="${v>=0?'sig-pnl-pos':'sig-pnl-neg'}">${v>=0?'+':''}${v.toFixed(2)}%</span>`;
                 }
                 const ts = (p.virtual_opened_at||p.log_ts||'');
                 const tsStr = ts ? new Date(ts).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
-                return \`<div class="sig-item">
-                    <span class="sig-badge \${badgeCls}">\${badgeTxt}</span>
-                    <span class="\${dirClass}">\${dirLabel}</span>
-                    <span class="sig-sym">\${sym}</span>
-                    <span class="sig-score">★\${score}</span>
-                    <span style="font-size:11px;color:rgba(255,255,255,0.4);flex:1;">\${entryStr}</span>
-                    \${pnlHtml}
-                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">\${tsStr}</span>
-                </div>\`;
+                return `<div class="sig-item">
+                    <span class="sig-badge ${badgeCls}">${badgeTxt}</span>
+                    <span class="${dirClass}">${dirLabel}</span>
+                    <span class="sig-sym">${sym}</span>
+                    <span class="sig-score">★${score}</span>
+                    <span style="font-size:11px;color:rgba(255,255,255,0.4);flex:1;">${entryStr}</span>
+                    ${pnlHtml}
+                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">${tsStr}</span>
+                </div>`;
             }).join('');
         }
 
