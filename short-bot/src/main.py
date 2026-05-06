@@ -1094,30 +1094,39 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     # 🎯 ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
                     base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
                     reasons = sweep["reasons"] + confirmation["reasons"]
-                    
-                    # Генерируем сигнал с оптимальными уровнями
+
+                    # ✅ BUG#2 FIX: используем динамический TP вместо hardcoded 4/8/12%
                     entry = md.price
                     sl = entry * (1 + Config.SL_BUFFER / 100)
-                    tp1 = entry * (1 - 0.04)  # 4%
-                    tp2 = entry * (1 - 0.08)  # 8%
-                    tp3 = entry * (1 - 0.12)  # 12%
-                    
-                    print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
-                    
+                    _best_pat = patterns[0].name if patterns else "LIQUIDITY_SWEEP"
+                    _tp_levels, _tp_weights = get_short_tp_config(
+                        funding_rate=md.funding_rate,
+                        pattern_name=_best_pat,
+                        btc_trend="neutral",
+                    )
+                    sweep_tps = [
+                        (round(entry * (1 - tp / 100), 8), _tp_weights[i] if i < len(_tp_weights) else 15)
+                        for i, tp in enumerate(_tp_levels)
+                    ]
+
+                    print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}, TPs={[f'{t:.1f}%' for t in _tp_levels[:3]]}")
+
                     return {
                         "symbol": symbol,
                         "direction": "short",
                         "score": base_score,
-                        "price": entry,  # Alias для совместимости с telegram
+                        "price": entry,
                         "entry_price": entry,
                         "stop_loss": sl,
-                        "take_profits": [tp1, tp2, tp3],
-                        "reasons": reasons[:5],  # Топ-5 причин
+                        "take_profits": sweep_tps,
+                        "reasons": reasons[:5],
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
-                        "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
+                        "best_pattern": "LIQUIDITY_SWEEP",
                         "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
-                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
+                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {},
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "status": "active", "taken_tps": [],
                     }
                 else:
                     # Sweep есть но не подтверждён — логируем но пропускаем
@@ -1221,32 +1230,47 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         base_score_before_override = 0
 
         try:
-            oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+            # ✅ BUG#4 FIX: fallback на md.oi_change_4d если API вернул 404/400
+            oi_history = None
+            try:
+                oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+            except Exception as _oi_e:
+                print(f"[OI-PROXY] {symbol}: API error ({_oi_e.__class__.__name__}) — using md.oi_change_4d fallback")
+
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
                 vols = [c.quote_volume for c in ohlcv_primary[-5:]]
 
-                # OI и объём падают вместе с ценой → медвежье подтверждение
                 oi_growing   = ois[-1] > ois[0] if ois[0] else False
                 vol_growing  = len(vols) >= 3 and vols[-1] > vols[-3]
                 price_down   = getattr(md, "price_change_1h", 0) < -0.5
 
-                # Bear confirm: цена падает + OI растёт (шорты открываются)
                 oi_bear_confirm = price_down and oi_growing
                 if oi_bear_confirm:
                     oi_score_adj += 1.5
 
-                # OI стабильно растёт = реальные деньги идут в шорт
                 oi_accumulation = (all(ois[i] <= ois[i+1] for i in range(len(ois)-1))
                                    if len(ois) >= 3 else False)
                 if oi_accumulation:
                     oi_score_adj += 2.5
 
-                # Слабость: цена падает но OI тоже падает = шорты закрываются
                 oi_falling = ois[-1] < ois[0] if ois[0] else False
                 oi_weakness_short = price_down and oi_falling
                 if oi_weakness_short:
                     oi_score_adj -= 2.0
+            else:
+                # Fallback: используем 4-дневный OI change из market data
+                _oi_4d = getattr(md, "oi_change_4d", 0) or 0
+                price_down = getattr(md, "price_change_1h", 0) < -0.5
+                if _oi_4d > 5 and price_down:
+                    oi_bear_confirm = True
+                    oi_score_adj += 1.0  # Слабее чем realtime, но лучше нуля
+                elif _oi_4d > 10:
+                    oi_accumulation = True
+                    oi_score_adj += 1.5
+                elif _oi_4d < -5 and price_down:
+                    oi_weakness_short = True
+                    oi_score_adj -= 1.0
         except Exception as e:
             print(f"OI Proxy error {symbol}: {e}")
 
@@ -1269,8 +1293,10 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
         ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
 
-        # Инициализация final_score от base scorer
-        final_score = score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj
+        # ✅ BUG#1 FIX: base_score_bonus (EntryConfirmation + TBS) теперь применяется
+        final_score = score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj + base_score_bonus
+        if base_score_bonus:
+            print(f"✅ [ENTRY-CONF] {symbol}: bonus={base_score_bonus:+d} applied → final={final_score}")
         print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={md.rsi_1h or 0:.1f} 30m={rsi_30m:.1f}")
         if rsi_30m_score_adj != 0:
             print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
@@ -1283,8 +1309,11 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"🚫 [RSI-FLOOR-SHORT] {symbol}: RSI 1H={_rsi_1h_now:.1f} < {Config.RSI_FLOOR_SHORT_MIN} — уже перепродан, риск отскока → skip")
             return None
 
+        # ✅ BUG#3 FIX: записываем base_score до override-бонусов (SMC/Z/Delta)
+        base_score_before_override = final_score
+
         reasons     = list(score_result.reasons)
-        
+
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
         if hasattr(state, 'market_integrator') and state.market_integrator:
