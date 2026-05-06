@@ -55,16 +55,23 @@ def get_trading_stats(days=7):
         "total_trades": 0,
         "win_count": 0,
         "loss_count": 0,
+        "be_count": 0,
         "total_pnl": 0.0,
         "total_pnl_leveraged": 0.0,
         "micro_step_saves": 0,
         "active_positions": 0,
         "trades": [],
         "short_trades": 0,
+        "short_wins": 0,
+        "short_losses": 0,
+        "short_be": 0,
         "short_winrate": 0,
         "short_pnl": 0.0,
         "short_pnl_leveraged": 0.0,
         "long_trades": 0,
+        "long_wins": 0,
+        "long_losses": 0,
+        "long_be": 0,
         "long_winrate": 0,
         "long_pnl": 0.0,
         "long_pnl_leveraged": 0.0,
@@ -112,8 +119,10 @@ def get_trading_stats(days=7):
                             return 20
 
                     total = len(trades)
-                    wins = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) > 0)
-                    losses = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) <= 0)
+                    BE_THRESHOLD = 0.1  # ±0.1% считается BE/Flat
+                    wins   = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) > BE_THRESHOLD)
+                    be     = sum(1 for t in trades if abs(_num(t.get('pnl_pct') or t.get('pnl'))) <= BE_THRESHOLD)
+                    losses = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) < -BE_THRESHOLD)
                     pnl = sum(_num(t.get('pnl_pct') or t.get('pnl')) for t in trades)
                     # Leveraged P&L = price_move% × leverage (real account impact)
                     pnl_lev = sum(
@@ -124,16 +133,23 @@ def get_trading_stats(days=7):
                     stats["total_trades"] += total
                     stats["win_count"] += wins
                     stats["loss_count"] += losses
+                    stats["be_count"] += be
                     stats["total_pnl"] += pnl
                     stats["total_pnl_leveraged"] += pnl_lev
 
                     if bot_name == "SHORT":
                         stats["short_trades"] = total
+                        stats["short_wins"] = wins
+                        stats["short_losses"] = losses
+                        stats["short_be"] = be
                         stats["short_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
                         stats["short_pnl"] = round(pnl, 2)
                         stats["short_pnl_leveraged"] = round(pnl_lev, 2)
                     else:
                         stats["long_trades"] = total
+                        stats["long_wins"] = wins
+                        stats["long_losses"] = losses
+                        stats["long_be"] = be
                         stats["long_winrate"] = round(wins / total * 100, 1) if total > 0 else 0
                         stats["long_pnl"] = round(pnl, 2)
                         stats["long_pnl_leveraged"] = round(pnl_lev, 2)
@@ -166,9 +182,11 @@ def get_trading_stats(days=7):
         except Exception as e:
             print(f"Redis {bot_name} error: {e}")
     
-    # Win rate
-    total = stats["win_count"] + stats["loss_count"]
-    stats["win_rate"] = round(stats["win_count"] / total * 100, 1) if total > 0 else 0
+    # Win rate (BE не считается ни win ни loss для %WR)
+    total = stats["win_count"] + stats["loss_count"] + stats["be_count"]
+    decisive = stats["win_count"] + stats["loss_count"]
+    stats["win_rate"] = round(stats["win_count"] / decisive * 100, 1) if decisive > 0 else 0
+    stats["total_trades"] = total
     stats["total_pnl"] = round(stats["total_pnl"], 2)
     stats["total_pnl_leveraged"] = round(stats["total_pnl_leveraged"], 2)
     
@@ -574,32 +592,47 @@ def api_summary():
             try:
                 trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "-1"])
                 if trades_json:
+                    _BE_THRESH = 0.1
                     for t_json in trades_json:
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
-                            pnl = (t.get("pnl_pct") or t.get("pnl") or 0)
-                            is_win = pnl > 0
-                            
+                            pnl = float(t.get("pnl_pct") or t.get("pnl") or 0)
+                            is_win = pnl > _BE_THRESH
+                            is_be  = abs(pnl) <= _BE_THRESH
+                            is_loss = pnl < -_BE_THRESH
+
                             # Week
                             summary["week"]["pnl"] += pnl
                             summary["week"]["trades"] += 1
                             if is_win:
                                 summary["week"]["wins"] = summary["week"].get("wins", 0) + 1
-                            
+                            if is_be:
+                                summary["week"]["be"] = summary["week"].get("be", 0) + 1
+                            if is_loss:
+                                summary["week"]["losses"] = summary["week"].get("losses", 0) + 1
+
                             # Today
                             if trade_date == today:
                                 summary["today"]["pnl"] += pnl
                                 summary["today"]["trades"] += 1
                                 if is_win:
                                     summary["today"]["wins"] = summary["today"].get("wins", 0) + 1
-                            
+                                if is_be:
+                                    summary["today"]["be"] = summary["today"].get("be", 0) + 1
+                                if is_loss:
+                                    summary["today"]["losses"] = summary["today"].get("losses", 0) + 1
+
                             # Yesterday
                             if trade_date == yesterday:
                                 summary["yesterday"]["pnl"] += pnl
                                 summary["yesterday"]["trades"] += 1
                                 if is_win:
                                     summary["yesterday"]["wins"] = summary["yesterday"].get("wins", 0) + 1
+                                if is_be:
+                                    summary["yesterday"]["be"] = summary["yesterday"].get("be", 0) + 1
+                                if is_loss:
+                                    summary["yesterday"]["losses"] = summary["yesterday"].get("losses", 0) + 1
                         except:
                             continue
             except:
@@ -607,11 +640,14 @@ def api_summary():
         except Exception as e:
             print(f"Error reading summary for {bot_name}: {e}")
     
-    # Calculate winrates
+    # Calculate winrates (BE исключается из decisive для честного WR%)
     for period in ["today", "yesterday", "week"]:
-        total = summary[period]["trades"]
-        wins = summary[period].get("wins", 0)
-        summary[period]["winrate"] = round(wins / total * 100, 1) if total > 0 else 0
+        wins   = summary[period].get("wins", 0)
+        losses = summary[period].get("losses", 0)
+        be     = summary[period].get("be", 0)
+        decisive = wins + losses
+        summary[period]["winrate"] = round(wins / decisive * 100, 1) if decisive > 0 else 0
+        summary[period]["be"] = be
     
     return jsonify(summary)
 

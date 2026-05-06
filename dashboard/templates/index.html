@@ -770,10 +770,10 @@
             winChart = new Chart(winCtx, {
                 type: 'doughnut',
                 data: {
-                    labels: ['SHORT Wins', 'LONG Wins', 'Losses'],
+                    labels: ['🟢 SHORT Wins', '🔵 LONG Wins', '🟡 BE/Flat', '🔴 Losses'],
                     datasets: [{
-                        data: [0, 0, 0],
-                        backgroundColor: ['#ff6b6b', '#00d4ff', 'rgba(255,255,255,0.15)'],
+                        data: [0, 0, 0, 0],
+                        backgroundColor: ['#00ff88', '#00d4ff', '#ffc107', '#ff4444'],
                         borderWidth: 0
                     }]
                 },
@@ -952,16 +952,13 @@
                 pnlChart.update();
             }
             
-            // Update Win Distribution Doughnut Chart using stats data
+            // Update Win Distribution Doughnut Chart — 4 segments
             if (winChart && statsData) {
-                const shortWins = statsData.short_winrate ? Math.round(statsData.short_winrate / 100 * (statsData.short_trades || 0)) : 0;
-                const longWins = statsData.long_winrate ? Math.round(statsData.long_winrate / 100 * (statsData.long_trades || 0)) : 0;
-                const totalTrades = statsData.total_trades || 0;
-                const losses = Math.max(0, totalTrades - shortWins - longWins);
-                
-                console.log('Win Chart Update:', { shortWins, longWins, losses, totalTrades });
-                
-                winChart.data.datasets[0].data = [shortWins, longWins, losses];
+                const shortWins = statsData.short_wins  || 0;
+                const longWins  = statsData.long_wins   || 0;
+                const beCount   = (statsData.short_be   || 0) + (statsData.long_be || 0);
+                const losses    = (statsData.short_losses || 0) + (statsData.long_losses || 0);
+                winChart.data.datasets[0].data = [shortWins, longWins, beCount, losses];
                 winChart.update();
             }
         }
