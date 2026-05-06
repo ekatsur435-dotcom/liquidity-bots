@@ -490,9 +490,29 @@ class OKXClient:
         return []
     
     # =========================================================================
+    # CANDLES / KLINES
+    # =========================================================================
+
+    async def get_candles(self, symbol: str, bar: str = "1H", limit: int = 200) -> List[List]:
+        """
+        Получить свечи OHLCV с OKX.
+        bar: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 12H, 1D
+        Возвращает список [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        OKX: новейшая свеча первая (нужно reverse() в binance_client).
+        Max limit: 300.
+        """
+        okx_symbol = self._convert_symbol(symbol)
+        data = await self._make_request("/api/v5/market/candles", {
+            "instId": okx_symbol,
+            "bar":    bar,
+            "limit":  str(min(limit, 300)),
+        })
+        return data if data else []
+
+    # =========================================================================
     # RECENT TRADES (ЛЕНТА СДЕЛОК)
     # =========================================================================
-    
+
     async def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
         """
         Получить ленту сделок (Recent Trades)
