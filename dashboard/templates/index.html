@@ -1078,9 +1078,10 @@
         }
         
         function updateSummary(summary) {
-            document.getElementById('today-trades').textContent = summary.today?.trades || 0;
-            document.getElementById('today-winrate').textContent = summary.today?.winrate || 0;
-            document.getElementById('today-pnl').textContent = (summary.today?.pnl || 0).toFixed(2) + '%';
+            const el = (id) => document.getElementById(id);
+            if (el('today-trades'))  el('today-trades').textContent  = summary.today?.trades || 0;
+            if (el('today-winrate')) el('today-winrate').textContent = summary.today?.winrate || 0;
+            if (el('today-pnl'))     el('today-pnl').textContent     = (summary.today?.pnl || 0).toFixed(2) + '%';
         }
 
         // ── Signal Log ────────────────────────────────────────────────────────
