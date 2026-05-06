@@ -8,6 +8,7 @@ URL: http://localhost:5000
 import os
 import sys
 import json
+import traceback
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -98,13 +99,25 @@ def get_trading_stats(days=7):
                     if not trades:
                         trades = all_t[-50:]
 
+                    def _num(v, default=0.0):
+                        try:
+                            return float(v) if v not in (None, '', '?') else default
+                        except (ValueError, TypeError):
+                            return default
+
+                    def _lev(t):
+                        try:
+                            return int(float(t.get('leverage', 20) or 20))
+                        except (ValueError, TypeError):
+                            return 20
+
                     total = len(trades)
-                    wins = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) > 0)
-                    losses = sum(1 for t in trades if (t.get('pnl_pct') or t.get('pnl') or 0) <= 0)
-                    pnl = sum((t.get('pnl_pct') or t.get('pnl') or 0) for t in trades)
+                    wins = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) > 0)
+                    losses = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) <= 0)
+                    pnl = sum(_num(t.get('pnl_pct') or t.get('pnl')) for t in trades)
                     # Leveraged P&L = price_move% × leverage (real account impact)
                     pnl_lev = sum(
-                        (t.get('pnl_pct') or t.get('pnl') or 0) * int(t.get('leverage', 20))
+                        _num(t.get('pnl_pct') or t.get('pnl')) * _lev(t)
                         for t in trades
                     )
 
@@ -126,6 +139,7 @@ def get_trading_stats(days=7):
                         stats["long_pnl_leveraged"] = round(pnl_lev, 2)
             except Exception as e:
                 print(f"Error reading all_trades for {bot_name}: {e}")
+                traceback.print_exc()
                     
             # Micro-step saves (LIST)
             try:
