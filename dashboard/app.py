@@ -119,10 +119,10 @@ def get_trading_stats(days=7):
                             return 20
 
                     total = len(trades)
-                    BE_THRESHOLD = 0.1  # ±0.1% считается BE/Flat
-                    wins   = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) > BE_THRESHOLD)
-                    be     = sum(1 for t in trades if abs(_num(t.get('pnl_pct') or t.get('pnl'))) <= BE_THRESHOLD)
-                    losses = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) < -BE_THRESHOLD)
+                    BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
+                    wins   = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) > 0)
+                    be     = sum(1 for t in trades if BE_FLOOR <= _num(t.get('pnl_pct') or t.get('pnl')) <= 0)
+                    losses = sum(1 for t in trades if _num(t.get('pnl_pct') or t.get('pnl')) < BE_FLOOR)
                     pnl = sum(_num(t.get('pnl_pct') or t.get('pnl')) for t in trades)
                     # Leveraged P&L = price_move% × leverage (real account impact)
                     pnl_lev = sum(
@@ -592,15 +592,15 @@ def api_summary():
             try:
                 trades_json = redis.execute(["LRANGE", f"{prefix}:all_trades", "0", "-1"])
                 if trades_json:
-                    _BE_THRESH = 0.1
+                    _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
                     for t_json in trades_json:
                         try:
                             t = json.loads(t_json)
                             trade_date = t.get("closed_at", "")[:10] if t.get("closed_at") else ""
                             pnl = float(t.get("pnl_pct") or t.get("pnl") or 0)
-                            is_win = pnl > _BE_THRESH
-                            is_be  = abs(pnl) <= _BE_THRESH
-                            is_loss = pnl < -_BE_THRESH
+                            is_win  = pnl > 0
+                            is_be   = _BE_FLOOR <= pnl <= 0
+                            is_loss = pnl < _BE_FLOOR
 
                             # Week
                             summary["week"]["pnl"] += pnl
