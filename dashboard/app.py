@@ -553,7 +553,7 @@ def api_virtual_monitor():
                 pass
             # Закрытые (LIST)
             try:
-                items = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", "299"])
+                items = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", "49"])
                 if items:
                     for item in items:
                         try:

@@ -227,6 +227,20 @@
             position: relative;
             height: 280px;
         }
+        .chart-container-donut {
+            background: rgba(0,0,0,0.2);
+            border-radius: 12px;
+            padding: 16px 16px 8px;
+            position: relative;
+            height: 320px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .chart-container-donut canvas {
+            max-height: 240px !important;
+        }
         
         /* Trades List */
         .trades-list {
@@ -641,7 +655,7 @@
             </div>
             <div class="section-card">
                 <div class="section-title">🎯 Win Distribution</div>
-                <div class="chart-container">
+                <div class="chart-container-donut">
                     <canvas id="winChart"></canvas>
                 </div>
             </div>
@@ -780,11 +794,18 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    cutout: '65%',
+                    cutout: '62%',
+                    layout: { padding: { bottom: 8 } },
                     plugins: {
                         legend: {
                             position: 'bottom',
-                            labels: { color: 'rgba(255,255,255,0.7)', font: { size: 11 } }
+                            labels: {
+                                color: 'rgba(255,255,255,0.7)',
+                                font: { size: 11 },
+                                padding: 12,
+                                boxWidth: 14,
+                                boxHeight: 14
+                            }
                         }
                     }
                 }
@@ -899,7 +920,7 @@
                 updateSummary(summary);
 
                 // 7. Signal Log
-                const sigRes = await fetch('/api/signal_log?limit=400');
+                const sigRes = await fetch('/api/signal_log?limit=100');
                 const sigData = await sigRes.json();
                 _allSignals = sigData.signals || [];
                 renderSignalLog(_currentSigFilter);
