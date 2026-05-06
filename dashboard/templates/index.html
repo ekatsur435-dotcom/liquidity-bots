@@ -336,6 +336,52 @@
             align-items: center;
             width: 100%;
         }
+
+        /* Signal Log / Virtual Monitor кнопки фильтра */
+        .filter-btn-sm {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.5);
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .filter-btn-sm:hover { background: rgba(255,255,255,0.12); color: #fff; }
+        .filter-btn-sm.active-f { background: rgba(0,212,255,0.15); border-color: #00d4ff; color: #00d4ff; }
+
+        /* Signal log entries */
+        .sig-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            transition: background 0.15s;
+        }
+        .sig-item:hover { background: rgba(255,255,255,0.03); }
+        .sig-badge {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            letter-spacing: 0.3px;
+        }
+        .badge-exchange { background: rgba(0,255,136,0.15); color: #00ff88; border: 1px solid rgba(0,255,136,0.3); }
+        .badge-tg       { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.45); border: 1px solid rgba(255,255,255,0.12); }
+        .badge-sl       { background: rgba(255,68,68,0.2); color: #ff6b6b; border: 1px solid rgba(255,68,68,0.35); }
+        .badge-tp       { background: rgba(0,255,136,0.15); color: #00ff88; border: 1px solid rgba(0,255,136,0.3); }
+        .badge-open     { background: rgba(255,193,7,0.15); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
+        .dir-s { color: #ff6b6b; font-weight: 700; font-size: 12px; }
+        .dir-l { color: #00d4ff; font-weight: 700; font-size: 12px; }
+        .sig-sym { font-size: 13px; font-weight: 600; color: #fff; }
+        .sig-score { font-size: 11px; color: rgba(255,255,255,0.45); }
+        .sig-price { font-size: 12px; color: rgba(255,255,255,0.6); margin-left: auto; }
+        .sig-reason { font-size: 11px; color: rgba(255,255,255,0.35); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+        .sig-pnl-pos { color: #00ff88; font-size: 12px; font-weight: 600; }
+        .sig-pnl-neg { color: #ff6b6b; font-size: 12px; font-weight: 600; }
         
         .feed-item {
             padding: 10px 12px;
@@ -610,7 +656,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-            
+
             <!-- Recent LONG Trades -->
             <div class="section-card">
                 <div class="section-title">🟢 Недавние LONG позиции</div>
@@ -618,7 +664,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-            
+
             <!-- Live Feed -->
             <div class="section-card">
                 <div class="section-title">🔔 Лента активности (в реальном времени)</div>
@@ -631,6 +677,41 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Signal Log + Virtual Monitor -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+
+            <!-- Лог сигналов -->
+            <div class="section-card" style="padding:0;">
+                <div style="padding:16px 20px 10px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.06);">
+                    <span class="section-title" style="margin:0;">📋 Лог сигналов <span id="signal-log-count" style="font-size:12px;opacity:0.45;font-weight:400">(0)</span></span>
+                    <div style="display:flex;gap:6px;">
+                        <button onclick="filterSignals('all')" id="sf-all" class="filter-btn-sm active-f">Все</button>
+                        <button onclick="filterSignals('exchange')" id="sf-exchange" class="filter-btn-sm">✅ Биржа</button>
+                        <button onclick="filterSignals('tg')" id="sf-tg" class="filter-btn-sm">TG</button>
+                    </div>
+                </div>
+                <div id="signal-log-list" style="max-height:420px;overflow-y:auto;">
+                    <div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Виртуальный мониторинг -->
+            <div class="section-card" style="padding:0;">
+                <div style="padding:16px 20px 10px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.06);">
+                    <span class="section-title" style="margin:0;">🔬 Виртуальный мониторинг <span id="virt-count" style="font-size:12px;opacity:0.45;font-weight:400">(0)</span></span>
+                    <div style="display:flex;gap:6px;">
+                        <button onclick="filterVirtual('all')" id="vf-all" class="filter-btn-sm active-f">Все</button>
+                        <button onclick="filterVirtual('open')" id="vf-open" class="filter-btn-sm">🟡 Откр.</button>
+                        <button onclick="filterVirtual('closed')" id="vf-closed" class="filter-btn-sm">Закрытые</button>
+                    </div>
+                </div>
+                <div id="virtual-list" style="max-height:420px;overflow-y:auto;">
+                    <div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Загрузка...</div>
+                </div>
+            </div>
+
         </div>
     </div>
     
@@ -811,11 +892,23 @@
                 const feedRes = await fetch('/api/feed');
                 const feed = await feedRes.json();
                 updateFeed(feed);
-                
+
                 // 6. Summary (Today/Yesterday/Week)
                 const summaryRes = await fetch('/api/summary');
                 const summary = await summaryRes.json();
                 updateSummary(summary);
+
+                // 7. Signal Log
+                const sigRes = await fetch('/api/signal_log?limit=400');
+                const sigData = await sigRes.json();
+                _allSignals = sigData.signals || [];
+                renderSignalLog(_currentSigFilter);
+
+                // 8. Virtual Monitor
+                const virtRes = await fetch('/api/virtual_monitor');
+                const virtData = await virtRes.json();
+                _allVirtual = virtData.positions || [];
+                renderVirtualMonitor(_currentVirtFilter);
                 
                 document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
                 
@@ -992,13 +1085,114 @@
             document.getElementById('today-winrate').textContent = summary.today?.winrate || 0;
             document.getElementById('today-pnl').textContent = (summary.today?.pnl || 0).toFixed(2) + '%';
         }
-        
+
+        // ── Signal Log ────────────────────────────────────────────────────────
+        let _allSignals = [], _currentSigFilter = 'all';
+
+        function filterSignals(f) {
+            _currentSigFilter = f;
+            ['all','exchange','tg'].forEach(k => document.getElementById('sf-'+k).classList.remove('active-f'));
+            document.getElementById('sf-'+f).classList.add('active-f');
+            renderSignalLog(f);
+        }
+
+        function renderSignalLog(f) {
+            const list = document.getElementById('signal-log-list');
+            let items = _allSignals;
+            if (f === 'exchange') items = items.filter(s => s.executed === true);
+            else if (f === 'tg')   items = items.filter(s => s.executed !== true);
+            document.getElementById('signal-log-count').textContent = '(' + items.length + ')';
+            if (!items.length) {
+                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет данных</div>';
+                return;
+            }
+            list.innerHTML = items.slice(0, 400).map(s => {
+                const isShort   = (s.direction || s.bot_type || '').toLowerCase().includes('short');
+                const dirLabel  = isShort ? 'S' : 'L';
+                const dirClass  = isShort ? 'dir-s' : 'dir-l';
+                const executed  = s.executed === true;
+                const badgeCls  = executed ? 'badge-exchange' : 'badge-tg';
+                const badgeTxt  = executed ? '✅ Биржа' : 'TG';
+                const sym       = (s.symbol || '').replace('USDT','') + '<span style="opacity:.45;font-size:10px;">USDT</span>';
+                const score     = s.score || s.min_score || 0;
+                const price     = s.price || s.entry_price || 0;
+                const priceStr  = price ? '$' + parseFloat(price).toPrecision(5) : '';
+                const reason    = s.skip_reason || s.reason || '';
+                const reasonTxt = reason ? '<span class="sig-reason">• ' + reason + '</span>' : '';
+                const ts        = s.log_ts ? new Date(s.log_ts).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
+                return \`<div class="sig-item">
+                    <span class="sig-badge \${badgeCls}">\${badgeTxt}</span>
+                    <span class="\${dirClass}">\${dirLabel}</span>
+                    <span class="sig-sym">\${sym}</span>
+                    <span class="sig-score">★\${score}</span>
+                    \${reasonTxt}
+                    <span class="sig-price">\${priceStr}</span>
+                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">\${ts}</span>
+                </div>\`;
+            }).join('');
+        }
+
+        // ── Virtual Monitor ───────────────────────────────────────────────────
+        let _allVirtual = [], _currentVirtFilter = 'all';
+
+        function filterVirtual(f) {
+            _currentVirtFilter = f;
+            ['all','open','closed'].forEach(k => document.getElementById('vf-'+k).classList.remove('active-f'));
+            document.getElementById('vf-'+f).classList.add('active-f');
+            renderVirtualMonitor(f);
+        }
+
+        function renderVirtualMonitor(f) {
+            const list = document.getElementById('virtual-list');
+            let items = _allVirtual;
+            if (f === 'open')   items = items.filter(p => p._status === 'open');
+            if (f === 'closed') items = items.filter(p => p._status === 'closed');
+            document.getElementById('virt-count').textContent = '(' + items.length + ')';
+            if (!items.length) {
+                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет данных</div>';
+                return;
+            }
+            list.innerHTML = items.slice(0, 400).map(p => {
+                const isShort  = (p.direction || p.bot_type || '').toLowerCase().includes('short');
+                const dirClass = isShort ? 'dir-s' : 'dir-l';
+                const dirLabel = isShort ? 'S' : 'L';
+                const isOpen   = p._status === 'open';
+                const outcome  = p.outcome || '';
+                let badgeCls, badgeTxt;
+                if (isOpen)             { badgeCls='badge-open'; badgeTxt='ОТКР'; }
+                else if (outcome==='tp'){ badgeCls='badge-tp';   badgeTxt='TP';   }
+                else if (outcome==='sl'){ badgeCls='badge-sl';   badgeTxt='SL';   }
+                else                    { badgeCls='badge-tg';   badgeTxt=outcome.toUpperCase()||'—'; }
+                const sym      = (p.symbol||'').replace('USDT','') + '<span style="opacity:.45;font-size:10px;">USDT</span>';
+                const score    = p.score || 0;
+                const entry    = p.entry_price || p.price || 0;
+                const entryStr = entry ? 'Вход: $' + parseFloat(entry).toPrecision(5) : '';
+                const pnl      = p.pnl_pct;
+                let pnlHtml = '';
+                if (pnl != null) {
+                    const v = parseFloat(pnl);
+                    pnlHtml = \`<span class="\${v>=0?'sig-pnl-pos':'sig-pnl-neg'}">\${v>=0?'+':''}\${v.toFixed(2)}%</span>\`;
+                }
+                const ts = (p.virtual_opened_at||p.log_ts||'');
+                const tsStr = ts ? new Date(ts).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
+                return \`<div class="sig-item">
+                    <span class="sig-badge \${badgeCls}">\${badgeTxt}</span>
+                    <span class="\${dirClass}">\${dirLabel}</span>
+                    <span class="sig-sym">\${sym}</span>
+                    <span class="sig-score">★\${score}</span>
+                    <span style="font-size:11px;color:rgba(255,255,255,0.4);flex:1;">\${entryStr}</span>
+                    \${pnlHtml}
+                    <span style="font-size:10px;color:rgba(255,255,255,0.25);flex-shrink:0;">\${tsStr}</span>
+                </div>\`;
+            }).join('');
+        }
+
         // Init
         initCharts();
         loadAllData();
-        
-        // Auto-refresh every 30 minutes
-        setInterval(loadAllData, 900000);
+
+        // Auto-refresh every 5 minutes
+        setInterval(loadAllData, 300000);
     </script>
 </body>
 </html>

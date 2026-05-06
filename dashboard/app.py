@@ -487,6 +487,72 @@ def api_feed():
     return jsonify({"events": events[:15]})
 
 
+@app.route("/api/signal_log")
+def api_signal_log():
+    """API: Лог всех сигналов — исполненные на бирже + TG-only"""
+    limit = min(int(request.args.get('limit', 400)), 1000)
+    signals = []
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            items = redis.execute(["LRANGE", f"{prefix}:signal_log", "0", str(limit - 1)])
+            if items:
+                for item in items:
+                    try:
+                        s = json.loads(item)
+                        s["bot_type"] = prefix
+                        signals.append(s)
+                    except:
+                        pass
+        except Exception as e:
+            print(f"[signal_log] {bot_name}: {e}")
+    signals.sort(key=lambda x: x.get("log_ts", ""), reverse=True)
+    return jsonify({"signals": signals[:limit], "count": len(signals)})
+
+
+@app.route("/api/virtual_monitor")
+def api_virtual_monitor():
+    """API: Виртуальный мониторинг — открытые и закрытые виртуальные позиции"""
+    positions = []
+    for bot_name, redis_getter in [("SHORT", get_redis_short), ("LONG", get_redis_long)]:
+        try:
+            redis = redis_getter()
+            prefix = bot_name.lower()
+            # Открытые (HASH → [field1, val1, field2, val2, ...])
+            try:
+                raw = redis.execute(["HGETALL", f"{prefix}:virtual_positions"])
+                if raw and isinstance(raw, list):
+                    for i in range(0, len(raw) - 1, 2):
+                        try:
+                            pos = json.loads(raw[i + 1])
+                            pos["_status"] = "open"
+                            pos["bot_type"] = prefix
+                            positions.append(pos)
+                        except:
+                            pass
+            except:
+                pass
+            # Закрытые (LIST)
+            try:
+                items = redis.execute(["LRANGE", f"{prefix}:virtual_trades", "0", "299"])
+                if items:
+                    for item in items:
+                        try:
+                            pos = json.loads(item)
+                            pos["_status"] = "closed"
+                            pos["bot_type"] = prefix
+                            positions.append(pos)
+                        except:
+                            pass
+            except:
+                pass
+        except Exception as e:
+            print(f"[virtual_monitor] {bot_name}: {e}")
+    positions.sort(key=lambda x: x.get("virtual_opened_at", x.get("log_ts", "")), reverse=True)
+    return jsonify({"positions": positions, "count": len(positions)})
+
+
 @app.route("/api/summary")
 def api_summary():
     """API: Сводка P&L за сегодня, вчера, неделю"""
