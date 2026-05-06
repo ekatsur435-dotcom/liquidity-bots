@@ -174,9 +174,7 @@ class LongPatternDetector:
         high_cons     = max(c.high for c in consolidation)
         low_cons      = min(c.low  for c in consolidation)
         cons_range    = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        # ✅ FIX: 3.0% → 7.0% — альткоины консолидируются в диапазонах 5-7%, не 3%
-        # Старый порог убивал FORM/XNY/AIXBT-type движения
-        if cons_range > 7.0 or last.close <= high_cons:
+        if cons_range > 3.0 or last.close <= high_cons:
             return None
         vol_spike = _vol_spike(candles, 20)
         if vol_spike < 1.5:
@@ -214,9 +212,7 @@ class LongPatternDetector:
         if ema20 and last.close < ema20[-1]:
             return None
         rsi = getattr(md, "rsi_1h", None) if md else None
-        # ✅ FIX: 78 → 85 — самые сильные импульсы (+20-45%) дают RSI 78-85
-        # Старый cap убивал AIXBT (+20%), XNY (+45%) и все памп-движения
-        if rsi and (rsi < 40 or rsi > 85):
+        if rsi and (rsi < 40 or rsi > 78):
             return None
         pct_move = (last.close - last.open) / last.open * 100 if last.open else 0
         bonus    = min(20, int(12 + vol_spike * 1.5))
@@ -269,8 +265,7 @@ class LongPatternDetector:
         high_cons  = max(c.high for c in cons)
         low_cons   = min(c.low  for c in cons)
         range_pct  = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        # ✅ FIX: 2.5% → 6.0% — реальные боковики у альткоинов: 4-6%
-        if range_pct > 6.0 or last.close <= high_cons:
+        if range_pct > 2.5 or last.close <= high_cons:
             return None
         vol_spike    = _vol_spike(candles, 20)
         if vol_spike < 1.3:
@@ -418,8 +413,7 @@ class ShortPatternDetector:
         low_cons  = min(c.low  for c in cons)
         high_cons = max(c.high for c in cons)
         r_pct     = (high_cons - low_cons) / low_cons * 100 if low_cons else 999
-        # ✅ FIX: 3.0% → 7.0% — аналогично BREAKOUT_LONG
-        if r_pct > 7.0 or last.close >= low_cons:
+        if r_pct > 3.0 or last.close >= low_cons:
             return None
         vol_spike = _vol_spike(candles, 20)
         if vol_spike < 1.5:
@@ -457,9 +451,7 @@ class ShortPatternDetector:
         if ema20 and last.close > ema20[-1]:
             return None
         rsi = getattr(md, "rsi_1h", None) if md else None
-        # ✅ FIX: 65 → 75 — XNY RSI=77, AIXBT RSI=82 на вершине = идеальный SHORT
-        # Старый cap 65 блокировал все перекупленные входы в шорт
-        if rsi and (rsi > 75 or rsi < 20):
+        if rsi and (rsi > 65 or rsi < 25):
             return None
         bonus = min(20, int(12 + vol_spike * 1.5))
         return PatternResult(
@@ -581,10 +573,11 @@ class ShortPatternDetector:
         l     = min(c.low  for c in dist)
         h     = max(c.high for c in dist)
         r_pct = (h - l) / l * 100 if l else 999
-        if r_pct > 3.0 or r_pct < 0.5 or last.close >= l:
+        # Raised range cap 3%→8%: real distribution zones can be 3-8% wide
+        if r_pct > 8.0 or r_pct < 0.5 or last.close >= l:
             return None
         vol_spike     = _vol_spike(candles, 20)
-        if vol_spike < 1.3:
+        if vol_spike < 1.2:
             return None
         breakdown_pct = (l - last.close) / l * 100
         bonus         = min(18, int(10 + vol_spike * 2 + breakdown_pct))
@@ -611,7 +604,10 @@ class ShortPatternDetector:
         if prev.high < r_h or prev.close > r_h:
             return None
         avg_vol = _avg_vol(dist, min(len(dist), 15))
-        if prev.quote_volume > avg_vol * 1.5:
+        # Classic Wyckoff UTAD: high-volume spike above resistance that closes back below
+        # We do NOT block high volume — high volume on the spike IS the upthrust signature.
+        # We only block very low volume (no conviction on rejection).
+        if prev.quote_volume < avg_vol * 0.5:
             return None
         if last.close > r_h or last.close >= last.open:
             return None

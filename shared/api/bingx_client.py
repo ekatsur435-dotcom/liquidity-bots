@@ -89,9 +89,9 @@ class BingXClient:
         # ✅ RATE LIMITING: минимум 500ms между запросами (избегаем 109429)
         self._last_request_time: float = 0
         self._rate_limit_delay: float = 0.5  # 500ms (was 300ms)
-        # ✅ FIX: Семафор создаётся в async-контексте (не в __init__), чтобы избежать
-        # NameError/ValueError при создании вне event loop (Python 3.10+)
-        self._klines_semaphore = None  # Инициализируется лениво в get_klines
+        # 🆕 Семафор для предотвращения параллельных запросов к klines
+        import asyncio
+        self._klines_semaphore = asyncio.Semaphore(3)  # Макс 3 параллельных запроса
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -139,8 +139,8 @@ class BingXClient:
             await asyncio.sleep(wait)
         self._last_request_time = time.time()
 
-    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
-        await self._rate_limit()  # ✅ RATE LIMITING: ждём перед каждым запросом
+    async def _execute_request(self, method, endpoint, params=None, body=None, signed=True):
+        """Выполняет один HTTP запрос к BingX."""
         try:
             session  = await self._get_session()
             all_p    = {}
@@ -148,7 +148,7 @@ class BingXClient:
             if body:   all_p.update(body)
             if signed:
                 all_p["timestamp"] = self._get_timestamp()
-                all_p["recvWindow"] = 10000   # ✅ FIX: 10s окно (было не задано)
+                all_p["recvWindow"] = 10000
                 raw_qs = self._build_raw_qs(all_p)
                 full_url = f"{self.base_url}{endpoint}?{raw_qs}&signature={self._sign(raw_qs)}"
             else:
@@ -162,6 +162,17 @@ class BingXClient:
             self.last_error = str(e)
             print(f"❌ [BingX] {method} {endpoint}: {e}")
             return None
+
+    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
+        await self._rate_limit()
+        result = await self._execute_request(method, endpoint, params, body, signed)
+        # Retry once on timestamp mismatch — _sync_server_time() already called inside _parse_response
+        if self.last_error_code == 109400:
+            print(f"   🔄 [BingX] 109400 timestamp sync done → retry {endpoint}")
+            await asyncio.sleep(0.3)
+            await self._rate_limit()
+            result = await self._execute_request(method, endpoint, params, body, signed)
+        return result
 
     async def _parse_response(self, response, endpoint=""):
         text = await response.text()
@@ -643,20 +654,15 @@ class BingXClient:
         Returns:
             List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
         """
-        # ✅ FIX: Ленивая инициализация семафора в async-контексте (не в __init__)
-        if self._klines_semaphore is None:
-            self._klines_semaphore = asyncio.Semaphore(3)
+        # 🆕 Семафор: ограничиваем параллельные запросы к klines
         async with self._klines_semaphore:
             try:
                 symbol_api = self._normalize_symbol(symbol)
-                # ✅ FIX: Синхронизируем время перед каждым klines-запросом
-                # чтобы избежать 109400 (timestamp invalid)
-                await self._sync_server_time()
                 result = await self._make_request(
                     "GET", "/openApi/swap/v3/quote/klines",
                     params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
                 )
-
+                
                 if result and result.get("code") == 0:
                     data = result.get("data", [])
                     klines = []

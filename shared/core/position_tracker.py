@@ -44,12 +44,11 @@ class PositionTracker:
 
     # ── Трейлинг (активируется ПОСЛЕ BE, не сразу) ───────────────────────────
     TRAIL_DISTANCE  = 0.008   # 0.8% ниже текущей цены (для LONG)
+    BREAKEVEN_BUFFER = 0.001  # SL в безубыток = entry + 0.1%
 
-    # ── Двухступенчатый безубыток ─────────────────────────────────────────────
-    # Шаг 1: После TP1 → SL в точку входа (breakeven = 0%)
-    # Шаг 2: После TP2 → SL в entry + 0.2% (гарантированная небольшая прибыль)
-    BREAKEVEN_BUFFER_TP1 = 0.000  # SL = entry (ровно точка входа)
-    BREAKEVEN_BUFFER_TP2 = 0.002  # SL = entry + 0.2% после TP2
+    # ── Безубыток: переносим SL после этого тейка ────────────────────────────
+    # 1 = после TP1 (было), 2 = после TP2 (новое — лучше для P&L)
+    BREAKEVEN_AFTER_TP = 2   # ✅ FIX v5: BE после TP2 — позиции живут дольше
 
     def __init__(self, *, bot_type, telegram, redis_client,
                  binance_client, config, auto_trader=None):
@@ -118,182 +117,6 @@ class PositionTracker:
             except Exception as e:
                 print(f"[PositionTracker] {sig.get('symbol')} error: {e}")
             await asyncio.sleep(0.3)
-
-        # ✅ VIRTUAL: Отслеживаем TG-only сигналы для статистики
-        await self._scan_virtual()
-
-    async def _scan_virtual(self):
-        """
-        Отслеживает виртуальные позиции (TG-only, не открытые на бирже).
-        Полный мониторинг TP/SL + статистика, без BingX API.
-        """
-        try:
-            virtual_positions = self.redis.get_virtual_positions(self.bot_type)
-        except Exception as e:
-            print(f"[VirtualTracker] redis error: {e}")
-            return
-
-        if not virtual_positions:
-            return
-
-        for field, pos in virtual_positions.items():
-            if pos.get("outcome") is not None:
-                continue  # уже закрыта
-            try:
-                await self._check_one_virtual(field, pos)
-            except Exception as e:
-                print(f"[VirtualTracker] {pos.get('symbol', '?')} error: {e}")
-            await asyncio.sleep(0.2)
-
-    async def _check_one_virtual(self, field: str, signal: Dict):
-        """Проверяет виртуальную позицию по текущей цене. Без BingX API."""
-        import json as _json
-
-        symbol    = signal.get("symbol", "")
-        entry     = _f(signal.get("entry_price", 0))
-        sl        = _f(signal.get("stop_loss", 0))
-        direction = signal.get("direction", "long")
-        tps_raw   = signal.get("take_profits", [])
-        taken     = list(signal.get("taken_tps", []))
-        bot_type  = signal.get("bot_type", self.bot_type)
-
-        if not symbol or not entry:
-            return
-
-        # Экспирация 48ч
-        opened_at = signal.get("virtual_opened_at", signal.get("timestamp", ""))
-        if opened_at:
-            try:
-                age = datetime.utcnow() - datetime.fromisoformat(opened_at)
-                if age > timedelta(hours=48):
-                    self.redis.close_virtual_position(bot_type, field, "expired", entry, 0.0)
-                    print(f"[VT] {symbol}: истёк срок 48ч, закрываем")
-                    return
-            except Exception:
-                pass
-
-        md = await self.binance.get_complete_market_data(symbol)
-        if not md:
-            return
-        price = _f(md.price)
-
-        d_str   = "LONG" if direction == "long" else "SHORT"
-        d_emoji = "🟢" if direction == "long" else "🔴"
-        total   = len(tps_raw)
-
-        print(f"[VT][{d_str}][{symbol}] цена={price:.6f} вход={entry:.6f} "
-              f"SL={sl:.6f} TP={len(taken)}/{total} [ВИРТУАЛ]")
-
-        # ── SL hit ──────────────────────────────────────────────────────────────
-        if sl and _sl_hit(direction, price, sl):
-            sl_loss     = _pnl(direction, entry, sl)
-            taken_pnl   = 0.0
-            rem_weight  = 1.0
-            for idx in taken:
-                if idx < len(tps_raw):
-                    tp_p, tp_w = _parse_tp(tps_raw[idx])
-                    w = tp_w / 100
-                    taken_pnl  += _pnl(direction, entry, tp_p) * w
-                    rem_weight -= w
-            total_pnl = taken_pnl + sl_loss * max(0, rem_weight)
-
-            signal["taken_tps"]  = taken
-            signal["close_price"] = price
-            signal["close_time"]  = datetime.utcnow().isoformat()
-            signal["pnl_pct"]     = round(total_pnl, 4)
-
-            await self._record_pnl(signal, total_pnl, "sl", "SL")
-            self.redis.close_virtual_position(bot_type, field, "sl", price, total_pnl)
-
-            taken_str = f" (TP взято: {len(taken)})" if taken else ""
-            await self._notify(signal, (
-                f"🛑 <b>[ВИРТУАЛ] SL сработал{taken_str}</b>\n\n"
-                f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
-                f"📍 Вход:   <b>${entry:,.6f}</b>\n"
-                f"🛑 SL:     <b>${sl:,.6f}</b>\n"
-                f"📊 P&L:    <b>{total_pnl:+.2f}%</b>\n"
-                f"<i>📋 Виртуал — не открыта на бирже</i>"
-            ))
-            return
-
-        # ── TP hit ──────────────────────────────────────────────────────────────
-        for i, tp_raw in enumerate(tps_raw):
-            if i in taken:
-                continue
-            tp_price, tp_weight = _parse_tp(tp_raw)
-            if tp_price <= 0:
-                continue
-            if _tp_hit(direction, price, tp_price):
-                pnl_pct = _pnl(direction, entry, tp_price)
-                taken.append(i)
-                signal["taken_tps"] = taken
-                is_last   = (len(taken) >= len(tps_raw))
-                tp_label  = f"TP{i+1}"
-
-                if is_last:
-                    total_pnl = _calc_weighted_pnl(direction, entry, tps_raw, taken)
-                    signal["close_price"] = tp_price
-                    signal["close_time"]  = datetime.utcnow().isoformat()
-                    signal["pnl_pct"]     = round(total_pnl, 4)
-
-                    await self._record_pnl(signal, total_pnl, "tp", tp_label)
-                    self.redis.close_virtual_position(bot_type, field, "tp", tp_price, total_pnl)
-
-                    await self._notify(signal, (
-                        f"🏆 <b>[ВИРТУАЛ] Все TP взяты!</b>\n\n"
-                        f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
-                        f"📍 Вход:         <b>${entry:,.6f}</b>\n"
-                        f"🎯 {tp_label}:        <b>${tp_price:,.6f}</b>\n"
-                        f"💰 Итоговый P&L: <b>+{total_pnl:.2f}%</b>\n"
-                        f"<i>📋 Виртуал — не открыта на бирже</i>"
-                    ))
-                else:
-                    # ✅ BE Stop для виртуальных позиций
-                    # После TP1 → SL в точку входа (breakeven)
-                    # После TP2 → SL в entry + 0.2% (small profit locked)
-                    old_sl = signal.get("stop_loss", sl)
-                    new_sl_virtual = None
-                    be_msg = ""
-
-                    if i == 0:  # TP1 взят → BE
-                        if direction == "long":
-                            new_sl_virtual = entry  # SL = точка входа
-                        else:
-                            new_sl_virtual = entry  # SL = точка входа
-                        be_msg = f"🔒 SL → ТВХ (BE)"
-
-                    elif i == 1:  # TP2 взят → BE + 0.2%
-                        if direction == "long":
-                            new_sl_virtual = entry * 1.002
-                        else:
-                            new_sl_virtual = entry * 0.998
-                        be_msg = f"🔒 SL → ТВХ+0.2% (гарантия прибыли)"
-
-                    if new_sl_virtual:
-                        signal["stop_loss"] = new_sl_virtual
-                        sl = new_sl_virtual  # обновляем локальную переменную
-                        print(f"[VT] {symbol}: {be_msg} | SL: {old_sl:.6f} → {new_sl_virtual:.6f}")
-
-                    # Обновляем taken_tps + stop_loss в Redis hash
-                    try:
-                        vkey = f"{bot_type}:virtual_positions"
-                        self.redis.client.hset(vkey, field, _json.dumps(signal))
-                    except Exception as e:
-                        print(f"[VT] update taken_tps error: {e}")
-
-                    remaining = total - len(taken)
-                    be_line = f"\n{be_msg}" if be_msg else ""
-                    await self._notify(signal, (
-                        f"🎯 <b>[ВИРТУАЛ] {tp_label}/{total} взят!</b>\n\n"
-                        f"{d_emoji} <b>#{symbol}</b>  {direction.upper()}\n"
-                        f"📍 Вход:        <b>${entry:,.6f}</b>\n"
-                        f"🎯 {tp_label}:  <b>${tp_price:,.6f}</b>  ({tp_weight:.0f}% позиции)\n"
-                        f"📊 P&L:         <b>+{pnl_pct:.2f}%</b>\n"
-                        f"⏳ Осталось TP: {remaining}"
-                        + be_line +
-                        f"\n<i>📋 Виртуал — не открыта на бирже</i>"
-                    ))
-                break
 
     async def _cleanup_zombie_positions(self, signals: list):
         """
@@ -509,109 +332,96 @@ class PositionTracker:
     # =========================================================================
 
     async def _check_trailing(self, signal: Dict, price: float):
-        symbol          = signal.get("symbol", "")
+        symbol          = signal.get("symbol", "")   # ✅ FIX: NameError fix
         entry           = _f(signal.get("entry_price", 0))
         direction       = signal.get("direction", "long")
         current_sl      = _f(signal.get("stop_loss", 0))
         trailing_active = signal.get("trailing_active", False)
-        be_done         = signal.get("be_done", False)    # TP1 → BE (entry) выставлен
-        be2_done        = signal.get("be2_done", False)   # TP2 → BE+0.2% выставлен
+        be_done         = signal.get("be_done", False)   # безубыток уже выставлен
         taken_tps       = signal.get("taken_tps", [])
-        taken_count     = len(taken_tps)
 
         if not entry or not current_sl:
             return
 
+        # ✅ FIX: Проверяем be_done — если уже в безубытке, не обновляем повторно
         if be_done:
-            trailing_active = True  # трейлинг активен после BE
+            trailing_active = True  # активируем трейлинг если BE уже был
 
         if direction == "long":
             profit_pct = (price - entry) / entry
 
-            # ── Шаг 1: TP1 взят → SL в точку входа (breakeven) ─────────────
-            if not be_done and taken_count >= 1:
-                new_sl = entry * (1 + self.BREAKEVEN_BUFFER_TP1)  # = entry
-                if new_sl > current_sl * 1.0001:  # SL реально движется вверх
-                    print(f"[PT][LONG][{symbol}] 🔒 BE-TP1 → entry | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
-                    await self._move_sl(signal, current_sl, new_sl, "BE после TP1")
-                    signal["be_done"]         = True
-                    signal["trailing_active"] = True
-                    current_sl = new_sl
-                    return
-                else:
-                    # SL уже на уровне entry или выше — просто помечаем
+            # Безубыток выставляем только после TP2 (BREAKEVEN_AFTER_TP)
+            taken_count = len(taken_tps)
+
+            if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
+                new_sl = entry * (1 + self.BREAKEVEN_BUFFER)
+                # ✅ FIX: Минимальный порог 0.05% для изменения SL (избегаем микро-движений)
+                min_move_threshold = current_sl * 0.0005  # 0.05%
+                
+                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
+                if abs(current_sl - new_sl) <= min_move_threshold:
                     signal["be_done"] = True
                     signal["trailing_active"] = True
                     self._save(symbol, signal)
-
-            # ── Шаг 2: TP2 взят → SL в entry + 0.2% ────────────────────────
-            if be_done and not be2_done and taken_count >= 2:
-                new_sl = entry * (1 + self.BREAKEVEN_BUFFER_TP2)  # entry + 0.2%
-                if new_sl > current_sl * 1.0001:
-                    print(f"[PT][LONG][{symbol}] 🔒 BE2-TP2 → entry+0.2% | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
-                    await self._move_sl(signal, current_sl, new_sl, "BE+0.2% после TP2")
-                    signal["be2_done"] = True
-                    current_sl = new_sl
                     return
-                else:
-                    signal["be2_done"] = True
-                    self._save(symbol, signal)
+                
+                if new_sl > current_sl + min_move_threshold:
+                    print(f"[PT][LONG][{symbol}] 🔒 BE АКТИВИРОВАН | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f} | "
+                          f"взято TP={len(taken_tps)}")
+                    await self._move_sl(signal, current_sl, new_sl, "безубыток")
+                    signal["be_done"]         = True
+                    signal["trailing_active"] = True
+                    return
 
-            # ── Трейлинг после BE ────────────────────────────────────────────
+            # Трейлинг только после BE
+            # Trail activation threshold из config (по умолчанию 2.5%)
             if trailing_active and profit_pct > self.long_trail_threshold:
-                new_sl = price * (1 - self.TRAIL_DISTANCE)
-                if new_sl > current_sl * 1.003:
-                    self._log(symbol, direction,
-                              f"📈 TRAIL SL MOVE | "
-                              f"{current_sl:.6f} → {new_sl:.6f} | "
-                              f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
-                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                    # ✅ FIX: Определяем new_sl для LONG (трейлинг вверх)
+                    new_sl = price * (1 - self.TRAIL_DISTANCE)
+                    if new_sl > current_sl * 1.003:  # двигаем только если значительно выше
+                        self._log(symbol, direction,
+                                  f"📈 TRAIL SL MOVE | "
+                                  f"{current_sl:.6f} → {new_sl:.6f} | "
+                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
+                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
         else:  # SHORT
             profit_pct = (entry - price) / entry
+            taken_count = len(taken_tps)
 
-            # ── Шаг 1: TP1 взят → SL в точку входа (breakeven) ─────────────
-            if not be_done and taken_count >= 1:
-                new_sl = entry * (1 - self.BREAKEVEN_BUFFER_TP1)  # = entry
-                if new_sl < current_sl * 0.9999:  # SL реально движется вниз
-                    print(f"[PT][SHORT][{symbol}] 🔒 BE-TP1 → entry | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
-                    await self._move_sl(signal, current_sl, new_sl, "BE после TP1")
-                    signal["be_done"]         = True
-                    signal["trailing_active"] = True
-                    current_sl = new_sl
-                    return
-                else:
+            if not be_done and taken_count >= self.BREAKEVEN_AFTER_TP:
+                new_sl = entry * (1 - self.BREAKEVEN_BUFFER)
+                # ✅ FIX: Минимальный порог 0.05% для изменения SL
+                min_move_threshold = current_sl * 0.0005  # 0.05%
+                
+                # Если SL уже в безубытке (в пределах порога) — просто помечаем флагом
+                if abs(current_sl - new_sl) <= min_move_threshold:
                     signal["be_done"] = True
                     signal["trailing_active"] = True
                     self._save(symbol, signal)
-
-            # ── Шаг 2: TP2 взят → SL в entry - 0.2% ────────────────────────
-            if be_done and not be2_done and taken_count >= 2:
-                new_sl = entry * (1 - self.BREAKEVEN_BUFFER_TP2)  # entry - 0.2%
-                if new_sl < current_sl * 0.9999:
-                    print(f"[PT][SHORT][{symbol}] 🔒 BE2-TP2 → entry-0.2% | "
-                          f"SL: {current_sl:.6f} → {new_sl:.6f}")
-                    await self._move_sl(signal, current_sl, new_sl, "BE-0.2% после TP2")
-                    signal["be2_done"] = True
-                    current_sl = new_sl
                     return
-                else:
-                    signal["be2_done"] = True
-                    self._save(symbol, signal)
+                
+                if new_sl < current_sl - min_move_threshold:
+                    print(f"[PT][SHORT][{symbol}] 🔒 BE АКТИВИРОВАН | "
+                          f"SL: {current_sl:.6f} → {new_sl:.6f} | "
+                          f"взято TP={len(taken_tps)}")
+                    await self._move_sl(signal, current_sl, new_sl, "безубыток")
+                    signal["be_done"]         = True
+                    signal["trailing_active"] = True
+                    return
 
-            # ── Трейлинг после BE ────────────────────────────────────────────
-            trail_threshold = self.short_trail_threshold
+            # Трейлинг только после BE — пороги из config
+            trail_threshold = self.short_trail_threshold if direction == "short" else self.long_trail_threshold
             if trailing_active and profit_pct > trail_threshold:
-                new_sl = price * (1 + self.TRAIL_DISTANCE)
-                if new_sl < current_sl * 0.997:
-                    self._log(symbol, direction,
-                              f"📈 TRAIL SL MOVE | "
-                              f"{current_sl:.6f} → {new_sl:.6f} | "
-                              f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
-                    await self._move_sl(signal, current_sl, new_sl, "трейлинг")
+                    # ✅ FIX: Определяем new_sl для SHORT (трейлинг вниз)
+                    new_sl = price * (1 + self.TRAIL_DISTANCE)
+                    if new_sl < current_sl * 0.997:  # двигаем только если значительно ниже
+                        self._log(symbol, direction,
+                                  f"📈 TRAIL SL MOVE | "
+                                  f"{current_sl:.6f} → {new_sl:.6f} | "
+                                  f"цена={price:.6f} profit={profit_pct*100:+.2f}%")
+                        await self._move_sl(signal, current_sl, new_sl, "трейлинг")
 
     async def _move_sl(self, signal: Dict, old_sl: float, new_sl: float, move_type: str):
         """
@@ -742,7 +552,13 @@ class PositionTracker:
             signal["pnl_pct"]     = round(total_pnl, 4)
             signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
-            
+
+            # 🗑️ FIX: Удаляем positions key — иначе дашборд показывает закрытые позиции 7 дней
+            try:
+                self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+            except Exception:
+                pass
+
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
             self.micro_trailing.remove(symbol)
 
@@ -878,6 +694,13 @@ class PositionTracker:
         else:
             sl_type_label = "SL"
         signal["tp_level"]    = sl_type_label
+
+        # 🗑️ FIX: Удаляем positions key — иначе дашборд показывает закрытые позиции 7 дней
+        try:
+            self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+        except Exception:
+            pass
+
         self._save(symbol, signal)
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
@@ -1144,11 +967,24 @@ class PositionTracker:
         except Exception as e:
             print(f"[PT] redis save: {e}")
 
-    def _update_position_pnl(self, symbol: str, current_price: float, unrealized_pnl: float):
-        """Обновляем текущий P&L и цену в позиции для дашборда"""
+    def _update_position_pnl(self, symbol: str, current_price: float, unrealized_pnl: float,
+                             signal: Dict = None):
+        """Обновляем текущий P&L и цену в позиции для дашборда (upsert — пересоздаёт если удалён)"""
         try:
-            # Получаем текущую позицию
             pos = self.redis.get_position(self.bot_type, symbol)
+            if not pos and signal:
+                # Ключ удалён (напр. через cleanup) — пересоздаём из текущего сигнала
+                pos = {
+                    "symbol": symbol,
+                    "direction": signal.get("direction", ""),
+                    "entry_price": signal.get("entry_price", 0),
+                    "stop_loss": signal.get("stop_loss", 0),
+                    "take_profits": signal.get("take_profits", []),
+                    "leverage": signal.get("leverage", 20),
+                    "status": "active",
+                    "opened_at": signal.get("timestamp", datetime.utcnow().isoformat()),
+                    "confirmed": signal.get("confirmed", True),
+                }
             if pos:
                 pos["current_price"] = current_price
                 pos["unrealized_pnl"] = round(unrealized_pnl, 2)

@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time  # 🆕 NEW: For BTC block caching
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
@@ -99,11 +99,6 @@ from core.amd_detector import get_amd_detector, AMDDetector, AMDPhase  # ✅ NEW
 from core.xvp import get_xvp_analyzer, XVPAnalyzer  # ✅ NEW: Extended Volume Profile
 from core.grid_entry import get_grid_entry, GridEntry  # ✅ NEW: Grid Entry System
 from core.smart_sl_detector import get_smart_sl_detector, SmartSLDetector  # ✅ NEW: Smart Multi-TF SL
-from core.session_vwap_sl import (                                          # ✅ NEW: Session/VWAP/Adaptive SL
-    calculate_session_sl, calculate_vwap_sl,
-    get_adaptive_atr_bounds, calculate_adx_from_candles,
-    calculate_sl_confluence,
-)
 from core.dump_detector import get_dump_detector, DumpDetector, DumpType  # ✅ NEW: Dump Detector
 from core.momentum_detector import get_momentum_detector, MomentumDetector  # ✅ NEW: Momentum Detector
 from core.candle_history_manager import (
@@ -148,24 +143,26 @@ class Config:
     # ✅ FIX: Увеличен default с 1.5% до 2.0% (меньше ложных стопов)
     SL_BUFFER     = float(os.getenv("SHORT_SL_BUFFER", "2.0"))  # ⭐ ИЗМЕНИТЬ на Render!
     SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
-    # ✅ FIX: MAX_DAILY_RISK определён ниже в блоке "Drawdown Control" (default 15.0)
-    # Удалено дублирующее определение с default 5.0 (оно перезаписывалось)
+    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "5.0"))  # ⭐ Дневной лимит потерь
+    
+    # TP динамические — short_filter.get_short_tp_config выбирает профиль
+    # ✅ v2.5: Увеличены TP для лучшего R:R ≥ 2:1
+    TP_LEVELS  = [2.5, 5.0, 8.0, 12.0, 20.0, 35.0]  # ✅ R:R=1.67:1  # ✅ FIX v3.1: TP1=1.5% — чаще берём TP1!
+    # ✅ BACKTEST: TP1 достигается 65% сделок → акцент на TP1-2
+    TP_WEIGHTS = [25,  20,  20,  20,  10,   5]   # TP1=25%, TP2-4=20%, TP5=10%, TP6=5%
 
-    # Trailing — SHORT активирует при +1% (раньше чем раньше)
+    # Trailing — SHORT активирует при +3% (после TP1)
     TRAIL_ACTIVATION = float(os.getenv("SHORT_TRAIL_ACTIVATION", "0.030"))
     # ✅ FIX v7: BTC correlation — управляется через ENV
     BTC_BLOCK_THRESHOLD = float(os.getenv("BTC_BLOCK_SHORT_THRESHOLD", "4.0"))
     # При BTC_BLOCK_SHORT_THRESHOLD=99 → SHORT не блокируется даже при сильном памп BTC
+    SL_COOLDOWN_HOURS  = float(os.getenv("SL_COOLDOWN_HOURS", "2.0"))
 
     # 🆕 NEW: Advanced modules configuration
     # Smart DCA
     ENABLE_SMART_DCA = os.getenv("ENABLE_SMART_DCA", "true").lower() == "true"
     DCA_MAX_ADDITIONS = int(os.getenv("DCA_MAX_ADDITIONS", "3"))
     DCA_MAX_PORTFOLIO_RISK = float(os.getenv("DCA_MAX_PORTFOLIO_RISK", "3.0"))
-    # ✅ FIX: добавлены отсутствующие параметры SmartDCAEngine
-    DCA_ATR_MULT = float(os.getenv("DCA_ATR_MULT", "1.5"))
-    DCA_SIZE_MULT = float(os.getenv("DCA_SIZE_MULT", "1.5"))
-    DCA_MAX_EXPOSURE_PCT = float(os.getenv("DCA_MAX_EXPOSURE_PCT", "0.40"))
     
     # Grid DCA
     ENABLE_GRID_DCA = os.getenv("ENABLE_GRID_DCA", "true").lower() == "true"
@@ -188,57 +185,6 @@ class Config:
     # Dump Detector
     ENABLE_DUMP_DETECTOR = os.getenv("ENABLE_DUMP_DETECTOR", "true").lower() == "true"
     SHORT_TRAIL_ACTIVATION = TRAIL_ACTIVATION  # Alias для position_tracker.py
-    
-    # ============================================================================
-    # 🏛️ INSTITUTIONAL RISK MANAGEMENT (Aegis Integration)
-    # ============================================================================
-    # ✅ FIX: убрана первая дублирующая запись RISK_PER_TRADE=0.05 (она перезаписывалась ниже на 0.0005)
-    # Итоговый RISK_PER_TRADE задаётся ниже через env RISK_PER_TRADE
-    
-    # Kelly Criterion Sizing
-    KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))  # 25% Kelly
-    
-    # Position & Exposure Limits
-    MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.25"))  # 25% на позицию
-    MAX_EXPOSURE_PCT = float(os.getenv("MAX_EXPOSURE_PCT", "0.80"))  # 80% макс экспозиция
-    
-    # Drawdown Control (ВАШЕ требование: -15%)
-    MAX_DAILY_RISK = float(os.getenv("MAX_DAILY_RISK", "15.0"))  # -15% (было 5.0)
-    MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "4"))
-    
-    # ============================================================================
-    # 🎯 6 TP LEVELS CONFIG (Phase 4 - Short оптимизация)
-    # ============================================================================
-    TP_LEVELS = [2.5, 4.0, 6.5, 9.0, 12.0, 17.0]  # Short: короче цели
-    TP_WEIGHTS = [30, 25, 20, 13, 8, 4]  # Больше ранних TP
-    
-    # ============================================================================
-    # 🚩 FEATURE FLAGS (Phase 3 - Institutional Analysis)
-    # ============================================================================
-    ENABLE_WYCKOFF_DETECTOR = os.getenv("ENABLE_WYCKOFF", "true").lower() == "true"
-    ENABLE_BSL_SCANNER = os.getenv("ENABLE_BSL", "true").lower() == "true"
-    ENABLE_OI_ANALYZER = os.getenv("ENABLE_OI", "true").lower() == "true"
-    ENABLE_LIQ_MAPPER = os.getenv("ENABLE_LIQ", "true").lower() == "true"
-    ENABLE_DELTA = os.getenv("ENABLE_DELTA", "true").lower() == "true"
-    
-    # BTC Correlation (КРИТИЧНО ДЛЯ SHORT!)
-    ENABLE_BTC_CORRELATION = os.getenv("ENABLE_BTC", "true").lower() == "true"
-    # Decoupling НЕ используется для short
-    ENABLE_DECOUPLING_BONUS = False
-    
-    # ============================================================================
-    # 🏭 SECTOR DIVERSIFICATION (Phase 5 - Sector Limits)
-    # ============================================================================
-    ENABLE_SECTOR_LIMITS = os.getenv("ENABLE_SECTOR_LIMITS", "true").lower() == "true"
-    MAX_PER_SECTOR_MEME = int(os.getenv("MAX_PER_SECTOR_MEME", "3"))  # Мемы лучше для шортов
-    MAX_PER_SECTOR_DEFI = int(os.getenv("MAX_PER_SECTOR_DEFI", "3"))
-    MAX_PER_SECTOR_GAMEFI = int(os.getenv("MAX_PER_SECTOR_GAMEFI", "3"))
-    MAX_PER_SECTOR_L1 = int(os.getenv("MAX_PER_SECTOR_L1", "3"))
-    MAX_PER_SECTOR_L2 = int(os.getenv("MAX_PER_SECTOR_L2", "3"))
-    MAX_PER_SECTOR_AI = int(os.getenv("MAX_PER_SECTOR_AI", "3"))
-    MAX_PER_SECTOR_RWA = int(os.getenv("MAX_PER_SECTOR_RWA", "2"))
-    MAX_PER_SECTOR_ORACLE = int(os.getenv("MAX_PER_SECTOR_ORACLE", "2"))
-    MAX_PER_SECTOR_INFRA = int(os.getenv("MAX_PER_SECTOR_INFRA", "2"))
     
     # 🆕 NEW: Momentum Detector (Dump Catching for Short)
     ENABLE_MOMENTUM_SHORT = os.getenv("ENABLE_MOMENTUM_SHORT", "true").lower() == "true"
@@ -277,143 +223,15 @@ class Config:
     # ✅ REDUCED: 300 → 80 монет (меньше запросов к API)
     # ✅ INCREASED: 300K → 1M (только ликвидные монеты, меньше ошибок)
     MIN_VOLUME_USDT = int(os.getenv("MIN_VOLUME_USDT", "10000000"))  # 🔧 $10M минимум (was $1M)
-    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "80"))  # 80 монет max
+    MAX_WATCHLIST   = int(os.getenv("MAX_WATCHLIST", "150"))  # По умолчанию 150
+    # RSI 1H floor для входа в SHORT: если RSI < порога — уже перепродан, риск отскока
+    RSI_FLOOR_SHORT_MIN  = int(os.getenv("RSI_FLOOR_SHORT_MIN", "35"))   # 35 = мягче чем 45
+    ANTI_BOUNCE_PCT_MAX  = float(os.getenv("ANTI_BOUNCE_PCT_MAX", "7.0")) # 7% (было 3%)
+    ANTI_BOUNCE_RSI_OVERRIDE = int(os.getenv("ANTI_BOUNCE_RSI_OVERRIDE", "80")) # RSI > 80 = шорт несмотря на bounce
     # 🆕 Aegis: Минимальная капитализация $900k (фильтр неликвидных мелких монет)
     MIN_MARKET_CAP  = int(os.getenv("MIN_MARKET_CAP", "900000"))  # $900k минимум
     # 🆕 STRICT: Минимальный объем для входа в сделку (отдельно от watchlist)
     MIN_ENTRY_VOLUME_USDT = int(os.getenv("MIN_ENTRY_VOLUME_USDT", "10000000"))  # $10M
-
-
-# ============================================================================
-# 🆕 SMART DCA v2 ENGINE (Aegis Integration - Phase 2)
-# ============================================================================
-
-from dataclasses import dataclass
-
-@dataclass
-class DCALevel:
-    level: int
-    price_drop_pct: float
-    size_multiplier: float
-    max_position_pct: float
-
-
-class SmartDCAEngine:
-    """Smart DCA v2 из Aegis-bots для Short."""
-    
-    def __init__(self, config: Config):
-        self.config = config
-        self.dca_levels = self._init_dca_levels()
-        self.total_exposure_pct = 0.0
-        self.circuit_breaker_triggered = False
-        
-    def _init_dca_levels(self) -> List:
-        levels = []
-        for i in range(1, 5):  # 4 уровня
-            level = DCALevel(
-                level=i,
-                price_drop_pct=i * self.config.DCA_ATR_MULT,
-                size_multiplier=self.config.DCA_SIZE_MULT ** (i - 1),
-                max_position_pct=min(0.10 * i, 0.40)
-            )
-            levels.append(level)
-        return levels
-    
-    def calculate_dca_orders(self, entry_price: float, position_size: float,
-                            atr: float, portfolio_value: float) -> List[Dict]:
-        if not self.config.ENABLE_SMART_DCA:
-            return []
-        if self.total_exposure_pct >= self.config.DCA_MAX_EXPOSURE_PCT:
-            print(f"⚠️ [DCA] Circuit breaker: exposure {self.total_exposure_pct:.1%}")
-            self.circuit_breaker_triggered = True
-            return []
-        orders = []
-        current_size = position_size
-        for level in self.dca_levels:
-            kelly_fraction = self.config.KELLY_FRACTION
-            level_size = current_size * level.size_multiplier * kelly_fraction
-            level_exposure = (level_size * entry_price) / portfolio_value
-            if self.total_exposure_pct + level_exposure > self.config.DCA_MAX_EXPOSURE_PCT:
-                print(f"⚠️ [DCA] Level {level.level} skipped: exposure limit")
-                break
-            # Для short: цена растет (против нас)
-            dca_price = entry_price * (1 + level.price_drop_pct / 100)
-            order = {
-                "level": level.level,
-                "price": dca_price,
-                "size": level_size,
-                "exposure_pct": level_exposure,
-                "atr_mult": level.price_drop_pct / atr if atr > 0 else 0
-            }
-            orders.append(order)
-            self.total_exposure_pct += level_exposure
-            current_size = level_size
-        return orders
-    
-    def reset_exposure(self):
-        self.total_exposure_pct = 0.0
-        self.circuit_breaker_triggered = False
-
-
-# ============================================================================
-# 🆕 SECTOR POSITION MANAGER (Phase 5)
-# ============================================================================
-
-class SectorPositionManager:
-    def __init__(self, config: Config, sector_mapper):
-        self.config = config
-        self.sector_mapper = sector_mapper
-        self.positions_by_sector: Dict[str, List[str]] = {}
-        
-    def can_open_position(self, symbol: str) -> Tuple[bool, str]:
-        if not self.config.ENABLE_SECTOR_LIMITS:
-            return True, "Sector limits disabled"
-        sector = self.sector_mapper.get_sector(symbol)
-        if not sector:
-            return True, "No sector assigned"
-        current_count = len(self.positions_by_sector.get(sector, []))
-        max_allowed = self._get_max_for_sector(sector)
-        if current_count >= max_allowed:
-            return False, f"Sector {sector} limit: {current_count}/{max_allowed}"
-        return True, f"Sector {sector}: {current_count}/{max_allowed}"
-    
-    def _get_max_for_sector(self, sector: str) -> int:
-        mapping = {
-            "Meme": self.config.MAX_PER_SECTOR_MEME,
-            "DeFi": self.config.MAX_PER_SECTOR_DEFI,
-            "GameFi": self.config.MAX_PER_SECTOR_GAMEFI,
-            "L1": self.config.MAX_PER_SECTOR_L1,
-            "L2": self.config.MAX_PER_SECTOR_L2,
-            "AI": self.config.MAX_PER_SECTOR_AI,
-            "RWA": self.config.MAX_PER_SECTOR_RWA,
-            "Oracle": self.config.MAX_PER_SECTOR_ORACLE,
-            "Infra": self.config.MAX_PER_SECTOR_INFRA
-        }
-        return mapping.get(sector, 3)
-    
-    def add_position(self, symbol: str):
-        sector = self.sector_mapper.get_sector(symbol)
-        if sector:
-            if sector not in self.positions_by_sector:
-                self.positions_by_sector[sector] = []
-            self.positions_by_sector[sector].append(symbol)
-            
-    def remove_position(self, symbol: str):
-        sector = self.sector_mapper.get_sector(symbol)
-        if sector and sector in self.positions_by_sector:
-            if symbol in self.positions_by_sector[sector]:
-                self.positions_by_sector[sector].remove(symbol)
-                
-    def get_sector_stats(self) -> Dict:
-        stats = {}
-        for sector, positions in self.positions_by_sector.items():
-            max_allowed = self._get_max_for_sector(sector)
-            stats[sector] = {
-                "current": len(positions),
-                "max": max_allowed,
-                "symbols": positions
-            }
-        return stats
 
 
 # ============================================================================
@@ -440,32 +258,6 @@ class BotState:
         self.market_ctx       = None  # ✅ v4.0 Market Context Filter
         self._min_score       = Config.MIN_SCORE
         self.start_time       = None
-        
-        # 🆕 NEW: Smart DCA v2 Engine
-        self.dca_engine: Optional[SmartDCAEngine] = None
-        
-        # 🆕 NEW: Sector Position Manager
-        self.sector_manager: Optional[SectorPositionManager] = None
-        self.sector_mapper = None
-        
-        # 🆕 NEW: Institutional Detectors (Phase 3)
-        self.wyckoff_detector = None
-        self.bsl_scanner = None
-        self.oi_analyzer = None
-        self.liq_mapper = None
-        self.delta_analyzer = None
-        
-        # Daily stats for risk tracking
-        self.daily_stats = {
-            "signals_generated": 0,
-            "positions_opened": 0,
-            "positions_closed": 0,
-            "win_count": 0,
-            "loss_count": 0,
-            "consecutive_losses": 0,
-            "daily_pnl": 0.0,
-            "max_daily_dd": 0.0
-        }
 
 
 # ============================================================================
@@ -707,16 +499,19 @@ async def lifespan(app: FastAPI):
         print("[MOMENTUM] ⚠️ DISABLED in config")
     
     # 🆕 NEW: Candle History Manager
-    # ✅ FIX: только TF которые реально загружаются (30m + 1h)
-    # 4h/2h/15m/5m не загружаются → убраны чтобы не спамить "Insufficient data"
     if Config.ENABLE_CANDLE_HISTORY:
         from core.candle_history_manager import CandleHistoryManager, TFConfig
         tf_configs = {
-            "1h":  TFConfig("1h",  Config.CANDLE_1H_COUNT,  60, 1),
-            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 2),
+            "4h": TFConfig("4h", Config.CANDLE_4H_COUNT, 240, 1),
+            "2h": TFConfig("2h", Config.CANDLE_2H_COUNT, 120, 2),
+            "1h": TFConfig("1h", Config.CANDLE_1H_COUNT, 60, 3),
+            "30m": TFConfig("30m", Config.CANDLE_30M_COUNT, 30, 4),
+            "15m": TFConfig("15m", Config.CANDLE_15M_COUNT, 15, 5),
+            "5m": TFConfig("5m", Config.CANDLE_5M_COUNT, 5, 6),
         }
         state.candle_manager = CandleHistoryManager(tf_configs)
-        print(f"✅ Candle History: 1h={Config.CANDLE_1H_COUNT} / 30m={Config.CANDLE_30M_COUNT} candles")
+        print(f"✅ Candle History: {Config.CANDLE_4H_COUNT}/{Config.CANDLE_1H_COUNT}/{Config.CANDLE_30M_COUNT}/"
+              f"{Config.CANDLE_15M_COUNT}/{Config.CANDLE_5M_COUNT} candles per TF")
     
     # Pump Detector (CVD уже в delta_analyzer)
     state.pump_detector_enabled = True
@@ -940,7 +735,6 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(background_scanner())
     asyncio.create_task(state.tracker.run())
-    asyncio.create_task(virtual_position_monitor())  # 🔍 Виртуальный TP/SL монитор
 
     yield
 
@@ -1157,13 +951,11 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         _rsi_tracker.update(symbol, rsi_current)
 
         # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
-        # ✅ FIX: увеличены лимиты чтобы CandleHistoryManager не возвращал "insufficient"
-        # Required: 15m≥150, 30m≥120, 1h≥80, 2h≥50, 4h≥30
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # 200 ≥ 150 ✅
-        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 130) # 130 ≥ 120 ✅
-        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 90)    # 90 ≥ 80 ✅
-        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 55)    # 55 ≥ 50 ✅
-        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 35)    # 35 ≥ 30 ✅
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # Увеличили до 200
+        ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
+        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
+        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
+        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 22)
         ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
             ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
         )
@@ -1312,7 +1104,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     
                     print(f"🎯 [v2.9] LIQUIDITY SWEEP {symbol}: score={base_score}, conf={confirmation['score']}")
                     
-                    _p4d_sweep = md.price_change_24h * 4 if md.price_change_24h else 0
                     return {
                         "symbol": symbol,
                         "direction": "short",
@@ -1325,22 +1116,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                         "timeframe": primary_tf,
                         "pattern": "LIQUIDITY_SWEEP",
                         "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
-                        "rsi_1h": md.rsi_1h,
-                        "funding_rate": md.funding_rate,
-                        "oi_change": md.oi_change_4d,
-                        "long_short_ratio": md.long_short_ratio,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "status": "new",
-                        "taken_tps": 0,
-                        "indicators": {
-                            "SMC": "Sweep+TBS",
-                            "Confirmation": f"Score:{confirmation['score']}",
-                            "RSI": f"{md.rsi_1h:.1f}" if md.rsi_1h else "N/A",
-                            "Funding": f"{md.funding_rate:+.3f}%",
-                            "L/S Ratio": f"{md.long_short_ratio:.0f}% longs",
-                            "OI Change": f"{md.oi_change_4d:+.1f}% (4d)",
-                            "Price 4d": f"{_p4d_sweep:+.1f}%",
-                        },
+                        "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
                     }
                 else:
@@ -1383,155 +1159,50 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         except Exception as e:
             print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
 
-        # =========================================================================
-        # ✅ MULTI-TIMEFRAME RSI CONFLUENCE — 30m + 1h + 4h (SHORT)
-        # XNY RSI=77 на 1H, AIXBT RSI=82 — если 4H тоже высокий → СИЛЬНЫЙ SHORT
-        # Точный анализ: совпадение перекупленности на нескольких TF
-        # =========================================================================
-        rsi_30m    = 50.0
-        rsi_4h     = 50.0
-        rsi_1h_val = md.rsi_1h or 50.0
-
-        # --- RSI 30m ---
+        # ✅ RSI 30m — информационный контекст (НЕ блокер!)
+        # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
+        rsi_30m = 50.0  # дефолт
+        rsi_30m_score_adj = 0
         try:
-            if ohlcv_30m and len(ohlcv_30m) >= 15:
-                closes_30m = [c.close for c in ohlcv_30m[-15:]]
-                gains_30m  = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,15)]
-                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,15)]
-                ag_30m = sum(gains_30m)/14; al_30m = sum(losses_30m)/14
+            if ohlcv_30m and len(ohlcv_30m) >= 14:
+                closes_30m = [c.close for c in ohlcv_30m[-14:]]
+                gains_30m = [max(0, closes_30m[i]-closes_30m[i-1]) for i in range(1,14)]
+                losses_30m = [max(0, closes_30m[i-1]-closes_30m[i]) for i in range(1,14)]
+                ag_30m = sum(gains_30m)/13; al_30m = sum(losses_30m)/13
                 rsi_30m = 100 - 100/(1 + ag_30m/al_30m) if al_30m > 0 else 50
+                # RSI 30m < 30 при падении = подтверждение медвежьего моментума
+                if rsi_30m < 20:
+                    rsi_30m_score_adj = +3   # очень перепродан — моментум сильный
+                elif rsi_30m < 30:
+                    rsi_30m_score_adj = +5   # перепродан — даунтренд подтверждён
+                elif rsi_30m > 70:
+                    rsi_30m_score_adj = -5   # перекуплен — откат вероятен, против шорта
         except Exception:
             pass
 
-        # --- RSI 4h (ohlcv_4h уже загружен выше для HTF фильтра) ---
+        # ✅ Multi-TF RSI 4h — контекст высшего порядка (НЕ блокер!)
+        # RSI 4h < 30 = глубокий даунтренд = ЛУЧШИЙ SHORT (не блокируем!)
+        rsi_4h = 50.0  # дефолт
+        rsi_4h_score_adj = 0
         try:
-            if ohlcv_4h and len(ohlcv_4h) >= 15:
-                closes_4h = [c.close for c in ohlcv_4h[-15:]]
-                gains_4h  = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,15)]
-                losses_4h = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,15)]
-                ag_4h = sum(gains_4h)/14; al_4h = sum(losses_4h)/14
-                rsi_4h = 100 - 100/(1 + ag_4h/al_4h) if al_4h > 0 else 50
+            # ohlcv_4h уже загружен выше
+            if ohlcv_4h and len(ohlcv_4h) >= 14:
+                closes_4h = [c.close for c in ohlcv_4h[-14:]]
+                gains = [max(0, closes_4h[i]-closes_4h[i-1]) for i in range(1,14)]
+                losses = [max(0, closes_4h[i-1]-closes_4h[i]) for i in range(1,14)]
+                ag = sum(gains)/13; al = sum(losses)/13
+                rsi_4h = 100 - 100/(1 + ag/al) if al > 0 else 50
+                # RSI 4h < 30 = сильный медвежий тренд = бонусы для SHORT
+                if rsi_4h < 20:
+                    rsi_4h_score_adj = +15  # усилено для слабых рынков
+                elif rsi_4h < 30:
+                    rsi_4h_score_adj = +10  # глубокий даунтренд
+                elif rsi_4h < 40:
+                    rsi_4h_score_adj = +7   # даунтренд подтверждён
+                elif rsi_4h > 70:
+                    rsi_4h_score_adj = -8   # перекуплен на 4h — риск разворота против шорта
         except Exception:
             pass
-
-        print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={rsi_1h_val:.1f} 30m={rsi_30m:.1f}")
-
-        # ✅ FIX: RSI 1H хард-флор — не шортим перепроданные монеты
-        # SIREN(37), ZEREBRO(37), ARIA(32), NOM(44) — все шли на отскок вверх!
-        # RSI < 45 на 1H = перепроданность, HIGH вероятность отскока против шорта
-        if rsi_1h_val < 45:
-            print(f"🚫 [RSI-FLOOR-SHORT] {symbol}: RSI 1H={rsi_1h_val:.1f} < 45 — уже перепродан, риск отскока → skip")
-            return None
-
-        # ═══════════════════════════════════════════════════════════════════════
-        # 🆕 УМНЫЕ ФИЛЬТРЫ v5.0 — защита от шортов на отскоках и восстановлениях
-        # ═══════════════════════════════════════════════════════════════════════
-
-        def _rsi_w(closes, period=14):
-            """RSI для произвольного массива closes."""
-            if len(closes) < period + 1:
-                return 50.0
-            gains  = [max(0.0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
-            losses = [max(0.0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
-            ag = sum(gains[-period:]) / period
-            al = sum(losses[-period:]) / period
-            return 100.0 - 100.0 / (1.0 + ag / al) if al > 0 else 100.0
-
-        # F1: RSI 4H вырос > 5 пунктов за 3 бара И > 50 → восстановление, шорт запрещён
-        # Защищает от: DOTUSDT (RSI 4H рос с 35 → 63 пока бот шортил)
-        try:
-            if ohlcv_4h and len(ohlcv_4h) >= 22:
-                _cl4 = [c.close for c in ohlcv_4h]
-                _rsi4_now  = _rsi_w(_cl4[-17:])
-                _rsi4_3ago = _rsi_w(_cl4[-20:-3])
-                if (_rsi4_now - _rsi4_3ago) > 5.0 and _rsi4_now > 50:
-                    print(f"🚫 [F1-RSI4H-RISING] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} (+{_rsi4_now-_rsi4_3ago:.1f}) + >50 → восстановление, шорт запрещён")
-                    return None
-        except Exception as _fe:
-            print(f"[F1] {symbol}: {_fe}")
-
-        # F2: RSI 1H был < 30 в последних 8 барах И сейчас > 45 → отскок в процессе
-        # Защищает от: PAXGUSDT (RSI упал до 20, бот зашёл в шорт на дне)
-        try:
-            if ohlcv_1h and len(ohlcv_1h) >= 25:
-                _cl1 = [c.close for c in ohlcv_1h]
-                _rsi1_hist = [_rsi_w(_cl1[-(17+i):-(i) if i > 0 else None]) for i in range(1, 9)]
-                _rsi1_min  = min(_rsi1_hist)
-                if _rsi1_min < 30 and rsi_1h_val > 45:
-                    print(f"🚫 [F2-OVERSOLD-BOUNCE] {symbol}: RSI 1H был {_rsi1_min:.1f} за посл. 8 баров, сейчас {rsi_1h_val:.1f} → отскок в процессе")
-                    return None
-        except Exception as _fe:
-            print(f"[F2] {symbol}: {_fe}")
-
-        # F3: Цена выросла > 3% от лоя последних 12 свечей 1H → отскок
-        # Защищает от: DOTUSDT (цена выросла +4.5% от дна за 12 часов)
-        try:
-            if ohlcv_1h and len(ohlcv_1h) >= 12:
-                _low_12h = min(c.low for c in ohlcv_1h[-12:])
-                if _low_12h > 0:
-                    _bounce_pct = (price - _low_12h) / _low_12h * 100
-                    if _bounce_pct > 3.0:
-                        print(f"🚫 [F3-ANTI-BOUNCE] {symbol}: +{_bounce_pct:.1f}% от 12H лоя {_low_12h:.6f} → отскок, шорт запрещён")
-                        return None
-        except Exception as _fe:
-            print(f"[F3] {symbol}: {_fe}")
-
-        # F4: RSI 4H застрял 42-58 на 5 барах (боковик) + RSI 1H < 65 → слабый сигнал
-        # Защищает от: LTCUSDT (боковик 54-57, RSI нейтральный)
-        try:
-            if ohlcv_4h and len(ohlcv_4h) >= 22:
-                _cl4b = [c.close for c in ohlcv_4h]
-                _rsi4_5bars = [_rsi_w(_cl4b[-(17+i):-(i) if i > 0 else None]) for i in range(0, 5)]
-                if all(42 < r < 58 for r in _rsi4_5bars) and rsi_1h_val < 65:
-                    print(f"🚫 [F4-RANGE-MODE] {symbol}: 4H боковик RSI=[{','.join(f'{r:.0f}' for r in _rsi4_5bars)}] RSI 1H={rsi_1h_val:.1f} < 65 → ждём перекупленности")
-                    return None
-        except Exception as _fe:
-            print(f"[F4] {symbol}: {_fe}")
-
-        # F5: RSI 1H вырос > 8 пунктов за 2 бара + RSI > 55 → бычий импульс, ждём пика
-        # Защищает от: DOTUSDT 1H RSI быстро рос (46→63 за 2 часа)
-        try:
-            if ohlcv_1h and len(ohlcv_1h) >= 19:
-                _cl1b = [c.close for c in ohlcv_1h]
-                _rsi1_now  = _rsi_w(_cl1b[-15:])
-                _rsi1_2ago = _rsi_w(_cl1b[-17:-2])
-                if (_rsi1_now - _rsi1_2ago) > 8.0 and _rsi1_now > 55:
-                    print(f"🚫 [F5-RSI1H-MOMENTUM] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} (+{_rsi1_now-_rsi1_2ago:.1f}) за 2 бара → бычий импульс, ждём пика")
-                    return None
-        except Exception as _fe:
-            print(f"[F5] {symbol}: {_fe}")
-
-        # --- MTF Confluence для SHORT: перекупленность на нескольких TF ---
-        # XNY RSI=77 (1H) + если 4H тоже 70+ = классический SHORT вход после памп
-        mtf_rsi_bonus  = 0
-        mtf_rsi_reason = ""
-
-        if rsi_4h > 70 and rsi_1h_val > 68 and rsi_30m > 68:
-            mtf_rsi_bonus  = +18
-            mtf_rsi_reason = f"🎯 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} 30m={rsi_30m:.0f} — перекуплен везде! +18"
-        elif rsi_4h > 70 and rsi_1h_val > 65:
-            mtf_rsi_bonus  = +12
-            mtf_rsi_reason = f"🎯 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — конфлюенс перекупленности +12"
-        elif rsi_4h > 65 and rsi_1h_val > 70:
-            mtf_rsi_bonus  = +8
-            mtf_rsi_reason = f"📊 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — частичный конфлюенс +8"
-        elif rsi_4h > 60 and rsi_30m > 70:
-            mtf_rsi_bonus  = +5
-            mtf_rsi_reason = f"📊 MTF SHORT: 4H={rsi_4h:.0f} 30m={rsi_30m:.0f} — перекуплен 4H+30m +5"
-        elif rsi_4h < 40 and rsi_1h_val < 45:
-            # ✅ FIX: усилен штраф — оба TF в низкой зоне (RSI-FLOOR уже не пустит если 1H<45)
-            # Но если всё же прошло дальше — максимальный штраф
-            mtf_rsi_bonus  = -20
-            mtf_rsi_reason = f"🚨 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — ПЕРЕПРОДАН на обоих TF, не шортить! -20"
-        elif rsi_4h < 30 and rsi_1h_val < 30:
-            mtf_rsi_bonus  = -20
-            mtf_rsi_reason = f"🚨 MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан 4H+1H, экстремальный риск -20"
-        elif rsi_4h < 35 and rsi_1h_val < 35:
-            mtf_rsi_bonus  = -15
-            mtf_rsi_reason = f"⚠️ MTF SHORT: 4H={rsi_4h:.0f} 1H={rsi_1h_val:.0f} — перепродан, осторожно -15"
-
-        if mtf_rsi_reason:
-            print(f"   {mtf_rsi_reason}")
 
         hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
         price_trend   = state.pattern_detector._get_price_trend(ohlcv_primary)
@@ -1580,9 +1251,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"OI Proxy error {symbol}: {e}")
 
         # ── Base score ────────────────────────────────────────────────────────
-        # ✅ Ликвидационный анализ для скора (из market_data_integrator)
-        _liq_analysis = getattr(md, 'liquidation_analysis', None)
-
         score_result = state.scorer.calculate_score(
             rsi_1h=md.rsi_1h or 50,
             funding_current=md.funding_rate / 100,
@@ -1595,38 +1263,30 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             patterns=patterns,
             volume_spike_ratio=getattr(md, "volume_spike_ratio", 1.0),
             atr_14_pct=getattr(md, "atr_14_pct", 0.5),
-            liq_analysis=_liq_analysis,          # ✅ Ликвидации в скор
-            mtf_rsi_bonus=mtf_rsi_bonus,         # ✅ MTF RSI конфлюенс в скор
-            mtf_rsi_reason=mtf_rsi_reason,
         )
-        # ✅ FIX v4.1: Логируем score breakdown (как в long-bot)
+        # 💡 SMART SCORING: TBS + качественный OB переопределяют строгий скоринг
         ob_quality    = (ob_result.bearish_ob.quality if ob_result and ob_result.bearish_ob else 0)
-        ob_quality_ok = ob_quality >= 50
-        ob_q_high     = ob_quality >= 65
+        ob_quality_ok = ob_quality >= 50   # ✅ FIX: Понижен с 60 → 50 для слабых рынков
+        ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
+        
+        if confirmation["passed"] and confirmation["score"] >= 75:
+            # ВСЁ ПОДТВЕРЖДЕНО — супер-сигнал!
+            base_score = 85 + (confirmation["score"] - 75) // 5  # 85-95
+            reasons = sweep["reasons"] + confirmation["reasons"]
+        final_score += rsi_30m_score_adj + rsi_4h_score_adj
+        print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={md.rsi_1h or 0:.1f} 30m={rsi_30m:.1f}")
+        if rsi_30m_score_adj != 0:
+            print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")
+        if rsi_4h_score_adj != 0:
+            print(f"[MTF] {symbol}: RSI4h={rsi_4h:.0f} adj={rsi_4h_score_adj:+d}")
 
-        # ✅ FIX: считаем adjusted_score ДО лога, чтобы valid отражал реальное решение
-        effective_min = 30 if (symbol_profile and getattr(symbol_profile, "volatility_class", "") == "extreme") else 45
-        adjusted_score = score_result.total_score + max(0, base_score_bonus)
-        score_is_valid = score_result.is_valid or adjusted_score >= effective_min
-
-        print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_is_valid} "
-              f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}"
-              f" adj={adjusted_score:.0f}% min={effective_min}")
-
-        # ✅ FIX v4.1: STRICT MODE — только валидные сигналы
-        if not score_is_valid:
-            print(f"🚫 [FILTER-SHORT] {symbol}: score invalid ({score_result.total_score:.1f}%+{base_score_bonus}={adjusted_score:.0f}% < {effective_min}), skipping (STRICT MODE)")
+        # RSI Floor: если RSI 1H слишком низкий — монета перепродана, риск отскока
+        _rsi_1h_now = md.rsi_1h or 50.0
+        if _rsi_1h_now < Config.RSI_FLOOR_SHORT_MIN:
+            print(f"🚫 [RSI-FLOOR-SHORT] {symbol}: RSI 1H={_rsi_1h_now:.1f} < {Config.RSI_FLOOR_SHORT_MIN} — уже перепродан, риск отскока → skip")
             return None
 
-        # ✅ FIX v4.1: Инициализируем final_score ДО любых операций +=
-        # Удалён zombie-блок (sweep["reasons"] + confirmation["reasons"]) — sweep=None → crash
-        # Если sweep+confirmation >= 75, функция уже вернула результат выше (~строка 1310)
         reasons     = list(score_result.reasons)
-        base_score_before_override = score_result.total_score
-        final_score = min(100, score_result.total_score + max(0, base_score_bonus))
-
-        # MTF RSI бонус уже передан в calculate_score() через mtf_rsi_bonus
         
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
@@ -1780,38 +1440,130 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         except Exception as e:
             print(f"🌊 [ELLIOTT-ERROR-SHORT] {symbol}: {e}")
             elliott_data = {"error": str(e)}
-        
+
+        # 🏗️ AMD PHASE (Accumulation/Manipulation/Distribution)
+        try:
+            def _candle_dict(c):
+                if isinstance(c, dict):
+                    return c
+                return {
+                    "high": float(getattr(c, "high", 0) or 0),
+                    "low":  float(getattr(c, "low",  0) or 0),
+                    "close": float(getattr(c, "close", 0) or 0),
+                    "volume": float(getattr(c, "volume", 0) or 0),
+                }
+            _amd_candles = [_candle_dict(c) for c in ohlcv_primary[-30:]]
+            if len(_amd_candles) >= 20:
+                _amd_res = state.amd_detector.analyze(
+                    candles=_amd_candles,
+                    cvd_pressure=None,
+                    current_price=md.price
+                )
+                _amd_phase = _amd_res.phase.value
+                if _amd_res.phase.value == "distribution" and _amd_res.confidence >= 60:
+                    _amd_boost = 6
+                    final_score += _amd_boost
+                    reasons.append(f"🏗️ AMD Распределение (conf={_amd_res.confidence:.0f}%) +{_amd_boost}")
+                    print(f"🏗️ [AMD-SHORT] {symbol}: Фаза=РАСПРЕДЕЛЕНИЕ conf={_amd_res.confidence:.0f}% → +{_amd_boost}")
+                elif _amd_res.phase.value == "manipulation" and _amd_res.expected_direction == "down":
+                    _amd_boost = 8
+                    final_score += _amd_boost
+                    reasons.append(f"🎯 AMD Манипуляция↓ (EQH sweep) +{_amd_boost}")
+                    print(f"🎯 [AMD-SHORT] {symbol}: Фаза=МАНИПУЛЯЦИЯ вниз → +{_amd_boost}")
+                elif _amd_res.phase.value == "decline":
+                    final_score += 3
+                    reasons.append("📉 AMD Падение (decline) +3")
+                    print(f"📉 [AMD-SHORT] {symbol}: Фаза=ПАДЕНИЕ")
+                elif _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 65:
+                    # Накопление противоречит SHORT — снижаем скор
+                    final_score -= 5
+                    print(f"⚠️ [AMD-SHORT] {symbol}: Фаза=НАКОПЛЕНИЕ (против SHORT) -5")
+                else:
+                    print(f"📊 [AMD-SHORT] {symbol}: Фаза={_amd_phase} conf={_amd_res.confidence:.0f}%")
+        except Exception as _e:
+            print(f"🏗️ [AMD-ERROR-SHORT] {symbol}: {_e}")
+
+        # =========================================================================
+        # 🛡️ F1-F5 SMART FILTERS: Защита от плохих шортов
+        # =========================================================================
+        def _rsi_w(closes, period=14):
+            if len(closes) < period + 1:
+                return 50.0
+            gains  = [max(0.0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
+            losses = [max(0.0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
+            ag = sum(gains[-period:]) / period
+            al = sum(losses[-period:]) / period
+            return 100.0 - 100.0 / (1.0 + ag / al) if al > 0 else 100.0
+
+        _rsi_1h_val = md.rsi_1h or 50.0
+        _price_short = md.price
+
+        # F1: RSI 4H вырос > 5 пунктов за 3 бара И > 50 → восстановление, шорт запрещён
+        try:
+            if ohlcv_4h and len(ohlcv_4h) >= 22:
+                _cl4 = [c.close for c in ohlcv_4h]
+                _rsi4_now  = _rsi_w(_cl4[-17:])
+                _rsi4_3ago = _rsi_w(_cl4[-20:-3])
+                if (_rsi4_now - _rsi4_3ago) > 5.0 and _rsi4_now > 50:
+                    print(f"🚫 [F1-RSI4H-RISING] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} (+{_rsi4_now-_rsi4_3ago:.1f}) + >50 → восстановление, шорт запрещён")
+                    return None
+        except Exception as _fe:
+            print(f"[F1] {symbol}: {_fe}")
+
+        # F2: RSI 1H был < 30 в последних 8 барах И сейчас > 45 → отскок в процессе
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 25:
+                _cl1 = [c.close for c in ohlcv_1h]
+                _rsi1_hist = [_rsi_w(_cl1[-(17+i):-(i) if i > 0 else None]) for i in range(1, 9)]
+                _rsi1_min  = min(_rsi1_hist)
+                if _rsi1_min < 30 and _rsi_1h_val > 45:
+                    print(f"🚫 [F2-OVERSOLD-BOUNCE] {symbol}: RSI 1H был {_rsi1_min:.1f} за посл. 8 баров, сейчас {_rsi_1h_val:.1f} → отскок в процессе")
+                    return None
+        except Exception as _fe:
+            print(f"[F2] {symbol}: {_fe}")
+
+        # F3: Цена выросла > ANTI_BOUNCE_PCT_MAX от лоя 12H → риск отскока
+        # Override: RSI > ANTI_BOUNCE_RSI_OVERRIDE (экстрем. перекупленность = Distribution) — шорт разрешён
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 12:
+                _low_12h = min(c.low for c in ohlcv_1h[-12:])
+                if _low_12h > 0:
+                    _bounce_pct = (_price_short - _low_12h) / _low_12h * 100
+                    if _bounce_pct > Config.ANTI_BOUNCE_PCT_MAX:
+                        if _rsi_1h_val >= Config.ANTI_BOUNCE_RSI_OVERRIDE:
+                            print(f"⚠️ [F3-RSI-OVERRIDE] {symbol}: +{_bounce_pct:.1f}% от лоя, но RSI={_rsi_1h_val:.0f} ≥ {Config.ANTI_BOUNCE_RSI_OVERRIDE} — Distribution, шорт разрешён")
+                        else:
+                            print(f"🚫 [F3-ANTI-BOUNCE] {symbol}: +{_bounce_pct:.1f}% от 12H лоя {_low_12h:.6f} (порог={Config.ANTI_BOUNCE_PCT_MAX:.0f}%) → отскок, шорт запрещён")
+                            return None
+        except Exception as _fe:
+            print(f"[F3] {symbol}: {_fe}")
+
+        # F4: RSI 4H застрял 42-58 на 5 барах (боковик) + RSI 1H < 65 → слабый сигнал
+        try:
+            if ohlcv_4h and len(ohlcv_4h) >= 22:
+                _cl4b = [c.close for c in ohlcv_4h]
+                _rsi4_5bars = [_rsi_w(_cl4b[-(17+i):-(i) if i > 0 else None]) for i in range(0, 5)]
+                if all(42 < r < 58 for r in _rsi4_5bars) and _rsi_1h_val < 65:
+                    print(f"🚫 [F4-RANGE-MODE] {symbol}: 4H боковик RSI=[{','.join(f'{r:.0f}' for r in _rsi4_5bars)}] RSI 1H={_rsi_1h_val:.1f} < 65 → ждём перекупленности")
+                    return None
+        except Exception as _fe:
+            print(f"[F4] {symbol}: {_fe}")
+
+        # F5: RSI 1H вырос > 8 пунктов за 2 бара + RSI > 55 → бычий импульс, ждём пика
+        try:
+            if ohlcv_1h and len(ohlcv_1h) >= 19:
+                _cl1b = [c.close for c in ohlcv_1h]
+                _rsi1_now  = _rsi_w(_cl1b[-15:])
+                _rsi1_2ago = _rsi_w(_cl1b[-17:-2])
+                if (_rsi1_now - _rsi1_2ago) > 8.0 and _rsi1_now > 55:
+                    print(f"🚫 [F5-RSI1H-MOMENTUM] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} (+{_rsi1_now-_rsi1_2ago:.1f}) за 2 бара → бычий импульс, ждём пика")
+                    return None
+        except Exception as _fe:
+            print(f"[F5] {symbol}: {_fe}")
+        # =========================================================================
+
         # Используем скорректированный минимум скора
         min_score_for_entry = elliott_min_score if 'elliott_min_score' in locals() else Config.MIN_SCORE
-
-        # ✅ FIX: HTF (4H) Bias Filter — не шортить против 4H аптренда
-        # Портировано из liquidity-bots-fixed 2 (v3.2)
-        try:
-            ohlcv_4h_bias = await state.binance.get_klines(symbol, "4h", 25)
-            if ohlcv_4h_bias and len(ohlcv_4h_bias) >= 21:
-                closes_4h_bias = [float(c.close if hasattr(c, 'close') else c[4]) for c in ohlcv_4h_bias]
-                ema9_4h  = sum(closes_4h_bias[-9:]) / 9
-                ema21_4h = sum(closes_4h_bias[-21:]) / 21
-                if ema9_4h > ema21_4h * 1.005:  # 4H EMA9 > EMA21×1.005 = подтверждённый аптренд
-                    # ✅ FIX: 75→82 — повышен порог входа против тренда
-                    # BSBUSDT, SPACEUSDT, LABUSDT — шортили в разгар аптренда
-                    if final_score < 82:
-                        print(f"🚫 [HTF-4H-SHORT] {symbol}: EMA9({ema9_4h:.4f}) > EMA21({ema21_4h:.4f}) — 4H аптренд, score={final_score}<82 → skip")
-                        return None
-                    else:
-                        print(f"⚠️ [HTF-4H-SHORT] {symbol}: 4H аптренд, но score={final_score}≥82 — разрешаем")
-
-                # ✅ FIX: Violent pump guard — цена далеко выше EMA21 = экстремальный памп
-                # BSBUSDT +250%, FHEUSDT вертикальный памп → блокируем без ≥90 score
-                price_vs_ema21_4h = price / ema21_4h if ema21_4h > 0 else 1.0
-                if price_vs_ema21_4h > 1.15:  # цена >15% выше EMA21 4H = насильственный памп
-                    if final_score < 90:
-                        print(f"🚫 [HTF-4H-PUMP] {symbol}: цена {(price_vs_ema21_4h-1)*100:.1f}% выше EMA21 4H — экстремальный памп, score={final_score}<90 → skip")
-                        return None
-                    else:
-                        print(f"⚠️ [HTF-4H-PUMP] {symbol}: {(price_vs_ema21_4h-1)*100:.1f}% выше EMA21, score={final_score}≥90 — разрешаем")
-        except Exception as e:
-            print(f"⚠️ [HTF-4H-SHORT] {symbol}: ошибка проверки 4H тренда: {e}")
 
         if final_score < min_score_for_entry:
             print(f"🔴 [FILTER1] {symbol}: score={final_score} < MIN={min_score_for_entry} — отфильтрован!")
@@ -1828,207 +1580,27 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         )
 
         # ── SL ВЫШЕ входа, TP НИЖЕ входа (SHORT) ─────────────────────────────
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ v5: ATR-АДАПТИВНЫЙ SL для SHORT
-        # ═══════════════════════════════════════════════════════════════════
-        atr_pct = 1.5
-        vol_class = "medium"
-        if symbol_profile and symbol_profile.atr_14_pct > 0:
-            atr_pct   = symbol_profile.atr_14_pct
-            vol_class = symbol_profile.volatility_class
-        atr_multiplier = {"low": 1.5, "medium": 2.0, "high": 2.5, "extreme": 3.0}.get(vol_class, 2.0)
-        adaptive_sl_pct = round(min(max(atr_pct * atr_multiplier, 1.2), 8.0), 2)
-        atr_price = price * atr_pct / 100
-        default_sl = price * (1 + adaptive_sl_pct / 100)
-
-        # ✅ NEW: Volatility-adaptive ATR bounds через ADX (сила тренда 4H)
-        adx_4h = calculate_adx_from_candles(ohlcv_4h_bias if 'ohlcv_4h_bias' in locals() else [])
-        min_sl_dist, max_sl_dist = get_adaptive_atr_bounds(atr_price, adx_4h)
-        print(f"📐 [SL-ATR] {symbol}: ATR={atr_pct:.2f}% vol={vol_class} mult={atr_multiplier}× "
-              f"→ SL={adaptive_sl_pct:.2f}% | ADX={adx_4h:.1f} bounds=[{min_sl_dist/atr_price:.1f}×, {max_sl_dist/atr_price:.1f}×]ATR")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ v5: SWING HIGH SL — структурный стоп за последний значимый максимум
-        # ═══════════════════════════════════════════════════════════════════
-        swing_sl = None
-        try:
-            if ohlcv_4h_bias and len(ohlcv_4h_bias) >= 8:
-                highs_4h = [float(c.high if hasattr(c, 'high') else c[1]) for c in ohlcv_4h_bias]
-                swing_highs = []
-                for idx in range(2, len(highs_4h) - 2):
-                    if highs_4h[idx] == max(highs_4h[idx - 2: idx + 3]):
-                        swing_highs.append(highs_4h[idx])
-                valid = [sh for sh in swing_highs if sh > price * 1.003]
-                if valid:
-                    nearest_swing = min(valid)
-                    swing_sl = nearest_swing + atr_price * 0.5
-                    print(f"📐 [SWING-SL] {symbol}: SwingHigh={nearest_swing:.6f} → SL={swing_sl:.6f} (+0.5×ATR)")
-        except Exception:
-            pass
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ NEW: SESSION HIGH SL — SL за High Азиатской сессии (00:00–08:00 UTC)
-        # ═══════════════════════════════════════════════════════════════════
-        session_sl = None
-        try:
-            session_sl = calculate_session_sl(
-                candles_1h=ohlcv_1h,
-                side="short",
-                price=price,
-                atr_price=atr_price,
-                min_sl_dist=min_sl_dist,
-                max_sl_dist=max_sl_dist,
-            )
-        except Exception as e:
-            print(f"[SESSION-SL] {symbol} error: {e}")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ v5: SWEEP TAIL SL
-        # ═══════════════════════════════════════════════════════════════════
+        
+        # ✅ v2.9: Пробуем использовать Liquidity Sweep Tail для точного стопа
         sweep_sl = None
         try:
             from core.liquidity_detector import LiquidityDetector
             ld = LiquidityDetector(_ohlcv(ohlcv_15m))
             sweep_result = ld.detect_sweep(direction="short")
             if sweep_result and sweep_result.found_sweep and sweep_result.sweep_high > 0:
+                # Стоп за хвост свечи sweep + 0.3% buffer (выше для SHORT)
                 sweep_sl = sweep_result.sweep_high * 1.003
-                print(f"🎯 [SWEEP-SL] {symbol}: sweep_high={sweep_result.sweep_high:.6f} → SL={sweep_sl:.6f}")
-        except Exception:
-            pass
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ SmartSL: Multi-TF Manipulation Candle Detector (SHORT: верхние хвосты)
-        # ═══════════════════════════════════════════════════════════════════
-        smart_sl_price = None
-        try:
-            if hasattr(state, 'smart_sl') and state.smart_sl:
-                def _to_sl_dicts(raw):
-                    out = []
-                    for c in (raw or []):
-                        if hasattr(c, 'open'):
-                            out.append({"open": float(c.open), "high": float(c.high),
-                                        "low": float(c.low), "close": float(c.close),
-                                        "volume": float(getattr(c, 'volume', 0) or 0),
-                                        "timestamp": int(getattr(c, 'timestamp', 0) or 0)})
-                        elif isinstance(c, (list, tuple)) and len(c) >= 6:
-                            out.append({"open": float(c[1]), "high": float(c[2]),
-                                        "low": float(c[3]), "close": float(c[4]),
-                                        "volume": float(c[5]), "timestamp": int(c[0])})
-                    return out
-                sl_res = state.smart_sl.calculate_sl(
-                    symbol=symbol, side="short", entry_price=price,
-                    candles_15m=_to_sl_dicts(ohlcv_15m),
-                    candles_30m=_to_sl_dicts(ohlcv_30m),
-                    candles_1h=_to_sl_dicts(ohlcv_1h),
-                    candles_4h=_to_sl_dicts(ohlcv_4h_bias) if ohlcv_4h_bias else _to_sl_dicts(ohlcv_4h),
-                    atr=atr_pct
-                )
-                if sl_res.is_valid and sl_res.sl_price > 0 and sl_res.sl_price > price:
-                    smart_sl_price = sl_res.sl_price
-                    print(f"🎯 [SMART-SL] {symbol}: {sl_res.based_on} → SL={smart_sl_price:.6f} ({sl_res.sl_distance_pct:.2f}%)")
+                print(f"🎯 [v2.9] {symbol}: Sweep Tail SL = ${sweep_sl:.6f} (sweep_high=${sweep_result.sweep_high:.6f})")
         except Exception as e:
-            print(f"[SMART-SL] {symbol} error: {e}")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ NEW: VWAP SL — Anchored VWAP от начала UTC-дня (SHORT: выше цены)
-        # ═══════════════════════════════════════════════════════════════════
-        vwap_sl = None
-        try:
-            vwap_sl = calculate_vwap_sl(
-                candles_1h=ohlcv_1h,
-                side="short",
-                price=price,
-                min_sl_dist=min_sl_dist,
-                max_sl_dist=max_sl_dist,
-            )
-        except Exception as e:
-            print(f"[VWAP-SL] {symbol} error: {e}")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ Phase 8: WYCKOFF UPTHRUST SL — SL за хай ложного пробоя распределения
-        # ═══════════════════════════════════════════════════════════════════
-        wyckoff_sl = None
-        try:
-            wyckoff_pattern = next((p for p in patterns if p.name == "WYCKOFF_UPTHRUST"), None)
-            if wyckoff_pattern and wyckoff_pattern.suggested_sl_pct > 0:
-                wyckoff_sl = price * (1 + wyckoff_pattern.suggested_sl_pct / 100)
-                print(f"🌀 [WYCKOFF-SL] {symbol}: Upthrust → SL={wyckoff_sl:.6f} ({wyckoff_pattern.suggested_sl_pct:.2f}%)")
-        except Exception:
-            pass
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ Phase 7: XVP VOL PROFILE SL — SL над VAH (Value Area High)
-        # ═══════════════════════════════════════════════════════════════════
-        xvp_sl = None
-        try:
-            xvp_candles = []
-            for c in (ohlcv_4h_bias or []):
-                if hasattr(c, 'open'):
-                    xvp_candles.append({"open": float(c.open), "high": float(c.high),
-                                        "low": float(c.low), "close": float(c.close),
-                                        "volume": float(getattr(c, 'volume', 0) or 0)})
-                elif isinstance(c, (list, tuple)) and len(c) >= 6:
-                    xvp_candles.append({"open": float(c[1]), "high": float(c[2]),
-                                        "low": float(c[3]), "close": float(c[4]),
-                                        "volume": float(c[5])})
-            if len(xvp_candles) >= 10:
-                xvp_result = get_xvp_analyzer().analyze(xvp_candles)
-                if xvp_result.vah > 0 and xvp_result.vah > price * 1.01:
-                    xvp_sl = xvp_result.vah * 1.003
-                    print(f"📊 [XVP-SL] {symbol}: VAH={xvp_result.vah:.6f} POC={xvp_result.poc:.6f} → SL={xvp_sl:.6f}")
-        except Exception as e:
-            print(f"[XVP-SL] {symbol} error: {e}")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ NEW: MULTI-TF SL CONFLUENCE — несколько методов в одной зоне → бонус
-        # ═══════════════════════════════════════════════════════════════════
-        _confluence_count, _confluence_bonus = calculate_sl_confluence(
-            sl_candidates=[swing_sl, session_sl, smart_sl_price, vwap_sl, sweep_sl, wyckoff_sl, xvp_sl],
-            price=price,
-            tolerance_pct=0.6,
-        )
-        if _confluence_bonus > 0:
-            final_score = min(100, final_score + _confluence_bonus)
-            reasons.append(f"🔗 SL Confluence x{_confluence_count} уровней +{_confluence_bonus}")
-            print(f"🔗 [SL-CONFLUENCE-SHORT] {symbol}: {_confluence_count} SL кластеризованы → +{_confluence_bonus} к скору")
-
-        # ═══════════════════════════════════════════════════════════════════
-        # ✅ v6: ИЕРАРХИЯ SL для SHORT
-        # 1. Swing High (структура 4H)            — структурная инвалидация
-        # 2. Session High (Asia 00–08 UTC)        — ✅ NEW: сессионный максимум
-        # 3. SmartSL (манипуляция Multi-TF)       — свечи с хвостами
-        # 4. VWAP (Anchored VWAP дня)             — ✅ NEW: динамическое сопротивление
-        # 5. Sweep Tail (ликвидность)             — за хвост ликвидности
-        # 6. Wyckoff Upthrust High                — за ложный пробой
-        # 7. XVP VAH (Volume Profile)             — за зону стоимости
-        # 8. ATR-adaptive default                 — адаптивный фолбэк
-        # Границы: Volatility-Adaptive [ADX-based] — ✅ NEW
-        # ═══════════════════════════════════════════════════════════════════
-        if swing_sl and min_sl_dist <= (swing_sl - price) <= max_sl_dist:
-            stop_loss = swing_sl
-            reasons.append(f"📐 Swing High SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
-        elif session_sl and min_sl_dist <= (session_sl - price) <= max_sl_dist:
-            stop_loss = session_sl
-            reasons.append(f"🌅 Session High SL: ${stop_loss:.6f}")
-        elif smart_sl_price and min_sl_dist <= (smart_sl_price - price) <= max_sl_dist:
-            stop_loss = smart_sl_price
-            reasons.append(f"🎯 SmartSL (манипуляция): ${stop_loss:.6f}")
-        elif vwap_sl and min_sl_dist <= (vwap_sl - price) <= max_sl_dist:
-            stop_loss = vwap_sl
-            reasons.append(f"📊 VWAP SL: ${stop_loss:.6f}")
-        elif sweep_sl and min_sl_dist <= (sweep_sl - price) <= max_sl_dist:
+            pass  # Fallback на стандартный расчёт
+        
+        # Используем sweep-based стоп если он лучше (выше цены но не слишком далеко)
+        default_sl = price * (1 + Config.SL_BUFFER / 100)
+        if sweep_sl and sweep_sl > price and sweep_sl < price * 1.03:  # Не более 3% от цены
             stop_loss = sweep_sl
-            reasons.append(f"🎯 Sweep Tail SL: ${stop_loss:.6f}")
-        elif wyckoff_sl and min_sl_dist <= (wyckoff_sl - price) <= max_sl_dist:
-            stop_loss = wyckoff_sl
-            reasons.append(f"🌀 Wyckoff Upthrust SL: ${stop_loss:.6f}")
-        elif xvp_sl and min_sl_dist <= (xvp_sl - price) <= max_sl_dist:
-            stop_loss = xvp_sl
-            reasons.append(f"📊 XVP VAH SL: ${stop_loss:.6f}")
+            reasons.append(f"🎯 v2.9 Sweep Tail SL: ${stop_loss:.6f}")
         else:
             stop_loss = default_sl
-            reasons.append(f"📊 ATR SL: ${stop_loss:.6f} ({adaptive_sl_pct:.1f}%)")
             
         entry_price = price
         smc_data    = {}
@@ -2043,34 +1615,12 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                     reasons.extend(smc.reasons)
                 if smc.refined_sl and smc.refined_sl > price:
                     stop_loss = smc.refined_sl
-                if smc.ob_entry and smc.ob_entry > price * 0.999:  # ✅ FIX v5: OB должен быть ВЫШЕ или на цене для SHORT
+                if smc.ob_entry:
                     entry_price = smc.ob_entry
                 smc_data = {"has_ob": smc.has_ob, "has_fvg": smc.has_fvg,
                             "score_bonus": smc.score_bonus}
             except Exception as e:
                 print(f"SMC error {symbol}: {e}")
-
-        # ✅ Phase 5: EQH/EQL Scanner + EQH Buffer для SHORT
-        # EQH = равные максимумы = зона retail-ловушки сверху
-        # Если наш SL ниже EQH — он будет снесён manipulation spike
-        try:
-            pool_scan = scan_liquidity_pools(_ohlcv(ohlcv_15m), symbol, primary_tf)
-            if pool_scan.active_sweeps:
-                final_score = min(100, final_score + 10)
-                reasons.append(f"🌊 Liquidity sweep detected (+10)")
-            # EQH Buffer: если SL между ценой и EQH — смещаем за EQH
-            if pool_scan.nearest_eqh and pool_scan.nearest_eqh.level > price * 1.005:
-                eqh_level = pool_scan.nearest_eqh.level
-                # Если SL ниже EQH+0.3% (в ловушке между ценой и EQH)
-                if stop_loss < eqh_level * 0.997:
-                    new_sl = eqh_level * 1.003   # за EQH с буфером 0.3%
-                    sl_new_dist = new_sl - price
-                    if min_sl_dist <= sl_new_dist <= max_sl_dist:
-                        print(f"🌊 [EQH-BUF] {symbol}: SL {stop_loss:.6f} в ловушке EQH {eqh_level:.6f} → смещён до {new_sl:.6f}")
-                        stop_loss = new_sl
-                        reasons.append(f"🌊 EQH Buffer SL: ${new_sl:.6f} (за ликвидную зону)")
-        except Exception as e:
-            print(f"🌊 [EQH-BUF] {symbol} error: {e}")
 
         # 🆕 Aegis: Z-Score Pump Detector (критично для SHORT!)
         try:
@@ -2128,16 +1678,10 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"🔴 [FILTER2-SMC] {symbol}: score={final_score} < MIN={Config.MIN_SCORE} — отфильтрован!")
             return None
 
-        # ✅ v5: ATR-clamping SL для SHORT — SL не может быть меньше 0.8×ATR или больше 4×ATR от цены
-        sl_dist = stop_loss - price
-        if sl_dist < min_sl_dist:
-            # SL слишком близко — расширяем до ATR-адаптивного дефолта
-            stop_loss = default_sl
-            print(f"⚠️ [SL-CLAMP-MIN] {symbol}: SL слишком близко ({sl_dist/price*100:.2f}% < {atr_pct*0.8:.2f}%) → ATR default {adaptive_sl_pct:.2f}%")
-        elif sl_dist > max_sl_dist:
-            # SL слишком далеко — ограничиваем до 4×ATR
-            stop_loss = price + max_sl_dist
-            print(f"⚠️ [SL-CLAMP-MAX] {symbol}: SL слишком далеко ({sl_dist/price*100:.2f}% > {atr_pct*4:.2f}%) → ограничен 4×ATR")
+        # ✅ SL для SHORT: минимум = SL_BUFFER%, не захардкоженный 1%
+        min_sl_dist = Config.SL_BUFFER / 100
+        if (stop_loss - price) / price < min_sl_dist:
+            stop_loss = price * (1 + Config.SL_BUFFER / 100)
 
         # TP НИЖЕ входа для SHORT
         take_profits = [
@@ -2146,15 +1690,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ]
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
-
-        # ✅ v5: RR Gate — не брать сделку если Risk:Reward < 1.5
-        if take_profits:
-            tp1_pct = (price - take_profits[0][0]) / price * 100  # для SHORT: цена падает к TP1
-            rr_ratio = tp1_pct / sl_pct if sl_pct > 0 else 0
-            if rr_ratio < 1.5:
-                print(f"🚫 [RR-GATE] {symbol}: RR={rr_ratio:.2f} (TP1={tp1_pct:.2f}% / SL={sl_pct:.2f}%) < 1.5 → сделку не брать")
-                return None
-            print(f"✅ [RR-GATE] {symbol}: RR={rr_ratio:.2f} (TP1={tp1_pct:.2f}% / SL={sl_pct:.2f}%) — OK")
         
         # ✅ FIX: Проверка SMC паттерна — сигнал только при наличии структуры
         # 🆕 Aegis: Z-Score и Delta теперь тоже считаются валидными паттернами!
@@ -2245,8 +1780,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
-            # ✅ FIX: quote_volume нужен в scan_market() для volume-фильтра (поле = volume_24h)
-            "quote_volume_24h": getattr(md, 'volume_24h', 0),
         }
     except Exception as e:
         import traceback
@@ -2256,8 +1789,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
 
 
 
-_scan_lock = None  # asyncio.Lock — инициализируется лениво в event loop
-
 async def scan_market():
     """
     ✅ v2.7 АРХИТЕКТУРА (SHORT, NO BTC CORR):
@@ -2265,20 +1796,6 @@ async def scan_market():
     - Биржевое исполнение: только если active_short < MAX и не /pause
     - Единственный блокер: команда /pause
     """
-    # ✅ FIX v4.1: Предотвращаем параллельный запуск scan_market (петля RENDERUSDT/BOMEUSDT)
-    global _scan_lock
-    if _scan_lock is None:
-        _scan_lock = asyncio.Lock()
-    if _scan_lock.locked():
-        print(f"⚠️ [SCAN] Previous scan still running — skipping concurrent invocation")
-        return
-
-    async with _scan_lock:
-        await _scan_market_impl()
-
-
-async def _scan_market_impl():
-    """Внутренняя реализация scan_market — вызывается только через scan_market()."""
     print(f"🔬 [SCAN-MARKET-ENTRY] is_paused={state.is_paused}, is_running={state.is_running}")  # DEBUG
     if state.is_paused:
         print(f"🔬 [SCAN-MARKET-ENTRY] SKIPPING: bot is paused!")  # DEBUG
@@ -2326,11 +1843,9 @@ async def _scan_market_impl():
     _scanned_this_run: set = set()  # ✅ FIX: защита от дублей в watchlist
 
     for symbol in state.watchlist:
-        # ✅ FIX: пропускаем если уже сканировали этот символ в текущем цикле
         if symbol in _scanned_this_run:
             continue
         _scanned_this_run.add(symbol)
-
         try:
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
@@ -2341,15 +1856,6 @@ async def _scan_market_impl():
                 cd_val = state.redis.get(sl_cd_key)
                 if cd_val:
                     print(f"⏸ [COOLDOWN] {symbol}: недавний SL, пропускаем (cooldown активен)")
-                    continue
-            except Exception:
-                pass
-
-            # ✅ NEW: 1 позиция на символ — не открываем если уже есть SHORT по этому активу
-            # (реальная или виртуальная). LONG бот может открывать LONG по тому же символу.
-            try:
-                if state.redis.has_open_position_for_symbol(Config.BOT_TYPE, symbol):
-                    print(f"⏭️ [1-POS] {symbol}: уже есть открытая SHORT позиция/виртуал — пропускаем")
                     continue
             except Exception:
                 pass
@@ -2378,22 +1884,16 @@ async def _scan_market_impl():
             signal["tg_msg_id"] = tg_msg_id
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
-            # 📊 SIGNAL LOG: Запись всех сигналов (исполненных + пропущенных)
-            _signal_log_entry = {**signal, "executed": False, "skip_reason": None}
-
             # ✅ TF фильтр ОТКЛЮЧЕН: все timeframe на биржу (v2.7)
             primary_tf = signal.get("timeframe", "15m")
             tf_for_execution = True  # Разрешаем всем ТФ
 
             # 🆕 STRICT: Проверка объема перед входом
-            quote_volume = signal.get("quote_volume_24h", 0)  # ✅ FIX: md не доступен в scan_market()
+            quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
-                _signal_log_entry["skip_reason"] = "volume_too_low"
-                try: state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
-                except Exception: pass
                 continue
-
+            
             # 🆕 BTC FILTER: Не шортить если BTC растет (не шортим против тренда)
             btc_trend_ok = True
             if hasattr(state, 'btc_context') and state.btc_context:
@@ -2401,57 +1901,30 @@ async def _scan_market_impl():
                 if btc_data.get('direction') == 'UP' and btc_data.get('strength', 0) > 0.6:
                     btc_trend_ok = False
                     print(f"📊 [BTC-FILTER] {symbol}: BTC rising hard — skip SHORT")
-
+            
             # Биржевое исполнение: только если есть SHORT слоты, не на паузе, BTC ок
             if (not exchange_full and Config.AUTO_TRADING and not state.is_paused and btc_trend_ok):
                 if state.auto_trader:
                     try:
-                        _trade_result = await state.auto_trader.execute_signal(signal)
-                        # ✅ FIX: считаем слот ТОЛЬКО если сделка реально открылась
-                        if _trade_result is not None:
-                            active_count += 1
-                            exchange_full = active_count >= Config.MAX_POSITIONS
-                            new_signals += 1
-                            _signal_log_entry["executed"] = True
-                            _signal_log_entry["executed_at"] = datetime.utcnow().isoformat()
-                            print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
-                        else:
-                            _signal_log_entry["skip_reason"] = "bingx_rejected"
-                            print(f"⚠️ SHORT skipped (BingX rejected): {symbol}")
+                        await state.auto_trader.execute_signal(signal)
+                        active_count += 1
+                        exchange_full = active_count >= Config.MAX_POSITIONS
                     except Exception as e:
-                        _signal_log_entry["skip_reason"] = f"error"
                         print(f"AutoTrader error {symbol}: {e}")
+                new_signals += 1
+                print(f"✅ SHORT executed: {symbol} [{primary_tf}] Score={signal['score']:.0f}% SL={signal['sl_pct']}%")
             elif not btc_trend_ok:
                 tg_only_count += 1
-                _signal_log_entry["skip_reason"] = "btc_rising"
                 print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] [BTC rising]")
             else:
                 tg_only_count += 1
                 if exchange_full:
-                    _signal_log_entry["skip_reason"] = "exchange_full"
                     reason = "max SHORT positions"
-                elif not Config.AUTO_TRADING:
-                    _signal_log_entry["skip_reason"] = "auto_trading_disabled"
-                    reason = "auto trading disabled"
                 else:
-                    _signal_log_entry["skip_reason"] = "paused"
                     reason = "paused or AT disabled"
                 print(f"📡 SHORT TG-only: {symbol} [{primary_tf}] Score={signal['score']:.0f}% [{reason}]")
 
-            # 📊 Сохраняем в постоянный лог сигналов
-            try:
-                state.redis.save_signal_log(Config.BOT_TYPE, _signal_log_entry)
-            except Exception:
-                pass
-
-            # 🔍 Если не исполнено на бирже — сохраняем как виртуальную позицию для мониторинга TP/SL
-            if not _signal_log_entry.get("executed"):
-                try:
-                    state.redis.save_virtual_position(Config.BOT_TYPE, symbol, _signal_log_entry)
-                except Exception:
-                    pass
-
-            await asyncio.sleep(1.0)  # ✅ FIX: 0.4→1.0s — снижаем Bybit rate limit (get_price None)
+            await asyncio.sleep(0.4)
         except Exception as e:
             print(f"Error {symbol}: {e}")
 
@@ -2518,10 +1991,7 @@ async def _scan_market_impl():
                         )
                         signal["tg_msg_id"] = tg_msg_id
                         state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
-
-                        # 📊 SIGNAL LOG для momentum
-                        _mom_log_entry = {**signal, "executed": False, "skip_reason": None, "signal_type": "momentum"}
-
+                        
                         # Биржевое исполнение
                         if not exchange_full and Config.AUTO_TRADING and not state.is_paused:
                             if state.auto_trader:
@@ -2530,34 +2000,13 @@ async def _scan_market_impl():
                                     active_count += 1
                                     exchange_full = active_count >= Config.MAX_POSITIONS
                                     new_signals += 1
-                                    _mom_log_entry["executed"] = True
-                                    _mom_log_entry["executed_at"] = datetime.utcnow().isoformat()
                                     print(f"✅ [MOMENTUM-SHORT] Executed: {symbol} Score={signal['score']:.0f}%")
                                 except Exception as e:
-                                    _mom_log_entry["skip_reason"] = "error"
                                     print(f"❌ [MOMENTUM-SHORT] Error {symbol}: {e}")
                         else:
                             tg_only_count += 1
-                            if exchange_full:
-                                _mom_log_entry["skip_reason"] = "exchange_full"
-                            elif not Config.AUTO_TRADING:
-                                _mom_log_entry["skip_reason"] = "auto_trading_disabled"
-                            else:
-                                _mom_log_entry["skip_reason"] = "paused"
                             print(f"📡 [MOMENTUM-SHORT] TG-only: {symbol}")
-
-                        try:
-                            state.redis.save_signal_log(Config.BOT_TYPE, _mom_log_entry)
-                        except Exception:
-                            pass
-
-                        # Виртуальная позиция для не-исполненных momentum сигналов
-                        if not _mom_log_entry.get("executed"):
-                            try:
-                                state.redis.save_virtual_position(Config.BOT_TYPE, symbol, _mom_log_entry)
-                            except Exception:
-                                pass
-
+                            
                     except Exception as e:
                         print(f"❌ [MOMENTUM-SHORT] Signal error: {e}")
                         
@@ -2585,119 +2034,6 @@ async def background_scanner():
             except Exception as e:
                 print(f"Scanner error: {e}")
         await asyncio.sleep(Config.SCAN_INTERVAL)
-
-
-# =============================================================================
-# 🔍 VIRTUAL TP/SL MONITOR — следит за виртуальными позициями (TG-only сигналы)
-# =============================================================================
-
-async def virtual_position_monitor():
-    """
-    Фоновая задача: каждую минуту проверяет цену по всем виртуальным позициям.
-    Если цена достигла TP1 или SL — закрывает позицию с outcome tp/sl.
-    Если позиция висит >24 часов — закрывает как expired.
-    """
-    await asyncio.sleep(30)  # небольшая пауза при старте
-    while state.is_running:
-        try:
-            virtual_positions = state.redis.get_virtual_positions(Config.BOT_TYPE)
-            if virtual_positions:
-                print(f"🔍 [VIRTUAL-SHORT] Monitoring {len(virtual_positions)} virtual positions")
-
-                # ✅ FIX: Дедупликация символов — получаем цену каждого символа ОДИН РАЗ
-                # Было: 114 позиций → 114 get_price вызовов без паузы → rate limit
-                # Стало: ~50 уникальных символов → 50 вызовов с паузой 0.3s = ~15 сек
-                unique_symbols = list({
-                    pos.get("symbol") for pos in virtual_positions.values()
-                    if pos.get("symbol")
-                })
-                prices_cache: Dict[str, float] = {}
-                for sym in unique_symbols:
-                    try:
-                        p = await state.binance.get_price(sym)
-                        if p and p > 0:
-                            prices_cache[sym] = p
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.3)  # пауза между запросами цены
-
-                for field, pos in list(virtual_positions.items()):
-                    try:
-                        symbol        = pos.get("symbol")
-                        entry_price   = float(pos.get("entry_price") or 0)
-                        stop_loss     = float(pos.get("stop_loss") or 0)
-                        take_profits  = pos.get("take_profits") or []
-                        direction     = pos.get("direction", "short")
-                        opened_at_str = pos.get("virtual_opened_at", "")
-
-                        if not symbol or entry_price <= 0:
-                            continue
-
-                        # Проверяем истечение 24 часов
-                        outcome = None
-                        if opened_at_str:
-                            try:
-                                opened_at = datetime.fromisoformat(opened_at_str)
-                                if (datetime.utcnow() - opened_at).total_seconds() > 86400:
-                                    outcome = "expired"
-                            except Exception:
-                                pass
-
-                        if outcome is None:
-                            # ✅ FIX: Берём из кэша цен (не вызываем API повторно!)
-                            current_price = prices_cache.get(symbol, 0)
-                            if not current_price or current_price <= 0:
-                                continue
-
-                            # ✅ FIX: take_profits[0] может быть float, list [price,weight] или dict
-                            tp1 = None
-                            if take_profits:
-                                tp_item = take_profits[0]
-                                if isinstance(tp_item, (list, tuple)):
-                                    tp1 = float(tp_item[0])
-                                elif isinstance(tp_item, dict):
-                                    tp1 = float(tp_item.get("price", 0)) or None
-                                else:
-                                    tp1 = float(tp_item)
-
-                            if direction == "short":
-                                if stop_loss > 0 and current_price >= stop_loss:
-                                    outcome = "sl"
-                                elif tp1 and current_price <= tp1:
-                                    outcome = "tp"
-                            else:  # long
-                                if stop_loss > 0 and current_price <= stop_loss:
-                                    outcome = "sl"
-                                elif tp1 and current_price >= tp1:
-                                    outcome = "tp"
-                        else:
-                            current_price = entry_price  # для expired берём entry
-
-                        if outcome:
-                            # PnL расчёт (используем leverage 10x как дефолт если не указан)
-                            try:
-                                lev_str = str(pos.get("leverage", "10")).split("-")[0]
-                                leverage = float(lev_str) if lev_str.replace(".", "").isdigit() else 10.0
-                            except Exception:
-                                leverage = 10.0
-                            change_pct = (current_price - entry_price) / entry_price * 100
-                            if direction == "short":
-                                change_pct = -change_pct
-                            pnl_pct = round(change_pct * leverage, 2)
-
-                            state.redis.close_virtual_position(
-                                Config.BOT_TYPE, field, outcome, current_price, pnl_pct
-                            )
-                            emoji = "✅" if outcome == "tp" else ("⏰" if outcome == "expired" else "❌")
-                            print(f"{emoji} [VIRTUAL-SHORT] {symbol}: {outcome} @ {current_price:.6f} | PnL={pnl_pct:+.1f}%")
-
-                    except Exception as e:
-                        print(f"[VIRTUAL-SHORT] Error checking {field}: {e}")
-
-        except Exception as e:
-            print(f"[VIRTUAL-SHORT] Monitor error: {e}")
-
-        await asyncio.sleep(60)  # проверяем каждую минуту
 
 
 if __name__ == "__main__":

@@ -267,46 +267,8 @@
             border-left: 3px solid;
         }
         
-        .position-short {
-            border-left-color: #ff4444;
-            background: rgba(255, 68, 68, 0.07);
-        }
-        .position-long {
-            border-left-color: #00d4ff;
-            background: rgba(0, 212, 255, 0.07);
-        }
-        .dir-badge {
-            display: inline-block;
-            padding: 1px 7px;
-            border-radius: 6px;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            vertical-align: middle;
-            margin-left: 4px;
-        }
-        .dir-badge-short { background: rgba(255,68,68,0.25); color: #ff6b6b; border: 1px solid rgba(255,68,68,0.4); }
-        .dir-badge-long  { background: rgba(0,212,255,0.2);  color: #00d4ff; border: 1px solid rgba(0,212,255,0.4); }
-        .virt-badge {
-            display: inline-block;
-            padding: 1px 5px;
-            border-radius: 4px;
-            font-size: 9px;
-            font-weight: 600;
-            background: rgba(255,200,0,0.15);
-            color: #ffc800;
-            border: 1px solid rgba(255,200,0,0.3);
-            vertical-align: middle;
-            margin-left: 3px;
-        }
-        .tp-pip {
-            display: inline-block;
-            width: 8px; height: 8px;
-            border-radius: 50%;
-            margin-right: 2px;
-        }
-        .tp-pip-hit  { background: #00ff88; }
-        .tp-pip-open { background: rgba(255,255,255,0.2); }
+        .position-short { border-left-color: #ff6b6b; }
+        .position-long { border-left-color: #00d4ff; }
         
         .position-header {
             display: flex;
@@ -490,136 +452,10 @@
             opacity: 0.5;
             animation: pulse-loading 1.5s infinite;
         }
-
+        
         @keyframes pulse-loading {
             0%, 100% { opacity: 0.5; }
             50% { opacity: 0.8; }
-        }
-
-        /* Signal Log & Virtual Trades */
-        .two-col {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 24px;
-        }
-
-        .signal-list {
-            max-height: 320px;
-            overflow-y: auto;
-            padding-right: 4px;
-        }
-
-        .signal-item {
-            padding: 10px 12px;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            font-size: 12px;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-        }
-
-        .signal-item:hover {
-            background: rgba(255,255,255,0.03);
-            border-radius: 8px;
-        }
-
-        .signal-badge {
-            padding: 3px 7px;
-            border-radius: 5px;
-            font-size: 10px;
-            font-weight: 600;
-            flex-shrink: 0;
-            margin-top: 1px;
-        }
-
-        .badge-executed {
-            background: rgba(0,255,136,0.2);
-            color: #00ff88;
-            border: 1px solid rgba(0,255,136,0.3);
-        }
-
-        .badge-tgonly {
-            background: rgba(123,44,191,0.2);
-            color: #a855f7;
-            border: 1px solid rgba(123,44,191,0.3);
-        }
-
-        .badge-tp {
-            background: rgba(0,255,136,0.2);
-            color: #00ff88;
-            border: 1px solid rgba(0,255,136,0.3);
-        }
-
-        .badge-sl {
-            background: rgba(255,68,68,0.2);
-            color: #ff6b6b;
-            border: 1px solid rgba(255,68,68,0.3);
-        }
-
-        .badge-expired {
-            background: rgba(255,255,255,0.08);
-            color: rgba(255,255,255,0.5);
-            border: 1px solid rgba(255,255,255,0.15);
-        }
-
-        .badge-open {
-            background: rgba(0,212,255,0.15);
-            color: #00d4ff;
-            border: 1px solid rgba(0,212,255,0.3);
-        }
-
-        .signal-body {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .signal-symbol {
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 2px;
-        }
-
-        .signal-meta {
-            color: rgba(255,255,255,0.45);
-            font-size: 10px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .signal-time {
-            font-size: 10px;
-            color: rgba(255,255,255,0.3);
-            flex-shrink: 0;
-        }
-
-        .signal-dir-short { color: #ff6b6b; }
-        .signal-dir-long  { color: #00d4ff; }
-
-        .vt-pnl-positive { color: #00ff88; font-weight: 600; }
-        .vt-pnl-negative { color: #ff4444; font-weight: 600; }
-
-        /* Position card improvements */
-        .position-score {
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: rgba(255,255,255,0.08);
-            color: rgba(255,255,255,0.6);
-            margin-left: 4px;
-        }
-
-        .position-lev {
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: rgba(255,180,0,0.15);
-            color: #ffd700;
-        }
-
-        @media (max-width: 1200px) {
-            .two-col { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -632,8 +468,9 @@
                 <span class="pulse"></span>
                 ● Онлайн
             </div>
-            <div style="color: rgba(255,255,255,0.4); font-size: 12px;">
-                Обновление: 5 мин | Обновлен: <span id="last-update">--:--:--</span>
+            <div style="color: rgba(255,255,255,0.4); font-size: 12px; display:flex; align-items:center; gap:10px;">
+                <span>Обновление: 15мин | Обновлен: <span id="last-update">--:--:--</span></span>
+                <button onclick="cleanupPositions()" style="background:rgba(255,60,60,0.15);border:1px solid rgba(255,60,60,0.4);color:rgba(255,120,120,0.9);border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;" title="Удалить старые закрытые позиции из Redis">🗑️ Очистить позиции</button>
             </div>
         </div>
     </div>
@@ -653,9 +490,9 @@
                 <div class="stat-change neutral" id="win-rate-change">Сегодня: <span id="today-winrate">0</span>%</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Общий P&L</div>
+                <div class="stat-label">Общий P&L <span style="font-size:10px;opacity:0.5">(цена %)</span></div>
                 <div class="stat-value" id="total-pnl">-</div>
-                <div class="stat-change neutral" id="total-pnl-change">Сегодня: <span id="today-pnl">0</span></div>
+                <div class="stat-change neutral" style="font-size:11px;">С плечом: <span id="total-pnl-leveraged" style="font-weight:600">-</span></div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Активных позиций</div>
@@ -663,14 +500,14 @@
                 <div class="stat-change neutral">Оба бота</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">SHORT P&L</div>
+                <div class="stat-label">SHORT P&L <span style="font-size:10px;opacity:0.5">(цена %)</span></div>
                 <div class="stat-value" id="short-total-pnl">-</div>
-                <div class="stat-change neutral"><span id="short-trades-stat">0</span> сделок</div>
+                <div class="stat-change neutral" style="font-size:11px;"><span id="short-trades-stat">0</span> сд | С плечом: <span id="short-total-pnl-leveraged" style="font-weight:600">-</span></div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">LONG P&L</div>
+                <div class="stat-label">LONG P&L <span style="font-size:10px;opacity:0.5">(цена %)</span></div>
                 <div class="stat-value" id="long-total-pnl">-</div>
-                <div class="stat-change neutral"><span id="long-trades-stat">0</span> сделок</div>
+                <div class="stat-change neutral" style="font-size:11px;"><span id="long-trades-stat">0</span> сд | С плечом: <span id="long-total-pnl-leveraged" style="font-weight:600">-</span></div>
             </div>
         </div>
         
@@ -692,12 +529,12 @@
                         <div class="mini-value" id="short-winrate">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">P&L</div>
+                        <div class="mini-label">P&L цена%</div>
                         <div class="mini-value" id="short-pnl">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Спасено</div>
-                        <div class="mini-value" id="short-saved">-</div>
+                        <div class="mini-label">P&L ×плечо</div>
+                        <div class="mini-value" id="short-pnl-leveraged">-</div>
                     </div>
                 </div>
             </div>
@@ -718,28 +555,19 @@
                         <div class="mini-value" id="long-winrate">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">P&L</div>
+                        <div class="mini-label">P&L цена%</div>
                         <div class="mini-value" id="long-pnl">-</div>
                     </div>
                     <div class="mini-stat">
-                        <div class="mini-label">Спасено</div>
-                        <div class="mini-value" id="long-saved">-</div>
+                        <div class="mini-label">P&L ×плечо</div>
+                        <div class="mini-value" id="long-pnl-leveraged">-</div>
                     </div>
                 </div>
             </div>
             
             <!-- Active Positions -->
             <div class="section-card">
-                <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span>⚡ Текущие позиции (<span id="active-positions-count">0</span>)</span>
-                    <span style="font-size:11px;font-weight:400;opacity:0.8;">
-                        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ff4444;margin-right:4px;vertical-align:middle;"></span>SHORT
-                        &nbsp;
-                        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00d4ff;margin-right:4px;vertical-align:middle;"></span>LONG
-                        &nbsp;
-                        <span style="display:inline-block;padding:0 5px;border-radius:4px;background:rgba(255,200,0,0.15);color:#ffc800;border:1px solid rgba(255,200,0,0.3);font-size:10px;vertical-align:middle;">TG</span>=виртуальная
-                    </span>
-                </div>
+                <div class="section-title">⚡ Текущие позиции (<span id="active-positions-count">0</span>)</div>
                 <div id="active-positions-list" class="positions-scrollable">
                     <div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">
                         📊 Здесь отображаются все открытые позиции<br>
@@ -782,7 +610,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-
+            
             <!-- Recent LONG Trades -->
             <div class="section-card">
                 <div class="section-title">🟢 Недавние LONG позиции</div>
@@ -790,7 +618,7 @@
                     <div style="text-align: center; padding: 30px; color: rgba(255,255,255,0.3);">Загрузка...</div>
                 </div>
             </div>
-
+            
             <!-- Live Feed -->
             <div class="section-card">
                 <div class="section-title">🔔 Лента активности (в реальном времени)</div>
@@ -803,47 +631,6 @@
                     </div>
                 </div>
             </div>
-        </div>
-
-        <!-- Signal Log & Virtual Trades -->
-        <div class="two-col">
-
-            <!-- 📊 Signal Log — все сигналы (биржа + TG-only) -->
-            <div class="section-card">
-                <div class="section-title section-title-with-selector">
-                    <span>📊 Лог сигналов <span id="signal-log-count" style="font-size:11px; opacity:0.5; font-weight:400;"></span></span>
-                    <div style="display:flex;gap:6px;align-items:center;">
-                        <button class="period-btn active" id="sigbtn-both" onclick="setSigFilter('both')">Все</button>
-                        <button class="period-btn" id="sigbtn-executed" onclick="setSigFilter('executed')">✅ Биржа</button>
-                        <button class="period-btn" id="sigbtn-tgonly" onclick="setSigFilter('tgonly')">📡 TG</button>
-                    </div>
-                </div>
-                <div class="signal-list" id="signal-log-list">
-                    <div style="text-align:center;padding:40px;color:rgba(255,255,255,0.3);">
-                        📊 Все сигналы ботов — биржа и TG-only<br>
-                        <small>Загрузка...</small>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 🔍 Virtual Trades — исходы виртуальных сигналов -->
-            <div class="section-card">
-                <div class="section-title section-title-with-selector">
-                    <span>🔍 Виртуальный мониторинг <span id="vt-count" style="font-size:11px; opacity:0.5; font-weight:400;"></span></span>
-                    <div style="display:flex;gap:6px;align-items:center;">
-                        <button class="period-btn active" id="vtbtn-all" onclick="setVtFilter('all')">Все</button>
-                        <button class="period-btn" id="vtbtn-open" onclick="setVtFilter('open')">🟡 Открытые</button>
-                        <button class="period-btn" id="vtbtn-closed" onclick="setVtFilter('closed')">Закрытые</button>
-                    </div>
-                </div>
-                <div class="signal-list" id="vt-list">
-                    <div style="text-align:center;padding:40px;color:rgba(255,255,255,0.3);">
-                        🔍 TG-only сигналы — мониторинг TP/SL<br>
-                        <small>Загрузка...</small>
-                    </div>
-                </div>
-            </div>
-
         </div>
     </div>
     
@@ -923,6 +710,18 @@
             });
         }
         
+        async function cleanupPositions() {
+            if (!confirm('Удалить все старые positions:* ключи из Redis?\nЭто уберёт закрытые позиции с дашборда.')) return;
+            try {
+                const r = await fetch('/api/cleanup_positions', {method: 'POST'});
+                const d = await r.json();
+                alert(d.message || JSON.stringify(d));
+                location.reload();
+            } catch(e) {
+                alert('Ошибка: ' + e);
+            }
+        }
+
         // Format helpers
         function formatNumber(num) {
             if (num === undefined || num === null) return '-';
@@ -984,25 +783,69 @@
             }
         }
         
+        // Load all data
+        async function loadAllData() {
+            try {
+                // 1. Main Stats
+                const statsRes = await fetch('/api/stats');
+                const stats = await statsRes.json();
+                updateStats(stats);
+                
+                // 2. Chart Data + Stats for Win Distribution
+                const chartRes = await fetch('/api/chart_data');
+                const chartData = await chartRes.json();
+                // Pass both chart data and stats to updateCharts
+                updateCharts(chartData, stats);
+                
+                // 3. Trades
+                const tradesRes = await fetch('/api/trades');
+                const trades = await tradesRes.json();
+                updateTrades(trades);
+                
+                // 4. Active Positions
+                const posRes = await fetch('/api/positions?_=' + Date.now());
+                const positions = await posRes.json();
+                updatePositions(positions);
+                
+                // 5. Feed
+                const feedRes = await fetch('/api/feed');
+                const feed = await feedRes.json();
+                updateFeed(feed);
+                
+                // 6. Summary (Today/Yesterday/Week)
+                const summaryRes = await fetch('/api/summary');
+                const summary = await summaryRes.json();
+                updateSummary(summary);
+                
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                
+            } catch (e) {
+                console.error('Load error:', e);
+            }
+        }
+        
         function updateStats(data) {
             document.getElementById('total-trades').textContent = formatNumber(data.total_trades || 0);
             document.getElementById('win-rate').textContent = (data.win_rate || 0).toFixed(1) + '%';
             document.getElementById('total-pnl').innerHTML = formatPnL(data.total_pnl || 0);
+            document.getElementById('total-pnl-leveraged').innerHTML = formatPnL(data.total_pnl_leveraged || 0);
             document.getElementById('active-pos').textContent = formatNumber(data.active_positions || 0);
-            
+
             // Bot stats
             document.getElementById('short-trades').textContent = formatNumber(data.short_trades || 0);
             document.getElementById('short-winrate').textContent = (data.short_winrate || 0).toFixed(1) + '%';
             document.getElementById('short-pnl').innerHTML = formatPnL(data.short_pnl || 0);
-            document.getElementById('short-saved').textContent = formatNumber(data.micro_step_saves || 0);
+            document.getElementById('short-pnl-leveraged').innerHTML = formatPnL(data.short_pnl_leveraged || 0);
             document.getElementById('short-total-pnl').innerHTML = formatPnL(data.short_pnl || 0);
+            document.getElementById('short-total-pnl-leveraged').innerHTML = formatPnL(data.short_pnl_leveraged || 0);
             document.getElementById('short-trades-stat').textContent = data.short_trades || 0;
-            
+
             document.getElementById('long-trades').textContent = formatNumber(data.long_trades || 0);
             document.getElementById('long-winrate').textContent = (data.long_winrate || 0).toFixed(1) + '%';
             document.getElementById('long-pnl').innerHTML = formatPnL(data.long_pnl || 0);
-            document.getElementById('long-saved').textContent = '0';
+            document.getElementById('long-pnl-leveraged').innerHTML = formatPnL(data.long_pnl_leveraged || 0);
             document.getElementById('long-total-pnl').innerHTML = formatPnL(data.long_pnl || 0);
+            document.getElementById('long-total-pnl-leveraged').innerHTML = formatPnL(data.long_pnl_leveraged || 0);
             document.getElementById('long-trades-stat').textContent = data.long_trades || 0;
         }
         
@@ -1066,70 +909,42 @@
             const list = document.getElementById('active-positions-list');
             const countSpan = document.getElementById('active-positions-count');
             const activePosCard = document.getElementById('active-pos');
-
+            
             const count = data.positions ? data.positions.length : 0;
-
-            if (countSpan) countSpan.textContent = count;
-            if (activePosCard) activePosCard.textContent = count;
-
+            
+            // ✅ Обновляем счетчик в секции "Текущие позиции"
+            if (countSpan) {
+                countSpan.textContent = count;
+            }
+            
+            // ✅ Обновляем верхнюю карточку "Активных позиций"
+            if (activePosCard) {
+                activePosCard.textContent = count;
+            }
+            
             if (data.positions && data.positions.length > 0) {
-                // Сортируем: сначала SHORT (сгруппированы), потом LONG, внутри — по P&L (убыточные сверху)
-                const sorted = data.positions.sort((a, b) => {
-                    const aShort = (a.direction || '').toLowerCase() === 'short' ? 0 : 1;
-                    const bShort = (b.direction || '').toLowerCase() === 'short' ? 0 : 1;
-                    if (aShort !== bShort) return aShort - bShort;
-                    return (a.current_pnl || 0) - (b.current_pnl || 0);
-                });
-
+                // ✅ Сортируем: отрицательный P&L сверху (требуют внимания)
+                const sorted = data.positions.sort((a, b) => (a.current_pnl || 0) - (b.current_pnl || 0));
+                
                 list.innerHTML = sorted.map(p => {
-                    const isShort   = (p.direction || '').toLowerCase() === 'short';
-                    const dirClass  = isShort ? 'short' : 'long';
-                    const dirBadge  = isShort
-                        ? '<span class="dir-badge dir-badge-short">SHORT</span>'
-                        : '<span class="dir-badge dir-badge-long">LONG</span>';
-                    const virtBadge = p.source === 'virtual'
-                        ? '<span class="virt-badge">TG</span>'
-                        : '';
-                    const pnl       = p.current_pnl || 0;
-                    const pnlClass  = pnl >= 0 ? 'positive' : 'negative';
-                    const pnlSign   = pnl >= 0 ? '+' : '';
-                    const scoreHtml = p.score ? `<span class="position-score">⭐${p.score}</span>` : '';
-                    const levHtml   = p.leverage && p.leverage > 1 ? `<span class="position-lev">${p.leverage}x</span>` : '';
-                    const curPrice  = p.current_price ? `<span>Цена: $${Number(p.current_price).toPrecision(5)}</span>` : '';
-                    const tpVal     = p.tp != null ? `TP1: ${Number(p.tp).toFixed(1)}%` : 'TP1: —';
-                    const slVal     = p.sl != null ? `SL: ${Number(p.sl).toFixed(1)}%` : 'SL: —';
-                    const durMin    = p.duration_min != null ? `⏱${p.duration_min}м` : '';
-
-                    // TP пипсы: показываем какие TP уже взяты
-                    let tpPips = '';
-                    const takenArr = Array.isArray(p.taken_tps) ? p.taken_tps : [];
-                    const takenCount = typeof p.taken_tps === 'number' ? p.taken_tps : takenArr.length;
-                    const tpTotal = p.tp_total || 6;
-                    if (tpTotal > 0) {
-                        let pips = '';
-                        for (let i = 0; i < tpTotal; i++) {
-                            const hit = i < takenCount;
-                            pips += `<span class="tp-pip ${hit ? 'tp-pip-hit' : 'tp-pip-open'}" title="TP${i+1}"></span>`;
-                        }
-                        tpPips = `<span title="${takenCount}/${tpTotal} TP взято">${pips}</span>`;
-                    }
-
+                    const direction_emoji = p.direction === 'short' || p.direction === 'SHORT' ? '🔴' : '🟢';
+                    const direction_text = p.direction === 'short' || p.direction === 'SHORT' ? 'SHORT' : 'LONG';
                     return `
-                    <div class="position-item position-${dirClass}">
+                    <div class="position-item position-${p.direction}">
                         <div class="position-header">
-                            <span class="position-symbol">${p.symbol}${dirBadge}${virtBadge}${scoreHtml}${levHtml}</span>
-                            <span class="position-pnl ${pnlClass}">${pnlSign}${pnl.toFixed(2)}%</span>
+                            <span class="position-symbol">${direction_emoji} ${p.symbol} <small style="opacity: 0.7">(${direction_text})</small></span>
+                            <span class="position-pnl ${(p.current_pnl || 0) >= 0 ? 'positive' : 'negative'}">
+                                ${(p.current_pnl || 0) >= 0 ? '+' : ''}${(p.current_pnl || 0).toFixed(2)}%
+                            </span>
                         </div>
                         <div class="position-details">
                             <span>Вход: $${p.entry}</span>
-                            ${curPrice}
-                            <span>${tpVal}</span>
-                            <span>${slVal}</span>
-                            ${tpPips}
-                            <span>${durMin}</span>
+                            <span>TP: ${p.tp}%</span>
+                            <span>SL: ${p.sl}%</span>
+                            <span>${p.duration_min}м</span>
                         </div>
-                    </div>`;
-                }).join('');
+                    </div>
+                `}).join('');
             } else {
                 list.innerHTML = '<div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">📭 Нет активных позиций</div>';
             }
@@ -1177,207 +992,13 @@
             document.getElementById('today-winrate').textContent = summary.today?.winrate || 0;
             document.getElementById('today-pnl').textContent = (summary.today?.pnl || 0).toFixed(2) + '%';
         }
-
-        // ── Signal Log ─────────────────────────────────────────────────────────────
-        let _sigRaw = [];
-        let _sigFilter = 'both';
-
-        function setSigFilter(f) {
-            _sigFilter = f;
-            ['both','executed','tgonly'].forEach(k => {
-                document.getElementById('sigbtn-' + k)?.classList.toggle('active', k === f);
-            });
-            renderSignalLog();
-        }
-
-        function renderSignalLog() {
-            const list = document.getElementById('signal-log-list');
-            let items = _sigRaw;
-            if (_sigFilter === 'executed') items = _sigRaw.filter(s => s.executed);
-            else if (_sigFilter === 'tgonly')   items = _sigRaw.filter(s => !s.executed);
-
-            const countEl = document.getElementById('signal-log-count');
-            if (countEl) countEl.textContent = `(${items.length})`;
-
-            if (!items.length) {
-                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет сигналов</div>';
-                return;
-            }
-
-            list.innerHTML = items.map(s => {
-                const isShort  = (s.direction || s.signal_type || '').toLowerCase().includes('short');
-                const dirClass = isShort ? 'signal-dir-short' : 'signal-dir-long';
-                const dirLabel = isShort ? '🔴 S' : '🟢 L';
-                const badge    = s.executed
-                    ? '<span class="signal-badge badge-executed">✅ Биржа</span>'
-                    : '<span class="signal-badge badge-tgonly">📡 TG</span>';
-                const score  = s.score   ? `Скор: ${s.score}` : '';
-                const entry  = s.entry_price ? `$${Number(s.entry_price).toFixed(4)}` : '';
-                const skip   = s.skip_reason ? `<span style="color:#ffa500"> • ${s.skip_reason}</span>` : '';
-                const ts     = s.timestamp ? formatTimeAgo(s.timestamp * 1000) : '';
-                return `
-                <div class="signal-item">
-                    ${badge}
-                    <div class="signal-body">
-                        <div class="signal-symbol">
-                            <span class="${dirClass}">${dirLabel}</span> ${s.symbol || '?'}
-                            ${score ? `<span style="opacity:0.5;font-size:10px;margin-left:4px;">${score}</span>` : ''}
-                        </div>
-                        <div class="signal-meta">${entry}${skip}</div>
-                    </div>
-                    <div class="signal-time">${ts}</div>
-                </div>`;
-            }).join('');
-        }
-
-        async function loadSignalLog() {
-            try {
-                const res  = await fetch('/api/signal_log?limit=200');
-                const data = await res.json();
-                // Backend returns {short:[...], long:[...], stats:{...}}
-                const all = [...(data.short || []), ...(data.long || [])];
-                // Sort newest first by timestamp
-                all.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                _sigRaw = all;
-                renderSignalLog();
-            } catch (e) {
-                console.error('signal_log error:', e);
-            }
-        }
-
-        // ── Virtual Trades ─────────────────────────────────────────────────────────
-        let _vtRaw = [];
-        let _vtFilter = 'all';
-
-        function setVtFilter(f) {
-            _vtFilter = f;
-            ['all','open','closed'].forEach(k => {
-                document.getElementById('vtbtn-' + k)?.classList.toggle('active', k === f);
-            });
-            renderVirtualTrades();
-        }
-
-        function renderVirtualTrades() {
-            const list = document.getElementById('vt-list');
-            let items = _vtRaw;
-            if (_vtFilter === 'open')   items = _vtRaw.filter(v => v.outcome === 'open' || !v.outcome);
-            if (_vtFilter === 'closed') items = _vtRaw.filter(v => v.outcome && v.outcome !== 'open');
-
-            const countEl = document.getElementById('vt-count');
-            if (countEl) countEl.textContent = `(${items.length})`;
-
-            if (!items.length) {
-                list.innerHTML = '<div style="text-align:center;padding:30px;color:rgba(255,255,255,0.3);">Нет виртуальных позиций</div>';
-                return;
-            }
-
-            list.innerHTML = items.map(v => {
-                const isShort  = (v.direction || '').toLowerCase().includes('short');
-                const dirClass = isShort ? 'signal-dir-short' : 'signal-dir-long';
-                const dirLabel = isShort ? '🔴 S' : '🟢 L';
-
-                let outcomeBadge = '<span class="signal-badge badge-open">🟡 Открыта</span>';
-                const oc = (v.outcome || '').toLowerCase();
-                if      (oc === 'tp')      outcomeBadge = '<span class="signal-badge badge-tp">✅ TP</span>';
-                else if (oc === 'sl')      outcomeBadge = '<span class="signal-badge badge-sl">⛔ SL</span>';
-                else if (oc === 'expired') outcomeBadge = '<span class="signal-badge badge-expired">⏱ Истекла</span>';
-
-                const pnl     = v.pnl_pct;
-                let pnlHtml   = '';
-                if (pnl != null) {
-                    const cls = pnl >= 0 ? 'vt-pnl-positive' : 'vt-pnl-negative';
-                    pnlHtml = `<span class="${cls}">${pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}%</span>`;
-                }
-                const entry  = v.entry_price ? `Вход: $${Number(v.entry_price).toFixed(4)}` : '';
-                const score  = v.score ? `⭐${v.score}` : '';
-                const ts     = v.virtual_opened_at ? formatTimeAgo(v.virtual_opened_at * 1000) : '';
-
-                return `
-                <div class="signal-item">
-                    ${outcomeBadge}
-                    <div class="signal-body">
-                        <div class="signal-symbol">
-                            <span class="${dirClass}">${dirLabel}</span> ${v.symbol || '?'}
-                            ${score ? `<span style="opacity:0.5;font-size:10px;margin-left:4px;">${score}</span>` : ''}
-                            ${pnlHtml ? `<span style="margin-left:6px;">${pnlHtml}</span>` : ''}
-                        </div>
-                        <div class="signal-meta">${entry}</div>
-                    </div>
-                    <div class="signal-time">${ts}</div>
-                </div>`;
-            }).join('');
-        }
-
-        async function loadVirtualTrades() {
-            try {
-                const res  = await fetch('/api/virtual_trades?limit=200');
-                const data = await res.json();
-                // Backend returns {short:[...closed], long:[...closed],
-                //                  short_active:[...], long_active:[...], stats:{...}}
-                const closed = [...(data.short || []), ...(data.long || [])];
-                const open   = [...(data.short_active || []), ...(data.long_active || [])];
-                // open items have outcome="open", closed have outcome=tp/sl/expired
-                const all = [...open, ...closed];
-                all.sort((a, b) => (b.virtual_opened_at || b.timestamp || 0) - (a.virtual_opened_at || a.timestamp || 0));
-                _vtRaw = all;
-                renderVirtualTrades();
-            } catch (e) {
-                console.error('virtual_trades error:', e);
-            }
-        }
-
-        // ── Main Data Loader ───────────────────────────────────────────────────────
-        async function loadAllData() {
-            try {
-                // 1. Main Stats
-                const statsRes = await fetch('/api/stats');
-                const stats = await statsRes.json();
-                updateStats(stats);
-
-                // 2. Chart Data
-                const chartRes = await fetch('/api/chart_data');
-                const chartData = await chartRes.json();
-                updateCharts(chartData, stats);
-
-                // 3. Trades
-                const tradesRes = await fetch('/api/trades');
-                const trades = await tradesRes.json();
-                updateTrades(trades);
-
-                // 4. Active Positions
-                const posRes = await fetch('/api/positions?_=' + Date.now());
-                const positions = await posRes.json();
-                updatePositions(positions);
-
-                // 5. Feed
-                const feedRes = await fetch('/api/feed');
-                const feed = await feedRes.json();
-                updateFeed(feed);
-
-                // 6. Summary
-                const summaryRes = await fetch('/api/summary');
-                const summary = await summaryRes.json();
-                updateSummary(summary);
-
-                // 7. Signal Log
-                await loadSignalLog();
-
-                // 8. Virtual Trades
-                await loadVirtualTrades();
-
-                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-
-            } catch (e) {
-                console.error('Load error:', e);
-            }
-        }
-
+        
         // Init
         initCharts();
         loadAllData();
-
-        // Auto-refresh every 5 minutes
-        setInterval(loadAllData, 300000);
+        
+        // Auto-refresh every 30 minutes
+        setInterval(loadAllData, 900000);
     </script>
 </body>
 </html>

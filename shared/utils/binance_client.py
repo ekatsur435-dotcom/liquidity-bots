@@ -174,20 +174,14 @@ class BinanceFuturesClient:
     
     BYBIT_URL   = "https://api.bybit.com"
     BINANCE_URL = "https://fapi.binance.com"
-    CIRCUIT_BREAKER_DURATION = 120   # ✅ FIX: 2 минуты (было 1 час — убивало данные!)
-    CIRCUIT_BREAKER_THRESHOLD = 3    # 3 ошибки подряд = отключение
+    CIRCUIT_BREAKER_DURATION = 3600  # 1 час в секундах
+    CIRCUIT_BREAKER_THRESHOLD = 3     # 3 ошибки подряд = отключение
     
     def __init__(self, api_key=None, api_secret=None):
         self.api_key = api_key or os.getenv("BINANCE_API_KEY", "")
         self.session: Optional[aiohttp.ClientSession] = None
         self.last_request_time = 0.0
-        # ✅ FIX: 0.05→0.12s (было 20 req/сек → стало 8 req/сек)
-        # Bybit market data лимит ≈ 120 req/min = 2 req/сек per IP
-        # 0.12s даёт ~8 req/сек — с учётом burst-ов остаётся в лимите
-        self.min_request_interval = 0.12
-        # ✅ FIX: asyncio.Lock для _rate_limit — устраняет race condition
-        # Без Lock: 10+ корутин одновременно видят elapsed>interval → burst запросов
-        self._rate_lock: Optional[asyncio.Lock] = None  # создаётся в event loop
+        self.min_request_interval = 0.05
 
         use_binance_env  = os.getenv("USE_BINANCE", "false").lower()
         self._try_binance = use_binance_env == "true"
@@ -198,15 +192,8 @@ class BinanceFuturesClient:
         self._proxy_idx   = 0
         self._active_proxy: Optional[str] = None
         
-        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool, permanent: bool}
+        # 🆕 Circuit Breaker: endpoint -> {failures: int, last_failure: timestamp, open: bool}
         self._circuit_breaker: Dict[str, Dict] = {}
-        # ✅ FIX: Навсегда отключённые эндпоинты (постоянно 404, нет смысла пробовать)
-        self._permanently_disabled = {
-            "/futures/data/takerBuySellVolRatio",  # 404 на всех соединениях, OKX/klines — хороший фолбэк
-        }
-        for ep in self._permanently_disabled:
-            self._circuit_breaker[ep] = {"failures": 999, "last_failure": time.time(), "open": True, "permanent": True}
-            print(f"⚡ [Circuit Breaker] {ep}: permanently disabled (known dead endpoint)")
 
         print(f"🔧 Market client: {'Binance+proxy' if self._try_binance else 'Bybit'} mode")
     
@@ -216,9 +203,6 @@ class BinanceFuturesClient:
             return False
         cb = self._circuit_breaker[endpoint]
         if cb.get("open", False):
-            # ✅ FIX: Постоянно отключённые эндпоинты никогда не сбрасываются
-            if cb.get("permanent", False):
-                return True
             # Проверяем, не пора ли закрыть
             elapsed = time.time() - cb.get("last_failure", 0)
             if elapsed > self.CIRCUIT_BREAKER_DURATION:
@@ -239,9 +223,8 @@ class BinanceFuturesClient:
         cb["failures"] += 1
         cb["last_failure"] = time.time()
         
-        # ✅ FIX: 418 (rate limit) не открывает CB мгновенно — нужен threshold
-        # 404 = endpoint не существует → открываем сразу (смысла ретраить нет)
-        if status == 404 or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
+        # Открываем circuit если слишком много ошибок 404/418
+        if status in (404, 418) or cb["failures"] >= self.CIRCUIT_BREAKER_THRESHOLD:
             cb["open"] = True
             print(f"🔒 [Circuit Breaker] {endpoint}: OPENED ({cb['failures']} failures, status={status})")
     
@@ -264,15 +247,10 @@ class BinanceFuturesClient:
         return self.session
 
     async def _rate_limit(self):
-        # ✅ FIX: Lock устраняет race condition — только одна корутина за раз
-        # проходит проверку и обновляет last_request_time
-        if self._rate_lock is None:
-            self._rate_lock = asyncio.Lock()
-        async with self._rate_lock:
-            elapsed = time.time() - self.last_request_time
-            if elapsed < self.min_request_interval:
-                await asyncio.sleep(self.min_request_interval - elapsed)
-            self.last_request_time = time.time()
+        elapsed = time.time() - self.last_request_time
+        if elapsed < self.min_request_interval:
+            await asyncio.sleep(self.min_request_interval - elapsed)
+        self.last_request_time = time.time()
 
     async def close(self):
         # 🆕 FIX: Не закрываем сессию если это singleton и другие боты могут использовать
@@ -847,6 +825,7 @@ class BinanceFuturesClient:
         """
         Получить Long/Short Position Ratio для топ-трейдеров.
         >1.5 = топы в лонгах, <0.8 = топы в шортах.
+        Binance primary → Bybit account-ratio fallback.
         """
         await self._init_source()
         if self._use_binance:
@@ -855,7 +834,24 @@ class BinanceFuturesClient:
             if d and len(d) > 0:
                 long_pos = float(d[0].get("longPosition", 0))
                 short_pos = float(d[0].get("shortPosition", 0))
-                return long_pos / short_pos if short_pos > 0 else None
+                if short_pos > 0:
+                    return long_pos / short_pos
+        # Bybit fallback: /v5/market/account-ratio (general L/S, not top-trader specific)
+        try:
+            bybit_period = "1h" if period in ("1h", "4h") else "15min"
+            result = await self._bybit("/v5/market/account-ratio", {
+                "category": "linear", "symbol": symbol,
+                "period": bybit_period, "limit": 1
+            })
+            if result and isinstance(result, dict):
+                rows = result.get("list", [])
+                if rows:
+                    long_r = float(rows[0].get("buyRatio", 0))
+                    short_r = float(rows[0].get("sellRatio", 0))
+                    if short_r > 0:
+                        return long_r / short_r
+        except Exception:
+            pass
         return None
 
     # =========================================================================
@@ -1119,53 +1115,6 @@ class BinanceFuturesClient:
                 if low_24h > 0:
                     pct_from_low  = (float(price) - low_24h) / low_24h  * 100
 
-            # ── 24h Volume: 3 источника по приоритету ──────────────────────────
-            # 1) Из 1h свечей (самый надёжный — данные уже загружены)
-            vol_24h_from_klines = 0.0
-            if klines_1h and len(klines_1h) >= 24:
-                vol_24h_from_klines = sum(
-                    float(c.quote_volume if hasattr(c, 'quote_volume') else 0)
-                    for c in klines_1h[-24:]
-                )
-
-            # 2) Из Bybit ticker (turnover24h → "quoteVolume")
-            vol_24h_from_ticker = 0.0
-            if ticker and isinstance(ticker, dict):
-                vol_24h_from_ticker = (
-                    float(ticker.get("quoteVolume", 0))          # Bybit: turnover24h в USDT
-                    or float(ticker.get("volume", 0)) * float(price)  # Binance: base × price
-                )
-
-            # 3) OKX fallback — если оба выше дали 0
-            vol_24h_from_okx = 0.0
-            if vol_24h_from_klines < 1000 and vol_24h_from_ticker < 1000:
-                try:
-                    okx = get_okx_client()
-                    okx_ticker = await okx.get_ticker(symbol)
-                    if okx_ticker:
-                        vol_24h_from_okx = float(okx_ticker.get("volume_ccy_24h", 0))
-                except Exception:
-                    pass
-
-            # Берём максимальный ненулевой + логируем источник
-            if vol_24h_from_klines >= 1000:
-                volume_24h_final = vol_24h_from_klines
-                vol_src = "klines"
-            elif vol_24h_from_ticker >= 1000:
-                volume_24h_final = vol_24h_from_ticker
-                vol_src = "bybit_ticker"
-            elif vol_24h_from_okx >= 1000:
-                volume_24h_final = vol_24h_from_okx
-                vol_src = "okx"
-            else:
-                volume_24h_final = 0.0
-                vol_src = "none"
-            print(f"📊 [VOL-{symbol}] 24h=${volume_24h_final/1e6:.1f}M src={vol_src} "
-                  f"(klines={vol_24h_from_klines/1e6:.1f}M "
-                  f"ticker={vol_24h_from_ticker/1e6:.1f}M "
-                  f"okx={vol_24h_from_okx/1e6:.1f}M)")
-            # ── ─────────────────────────────────────────────────────────────────
-
             return MarketData(
                 symbol=symbol,
                 price=float(price),
@@ -1174,7 +1123,7 @@ class BinanceFuturesClient:
                 funding_accumulated=funding_acc,
                 price_change_24h=float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
                 price_change_1h=price_chg_1h,
-                volume_24h=volume_24h_final,
+                volume_24h=float(ticker.get("volume", 0)) * price if ticker else 0.0,
                 volume_change_24h=float(ticker.get("priceChangePercent", 0)) * 0.5 if ticker else 0.0,
                 open_interest=float(oi) if oi else 0.0,
                 oi_change_4d=oi_change,
