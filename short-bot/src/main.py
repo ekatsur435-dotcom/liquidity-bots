@@ -734,6 +734,7 @@ async def lifespan(app: FastAPI):
         print(f"⚠️ [STARTUP] Ошибка cleanup_zombies: {e}")
 
     asyncio.create_task(background_scanner())
+    asyncio.create_task(background_zombie_cleaner())
     asyncio.create_task(state.tracker.run())
 
     yield
@@ -2060,6 +2061,64 @@ async def background_scanner():
             except Exception as e:
                 print(f"Scanner error: {e}")
         await asyncio.sleep(Config.SCAN_INTERVAL)
+
+
+async def background_zombie_cleaner():
+    """Раз в час проверяет Redis на zombie-позиции и удаляет их с уведомлением в Telegram."""
+    ZOMBIE_INTERVAL = 3600  # 1 час
+    await asyncio.sleep(300)  # Первая проверка через 5 мин после старта
+    while state.is_running:
+        try:
+            if state.tracker and state.tracker.bingx:
+                print("🧹 [ZOMBIE-CLEANER] Запускаю плановую проверку zombie-позиций...")
+                redis_positions = state.redis.get_all_positions(Config.BOT_TYPE)
+                if not redis_positions:
+                    print("🧹 [ZOMBIE-CLEANER] Нет позиций в Redis — чисто")
+                    await asyncio.sleep(ZOMBIE_INTERVAL)
+                    continue
+
+                bingx_positions = await state.tracker.bingx.get_positions()
+                bingx_symbols = set()
+                if isinstance(bingx_positions, list):
+                    for pos in bingx_positions:
+                        sym = pos.get("symbol", "")
+                        if sym:
+                            bingx_symbols.add(sym.replace("-", ""))
+
+                removed = []
+                for symbol in list(redis_positions.keys()):
+                    sig = redis_positions.get(symbol, {})
+                    if not isinstance(sig, dict):
+                        continue
+                    # ✅ Проверяем ТОЛЬКО реальные биржевые позиции (с order_id)
+                    # Виртуальные (TG-only, лимит позиций, дневной стоп) — не трогаем
+                    if not sig.get("order_id"):
+                        print(f"[ZOMBIE-CLEANER] {symbol}: нет order_id → виртуальная, пропускаем")
+                        continue
+                    normalized = symbol.replace("-", "")
+                    on_exchange = any(b.replace("-", "") == normalized for b in bingx_symbols)
+                    if not on_exchange:
+                        entry = sig.get("entry_price", 0)
+                        opened = sig.get("timestamp", "?")[:16]
+                        order_id = sig.get("order_id", "?")
+                        state.redis.remove_position(Config.BOT_TYPE, symbol)
+                        removed.append(f"• {symbol} | вход ${entry} | ID: {order_id} | открыта {opened}")
+                        print(f"🗑️ [ZOMBIE-CLEANER] Удалена zombie: {symbol} order_id={order_id}")
+
+                if removed:
+                    msg = (
+                        "🧹 <b>ZOMBIE CLEANUP — SHORT BOT</b>\n\n"
+                        f"Удалено <b>{len(removed)}</b> ghost-позиций из Redis:\n"
+                        + "\n".join(removed)
+                        + "\n\n<i>Позиции были в Redis, но не на бирже.</i>"
+                    )
+                    await state.telegram.send_message(msg)
+                    print(f"🧹 [ZOMBIE-CLEANER] Удалено {len(removed)} zombie, уведомление отправлено")
+                else:
+                    print(f"🧹 [ZOMBIE-CLEANER] Все {len(redis_positions)} позиций актуальны — чисто")
+        except Exception as e:
+            print(f"🧹 [ZOMBIE-CLEANER] Ошибка: {e}")
+        await asyncio.sleep(ZOMBIE_INTERVAL)
 
 
 if __name__ == "__main__":
