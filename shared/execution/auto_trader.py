@@ -82,6 +82,7 @@ class AutoTrader:
         self.total_pnl    = 0.0
         self.win_count    = 0
         self.loss_count   = 0
+        self.be_count     = 0
         self.last_reset   = datetime.utcnow().date()
         self._last_open_ts = 0.0
 
@@ -776,6 +777,7 @@ class AutoTrader:
                 "total_pnl":      self.total_pnl,
                 "win_count":      self.win_count,
                 "loss_count":     self.loss_count,
+                "be_count":       self.be_count,
                 "mode":           "DEMO" if self.config.demo_mode else "REAL",
             }
         except Exception as e:
@@ -807,10 +809,12 @@ class AutoTrader:
 
     def record_trade_result(self, pnl_pct: float):
         """pnl_pct в % (напр. 1.5 = +1.5%). daily_pnl та же единица."""
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         self.total_pnl    += pnl_pct
         self.daily_pnl    += pnl_pct
         self.daily_trades += 1
-        if pnl_pct > 0: self.win_count  += 1
-        else:           self.loss_count += 1
+        if pnl_pct > 0:            self.win_count  += 1
+        elif pnl_pct < _BE_FLOOR:  self.loss_count += 1
+        else:                      self.be_count   += 1
         print(f"📊 Trade: {pnl_pct:+.2f}% | Day: {self.daily_pnl:+.2f}% | "
               f"Total trades: {self.daily_trades}")

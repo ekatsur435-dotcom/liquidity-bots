@@ -756,13 +756,15 @@ class PositionTracker:
 
             # Bot state (backward compat)
             try:
+                _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
                 state_data = self.redis.get_bot_state(self.bot_type) or {}
                 daily = state_data.get("daily_trades", {})
-                day   = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+                day   = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "be": 0, "pnl": 0.0})
                 day["trades"] += 1
                 day["pnl"]     = round(day["pnl"] + pnl_pct, 4)
-                if pnl_pct > 0: day["wins"]   += 1
-                else:           day["losses"] += 1
+                if pnl_pct > 0:             day["wins"]   = day.get("wins", 0)   + 1
+                elif pnl_pct < _BE_FLOOR:   day["losses"] = day.get("losses", 0) + 1
+                else:                       day["be"]     = day.get("be", 0)     + 1
                 daily[today] = day
                 if len(daily) > 30:
                     del daily[sorted(daily.keys())[0]]
@@ -773,12 +775,14 @@ class PositionTracker:
 
             # stats:daily:{date} (для /stats команды)
             try:
+                _BE_FLOOR = -0.1
                 day2 = self.redis.get_daily_stats(self.bot_type, today) or \
-                       {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+                       {"trades": 0, "wins": 0, "losses": 0, "be": 0, "pnl": 0.0}
                 day2["trades"] += 1
                 day2["pnl"]     = round(day2.get("pnl", 0.0) + pnl_pct, 4)
-                if pnl_pct > 0: day2["wins"]   = day2.get("wins", 0) + 1
-                else:           day2["losses"] = day2.get("losses", 0) + 1
+                if pnl_pct > 0:           day2["wins"]   = day2.get("wins", 0)   + 1
+                elif pnl_pct < _BE_FLOOR: day2["losses"] = day2.get("losses", 0) + 1
+                else:                     day2["be"]     = day2.get("be", 0)     + 1
                 self.redis.update_daily_stats(self.bot_type, today, day2)
             except Exception as e:
                 print(f"[PT] daily_stats: {e}")
