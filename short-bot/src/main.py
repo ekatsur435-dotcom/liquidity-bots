@@ -1324,7 +1324,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
 
         # ✅ BUG#1 FIX: base_score_bonus (EntryConfirmation + TBS) теперь применяется
         # ✅ OI-VEL FIX: oi_score_adj тоже применяется (раньше считался но выбрасывался!)
-        final_score = score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj + base_score_bonus + oi_score_adj
+        final_score = min(100, score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj + base_score_bonus + oi_score_adj)
         if base_score_bonus:
             print(f"✅ [ENTRY-CONF] {symbol}: bonus={base_score_bonus:+d} applied → final={final_score}")
         if oi_score_adj:

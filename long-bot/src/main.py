@@ -1269,8 +1269,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
               f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality} "
               f"tf={primary_tf} pats={_pat_names or 'none'}")
 
-        # Pre-filter: allow coins within 10pts of MIN_SCORE so realtime/Elliott bonuses can push them over
-        _pre_filter_min = max(0, Config.MIN_SCORE - 10)
+        # Pre-filter: отсекаем совсем слабые сигналы ДО тяжёлых L1-L8 фильтров
+        # oi_score_adj (OI velocity, до +15 pts) добавляется ПОСЛЕ pre-filter — учитываем это в пороге
+        _pre_filter_min = max(0, Config.MIN_SCORE - 25)  # было -10, расширено до -25 т.к. OI velocity +15 применяется позже
         if score_result.total_score < _pre_filter_min:
             print(f"🚫 [FILTER-LONG] {symbol}: score {score_result.total_score:.1f}% < pre-filter {_pre_filter_min} — слишком слабо")
             return None
