@@ -1261,6 +1261,32 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                 oi_weakness_short = price_down and oi_falling
                 if oi_weakness_short:
                     oi_score_adj -= 2.0
+
+                # ✅ OI VELOCITY — прокси для ликвидационных каскадов (SHORT версия)
+                # Резкий РОСТ OI = перелев лонгов = потенциальный каскад дампа = ШОРТ сигнал
+                # Резкое ПАДЕНИЕ OI = лонги уже ликвидированы = ПЛОХО для шорта (дно рядом)
+                if ois[0] > 0:
+                    oi_velocity = (ois[-1] - ois[0]) / ois[0] * 100  # % за 75 мин (5×15m)
+                    bar_changes = [(ois[i]-ois[i-1])/ois[i-1]*100 for i in range(1,len(ois)) if ois[i-1]>0]
+                    is_cascade  = len(bar_changes) >= 2 and bar_changes[-1] > bar_changes[-2] > 0
+                    if oi_velocity >= 3.0:
+                        _vel_adj = 15 if is_cascade else 12
+                        oi_score_adj += _vel_adj
+                        print(f"🧨 [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m ПЕРЕЛЕВ ЛОНГОВ {'🔥ускорение' if is_cascade else ''} +{_vel_adj}")
+                    elif oi_velocity >= 1.5:
+                        oi_score_adj += 8
+                        print(f"📈 [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m — быстрый рост OI +8")
+                    elif oi_velocity >= 0.5:
+                        oi_score_adj += 4
+                        print(f"📈 [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m — умеренный рост OI +4")
+                    elif oi_velocity <= -3.0:
+                        oi_score_adj -= 8  # Лонги уже ликвидированы — не шортить дно
+                        print(f"⚠️ [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m — каскад ликвидаций (дно?) -8")
+                    elif oi_velocity <= -1.0:
+                        oi_score_adj -= 4
+                        print(f"⚠️ [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m — OI падает -4")
+                    else:
+                        print(f"➡️ [OI-VEL-S] {symbol}: {oi_velocity:.2f}%/75m — нейтрально")
             else:
                 # Fallback: используем 4-дневный OI change из market data
                 _oi_4d = getattr(md, "oi_change_4d", 0) or 0
@@ -1297,9 +1323,12 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         ob_q_high     = ob_quality >= 65   # Высокое качество (снижено с 70)
 
         # ✅ BUG#1 FIX: base_score_bonus (EntryConfirmation + TBS) теперь применяется
-        final_score = score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj + base_score_bonus
+        # ✅ OI-VEL FIX: oi_score_adj тоже применяется (раньше считался но выбрасывался!)
+        final_score = score_result.total_score + rsi_30m_score_adj + rsi_4h_score_adj + base_score_bonus + oi_score_adj
         if base_score_bonus:
             print(f"✅ [ENTRY-CONF] {symbol}: bonus={base_score_bonus:+d} applied → final={final_score}")
+        if oi_score_adj:
+            print(f"🔵 [OI-ADJ] {symbol}: oi_score_adj={oi_score_adj:+.1f} → final={final_score:.0f}")
         print(f"📊 [MTF-RSI-SHORT] {symbol}: 4H={rsi_4h:.1f} 1H={md.rsi_1h or 0:.1f} 30m={rsi_30m:.1f}")
         if rsi_30m_score_adj != 0:
             print(f"[MTF] {symbol}: RSI30m={rsi_30m:.0f} adj={rsi_30m_score_adj:+d}")

@@ -1194,6 +1194,32 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                 oi_weakness_long = price_up and (oi_falling or vol_falling)
                 if oi_weakness_long:
                     oi_score_adj -= 2.0
+
+                # ✅ OI VELOCITY — прокси для ликвидационных каскадов (замена Binance Liq API)
+                # Резкое падение OI = принудительное закрытие лонгов = локальное дно = ЛОНГ сигнал
+                if ois[0] > 0:
+                    oi_velocity = (ois[-1] - ois[0]) / ois[0] * 100  # % за 75 мин (5×15m)
+                    # Ускорение = последний бар быстрее предыдущего
+                    bar_changes = [(ois[i]-ois[i-1])/ois[i-1]*100 for i in range(1,len(ois)) if ois[i-1]>0]
+                    is_cascade  = len(bar_changes) >= 2 and bar_changes[-1] < bar_changes[-2] < 0
+                    if oi_velocity <= -3.0:
+                        _vel_adj = 15 if is_cascade else 12
+                        oi_score_adj += _vel_adj
+                        print(f"🧨 [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m ЛИКВИДАЦИОННЫЙ КАСКАД {'🔥ускорение' if is_cascade else ''} +{_vel_adj}")
+                    elif oi_velocity <= -1.5:
+                        oi_score_adj += 8
+                        print(f"📉 [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m — быстрое закрытие лонгов +8")
+                    elif oi_velocity <= -0.5:
+                        oi_score_adj += 4
+                        print(f"📉 [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m — умеренное закрытие +4")
+                    elif oi_velocity >= 3.0:
+                        oi_score_adj += 6
+                        print(f"📈 [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m — быстрое накопление +6")
+                    elif oi_velocity >= 1.0:
+                        oi_score_adj += 3
+                        print(f"📈 [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m — накопление +3")
+                    else:
+                        print(f"➡️ [OI-VEL] {symbol}: {oi_velocity:.2f}%/75m — нейтрально")
         except Exception as e:
             print(f"OI Proxy error {symbol}: {e}")
 
@@ -1366,7 +1392,10 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
         reasons     = list(score_result.reasons)
         base_score_before_override = score_result.total_score  # Сохраняем базовый скор
-        final_score = min(100, score_result.total_score + max(0, base_score_bonus))  # ← БАЗОВЫЙ + БОНУСЫ от confirmation/TBS
+        # ✅ FIX: oi_score_adj теперь тоже применяется (раньше считался но выбрасывался!)
+        final_score = min(100, score_result.total_score + max(0, base_score_bonus) + oi_score_adj)
+        if oi_score_adj:
+            print(f"🔵 [OI-ADJ] {symbol}: oi_score_adj={oi_score_adj:+.1f} → final={final_score:.0f}")
         
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
