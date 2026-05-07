@@ -1394,7 +1394,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         reasons     = list(score_result.reasons)
         base_score_before_override = score_result.total_score  # Сохраняем базовый скор
         # ✅ FIX: oi_score_adj теперь тоже применяется (раньше считался но выбрасывался!)
-        final_score = min(100, score_result.total_score + max(0, base_score_bonus) + oi_score_adj)
+        # ✅ FIX2: base_score_bonus НЕ обрезается max(0,...) — иначе отрицательные RSI штрафы (rsi_4h_adj=-8)
+        # молча выбрасывались и перекупленный 4H LONG не получал штраф. Теперь как в short-bot.
+        final_score = min(100, score_result.total_score + base_score_bonus + oi_score_adj)
         if oi_score_adj:
             print(f"🔵 [OI-ADJ] {symbol}: oi_score_adj={oi_score_adj:+.1f} → final={final_score:.0f}")
         
