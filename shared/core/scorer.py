@@ -408,33 +408,45 @@ class LongScorer(BaseScorer):
         return ScoreComponent("L/S Ratio", score, 15, desc, long_ratio)
 
     def calculate_oi_component(self, oi_change_4d: float, price_change_4d: float) -> ScoreComponent:
+        # ✅ FIX LONG OI: OI растёт = смарт-мани накапливают = СИЛЬНЕЕ чем просто шорты закрываются
+        # Старая логика была перевёрнута: OI -15% давало +8, OI +15% давало только +5 (неверно!)
         score, reasons = 0, []
-        if oi_change_4d >= 15:   score += 5;  reasons.append(f"OI +{oi_change_4d:.1f}% — накопление")
-        elif oi_change_4d >= 5:  score += 3;  reasons.append(f"OI +{oi_change_4d:.1f}%")
-        elif oi_change_4d < -15: score += 8;  reasons.append(f"OI {oi_change_4d:.1f}% — массовое закрытие шортов")
-        elif oi_change_4d < -5:  score += 5;  reasons.append(f"OI {oi_change_4d:.1f}% — шорты выходят")
+        if oi_change_4d >= 20:   score += 8;  reasons.append(f"OI +{oi_change_4d:.1f}% — сильное накопление")
+        elif oi_change_4d >= 10: score += 6;  reasons.append(f"OI +{oi_change_4d:.1f}% — накопление")
+        elif oi_change_4d >= 5:  score += 4;  reasons.append(f"OI +{oi_change_4d:.1f}% — слабое накопление")
+        elif oi_change_4d < -15: score += 5;  reasons.append(f"OI {oi_change_4d:.1f}% — шорты закрываются")
+        elif oi_change_4d < -5:  score += 3;  reasons.append(f"OI {oi_change_4d:.1f}% — шорты выходят")
+        # Цена: перепроданность = бонус (хорошая точка входа в лонг)
         if price_change_4d <= -15: score += 7; reasons.append(f"Цена {price_change_4d:.1f}% за 4д — перепроданность")
         elif price_change_4d <= -8: score += 5; reasons.append(f"Цена {price_change_4d:.1f}% за 4д")
         elif price_change_4d <= -3: score += 2
-        elif price_change_4d >= 10: score += 0; reasons.append(f"Цена +{price_change_4d:.1f}% (перегрев)")
+        elif price_change_4d >= 15: score -= 2; reasons.append(f"Цена +{price_change_4d:.1f}% (перегрев, осторожно)")
         return ScoreComponent("OI", min(score, 15), 15, " | ".join(reasons) or "Нейтральный OI", oi_change_4d)
 
     def calculate_delta_component(self, hourly_deltas: List[float],
                                    price_trend: str) -> ScoreComponent:
+        # ✅ FIX LONG DELTA: добавлен "rising" тренд (импульс типа NIL/GRT)
+        # + пропорция вместо абсолютного числа (12ч окно вместо 7ч)
         score, reasons = 0, []
         if not hourly_deltas:
             return ScoreComponent("Delta", 0, 20, "Нет данных дельты", 0)
+        total_hours = len(hourly_deltas)
         pos_hours = sum(1 for d in hourly_deltas if d > 0)
-        if pos_hours >= 5: score += 8;  reasons.append(f"{pos_hours}ч положительной дельты")
-        elif pos_hours >= 4: score += 5
-        elif pos_hours >= 3: score += 4
-        elif pos_hours >= 2: score += 2
-        if price_trend == "falling" and pos_hours >= 3:
+        pos_ratio = pos_hours / total_hours if total_hours > 0 else 0
+        # Базовый балл по доле позитивных часов
+        if pos_ratio >= 0.75:  score += 8;  reasons.append(f"{pos_hours}/{total_hours}ч покупок — бычий поток")
+        elif pos_ratio >= 0.6: score += 5;  reasons.append(f"{pos_hours}/{total_hours}ч покупок")
+        elif pos_ratio >= 0.5: score += 3
+        elif pos_ratio >= 0.4: score += 1
+        # Дивергенция / тренд
+        if price_trend == "falling" and pos_ratio >= 0.5:
             score += 12; reasons.append("Бычья дивергенция (цена падает, дельта растёт)")
-        elif price_trend == "falling" and pos_hours >= 2:
-            score += 8; reasons.append("Слабая бычья дивергенция")
-        elif price_trend == "sideways" and pos_hours >= 4:
-            score += 6; reasons.append("Накопление в боковике")
+        elif price_trend == "falling" and pos_ratio >= 0.33:
+            score += 7; reasons.append("Слабая бычья дивергенция")
+        elif price_trend == "rising" and pos_ratio >= 0.6:
+            score += 8; reasons.append("Бычий импульс — покупки подтверждают рост")  # NIL/GRT тип
+        elif price_trend == "sideways" and pos_ratio >= 0.6:
+            score += 5; reasons.append("Накопление в боковике")
         return ScoreComponent("Delta", min(score, 20), 20, " | ".join(reasons) or "Нейтральная дельта",
                               sum(hourly_deltas))
 
