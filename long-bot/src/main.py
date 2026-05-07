@@ -1053,7 +1053,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                         "pattern": "LIQUIDITY_SWEEP",
                         "best_pattern": "LIQUIDITY_SWEEP",  # Для telegram
                         "indicators": {"SMC": "Sweep+TBS", "Confirmation": f"Score:{confirmation['score']}"},
-                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {}
+                        "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {},
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "status": "active", "taken_tps": [],
+                        # ✅ BUG FIX: sweep path тоже должен передавать quote_volume_24h
+                        "quote_volume_24h": getattr(md, "quote_volume_24h", 0),
                     }
                 else:
                     print(f"⚠️ [v2.9] {symbol}: Sweep найден но не подтверждён")
@@ -1462,7 +1466,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             
             # 🎯 ИДЕАЛЬНЫЕ ВХОДЫ (Волна 4 и C) — бонус и снижение минимума
             if wave_result.ideal_entry:
-                wave_boost = 10 if wave_result.confidence > 0.75 else 5
+                wave_boost = 10 if wave_result.confidence > 0.75 else 7  # was 5
                 final_score += wave_boost
                 elliott_min_score = max(50, Config.MIN_SCORE - 15)  # Снижаем минимум
                 reasons.append(f"🌊 Elliott Wave {wave_result.wave} (ideal) +{wave_boost}")
@@ -1781,6 +1785,8 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
             } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
+            # ✅ BUG FIX: передаём quote_volume_24h в сигнал, чтобы scan_market() не обращался к md напрямую
+            "quote_volume_24h": getattr(md, "quote_volume_24h", 0),
         }
     except Exception as e:
         import traceback
@@ -1881,7 +1887,8 @@ async def scan_market():
             state.redis.save_signal(Config.BOT_TYPE, symbol, signal)
 
             # 🆕 STRICT: Проверка объема перед входом
-            quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
+            # ✅ BUG FIX: md недоступен здесь (он локальный в scan_symbol), берём из signal
+            quote_volume = signal.get("quote_volume_24h", 0)
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
                 continue

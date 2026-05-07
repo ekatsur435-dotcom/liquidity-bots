@@ -1128,6 +1128,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                         "zones": sweep.get("zones", {}) if isinstance(sweep, dict) else {},
                         "timestamp": datetime.utcnow().isoformat(),
                         "status": "active", "taken_tps": [],
+                        # ✅ BUG#5 FIX: sweep path тоже должен передавать quote_volume_24h
+                        "quote_volume_24h": getattr(md, "quote_volume_24h", 0),
                     }
                 else:
                     # Sweep есть но не подтверждён — логируем но пропускаем
@@ -1807,6 +1809,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             } if symbol_profile else None,
             "timestamp": datetime.utcnow().isoformat(),
             "status": "active", "taken_tps": [],
+            # ✅ BUG#5 FIX: передаём quote_volume_24h в сигнал, чтобы scan_market() не обращался к md напрямую
+            "quote_volume_24h": getattr(md, "quote_volume_24h", 0),
         }
     except Exception as e:
         import traceback
@@ -1916,7 +1920,8 @@ async def scan_market():
             tf_for_execution = True  # Разрешаем всем ТФ
 
             # 🆕 STRICT: Проверка объема перед входом
-            quote_volume = md.quote_volume_24h if hasattr(md, 'quote_volume_24h') else 0
+            # ✅ BUG#5 FIX: md недоступен здесь (он локальный в scan_symbol), берём из signal
+            quote_volume = signal.get("quote_volume_24h", 0)
             if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
                 continue
