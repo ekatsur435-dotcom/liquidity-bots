@@ -1,5 +1,11 @@
 """
-Dual Scoring System: ShortScorer + LongScorer  v2.7
+Dual Scoring System: ShortScorer + LongScorer  v2.8
+
+ИЗМЕНЕНИЯ v2.8:
+  ✅ Liquidation component УДАЛЁН — Binance API заблокирован географически,
+     OKX только своя биржа, Coinglass платный. Компонент всегда возвращал 0/15.
+     Вместо него: OI Velocity в main.py как прокси для каскадов ликвидаций.
+  ✅ max_possible теперь 115 (было 130) — Liquidation убран из суммы
 
 ИЗМЕНЕНИЯ v2.7:
   ✅ Новые паттерны добавлены в calculate_pattern_component:
@@ -16,12 +22,6 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 from datetime import datetime
-
-# 🆕 Liquidation zones support
-try:
-    from .liquidation_detector import LiquidationAnalysis
-except ImportError:
-    LiquidationAnalysis = None
 
 
 class Direction(Enum):
@@ -166,49 +166,6 @@ class BaseScorer:
             return -3, f"Высокая волатильность ATR={atr_pct:.1f}% -3"
         return 0, ""
 
-    def calculate_liquidation_component(
-        self, 
-        liq_analysis: Optional[LiquidationAnalysis]
-    ) -> ScoreComponent:
-        """
-        🆕 Бонус/штраф от магнитов ликвидации.
-        
-        LONG: +15 если магнит выше на 2-8%, -10 если магнит ниже <1.5%
-        SHORT: +15 если магнит ниже на 2-8%, -10 если магнит выше <1.5%
-        """
-        if not liq_analysis or not liq_analysis.has_targets:
-            return ScoreComponent("Liquidation", 0, 15, "Нет данных")
-        
-        direction_str = "long" if self.direction == Direction.LONG else "short"
-        bonus = liq_analysis.get_score_bonus(direction_str)
-        
-        reasons = []
-        if bonus > 0:
-            if direction_str == "long" and liq_analysis.nearest_above:
-                dist = abs(liq_analysis.nearest_above.distance_pct)
-                reasons.append(f"🧲 Магнит +{dist:.1f}% — цель для TP")
-            elif direction_str == "short" and liq_analysis.nearest_below:
-                dist = abs(liq_analysis.nearest_below.distance_pct)
-                reasons.append(f"🧲 Магнит -{dist:.1f}% — цель для TP")
-        elif bonus < 0:
-            if direction_str == "long" and liq_analysis.nearest_below:
-                dist = abs(liq_analysis.nearest_below.distance_pct)
-                reasons.append(f"⚠️ Магнит -{dist:.1f}% близко — риск стопа")
-            elif direction_str == "short" and liq_analysis.nearest_above:
-                dist = abs(liq_analysis.nearest_above.distance_pct)
-                reasons.append(f"⚠️ Магнит +{dist:.1f}% близко — риск стопа")
-        else:
-            reasons.append("🎯 Магниты в нейтральной зоне")
-        
-        return ScoreComponent(
-            "Liquidation", 
-            bonus, 
-            15, 
-            " | ".join(reasons),
-            liq_analysis.long_liq_dominance if liq_analysis else None
-        )
-
-
 class ShortScorer(BaseScorer):
 
     def __init__(self, min_score: int = 60):  # ✅ FIX: 60 (было 65)
@@ -300,13 +257,13 @@ class ShortScorer(BaseScorer):
                         hourly_deltas, price_trend, patterns,
                         volume_spike_ratio: float = 1.0,
                         atr_14_pct: float = 0.5,
-                        liq_analysis=None,
+                        liq_analysis=None,  # оставлен для обратной совместимости, не используется
                         mtf_rsi_bonus: int = 0,
                         mtf_rsi_reason: str = "") -> ScoreResult:
         """
         Расчёт скора для SHORT входа.
 
-        liq_analysis: LiquidationAnalysis — магниты ликвидации (OKX/Coinglass)
+        liq_analysis: устарел — Liquidation component удалён (v2.8), параметр игнорируется
         mtf_rsi_bonus: MTF RSI конфлюенс (30m+1h+4h): для SHORT — оверкупленность
         mtf_rsi_reason: описание MTF сигнала для логов
         """
@@ -318,10 +275,8 @@ class ShortScorer(BaseScorer):
         components.append(self.calculate_delta_component(hourly_deltas, price_trend))
         pat_comp, pat_names = self.calculate_pattern_component(patterns)
         components.append(pat_comp)
-
-        # ✅ WIRE: Ликвидационные магниты подключены к скору (+/-15 pts)
-        liq_comp = self.calculate_liquidation_component(liq_analysis)
-        components.append(liq_comp)
+        # NOTE: Liquidation component удалён в v2.8 — API недоступен (Binance заблокирован,
+        # OKX только своя биржа, Coinglass платный). OI Velocity в main.py как прокси.
 
         total = sum(c.score for c in components)
         max_p = sum(c.max_score for c in components)
@@ -348,7 +303,6 @@ class ShortScorer(BaseScorer):
         if components[3].score >= 10: reasons.append("Лонги перегружены (OI растёт)")
         if components[4].score >= 10: reasons.append("Медвежья дивергенция")
         if components[5].score >= 20: reasons.append(f"Сильный паттерн: {pat_names[0] if pat_names else 'N/A'}")
-        if liq_comp.score > 0:        reasons.append(f"🧲 Liq магнит: {liq_comp.description}")
         if vs_reason:                 reasons.append(vs_reason)
         if atr_reason:                reasons.append(atr_reason)
         if mtf_rsi_reason:            reasons.append(mtf_rsi_reason)
@@ -470,7 +424,7 @@ class LongScorer(BaseScorer):
                         atr_14_pct: float = 0.5,
                         symbol_change_1h: float = 0.0,
                         btc_change_1h: float = 0.0,
-                        liq_analysis=None,
+                        liq_analysis=None,  # оставлен для обратной совместимости, не используется
                         mtf_rsi_bonus: int = 0,
                         mtf_rsi_reason: str = "") -> ScoreResult:
         """
@@ -478,7 +432,7 @@ class LongScorer(BaseScorer):
 
         symbol_change_1h: изменение самого альта за 1ч (%)
         btc_change_1h: изменение BTC за 1ч (%)
-        liq_analysis: LiquidationAnalysis — магниты ликвидации (OKX/Coinglass)
+        liq_analysis: устарел — Liquidation component удалён (v2.8), параметр игнорируется
         mtf_rsi_bonus: бонус/штраф от MTF RSI конфлюенса (30m+1h+4h)
         mtf_rsi_reason: описание MTF сигнала для логов
         """
@@ -490,10 +444,8 @@ class LongScorer(BaseScorer):
         components.append(self.calculate_delta_component(hourly_deltas, price_trend))
         pat_comp, pat_names = self.calculate_pattern_component(patterns)
         components.append(pat_comp)
-
-        # ✅ WIRE: Ликвидационные магниты подключены к скору (+/-15 pts)
-        liq_comp = self.calculate_liquidation_component(liq_analysis)
-        components.append(liq_comp)
+        # NOTE: Liquidation component удалён в v2.8 — API недоступен (Binance заблокирован,
+        # OKX только своя биржа, Coinglass платный). OI Velocity в main.py как прокси.
 
         total = sum(c.score for c in components)
         max_p = sum(c.max_score for c in components)
@@ -527,7 +479,6 @@ class LongScorer(BaseScorer):
         if components[3].score >= 10: reasons.append("Шорты закрываются (OI падает)")
         if components[4].score >= 10: reasons.append("Бычья дивергенция")
         if components[5].score >= 20: reasons.append(f"Сильный паттерн: {pat_names[0] if pat_names else 'N/A'}")
-        if liq_comp.score > 0:        reasons.append(f"🧲 Лiq магнит: {liq_comp.description}")
         if vs_reason:                 reasons.append(vs_reason)
         if atr_reason:                reasons.append(atr_reason)
         if decoupling_reason:         reasons.append(decoupling_reason)
