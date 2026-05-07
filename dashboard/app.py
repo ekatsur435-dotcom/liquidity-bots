@@ -406,6 +406,10 @@ def api_positions():
                                 debug_info["skipped_status"] += 1
                                 continue  # Пропускаем неактивные позиции
 
+                            # ✅ FIX: определяем тип позиции — биржевая или виртуальная
+                            has_order_id = bool(pos.get("order_id"))
+                            pos_type = "exchange" if has_order_id else "virtual"
+
                             positions.append({
                                 "symbol": symbol_normalized,  # Возвращаем нормализованный символ
                                 "direction": prefix,
@@ -414,7 +418,9 @@ def api_positions():
                                 "tp": pos.get("take_profit", pos.get("tp", 0)),
                                 "sl": pos.get("stop_loss", pos.get("sl", 0)),
                                 "duration_min": pos.get("duration_min", 0),
-                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0))
+                                "taken_tps": pos.get("partial_exits", pos.get("taken_tps", 0)),
+                                "order_id": pos.get("order_id"),
+                                "pos_type": pos_type,  # "exchange" | "virtual"
                             })
                         except Exception as e:
                             print(f"[API] Error parsing position {key}: {e}")

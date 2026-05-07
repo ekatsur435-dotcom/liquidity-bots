@@ -1040,10 +1040,15 @@
                 list.innerHTML = sorted.map(p => {
                     const direction_emoji = p.direction === 'short' || p.direction === 'SHORT' ? '🔴' : '🟢';
                     const direction_text = p.direction === 'short' || p.direction === 'SHORT' ? 'SHORT' : 'LONG';
+                    // ✅ FIX: показываем тип позиции — биржевая (с order_id) или виртуальная
+                    const isExchange = p.pos_type === 'exchange' || p.order_id;
+                    const typeTag = isExchange
+                        ? `<span style="background:#00d48822;color:#00d488;border:1px solid #00d48844;border-radius:3px;font-size:10px;padding:1px 5px;margin-left:4px">📡 БИРЖА</span>`
+                        : `<span style="background:#ff990022;color:#ff9900;border:1px solid #ff990044;border-radius:3px;font-size:10px;padding:1px 5px;margin-left:4px">🔵 Redis</span>`;
                     return `
                     <div class="position-item position-${p.direction}">
                         <div class="position-header">
-                            <span class="position-symbol">${direction_emoji} ${p.symbol} <small style="opacity: 0.7">(${direction_text})</small></span>
+                            <span class="position-symbol">${direction_emoji} ${p.symbol} <small style="opacity: 0.7">(${direction_text})</small>${typeTag}</span>
                             <span class="position-pnl ${(p.current_pnl || 0) >= 0 ? 'positive' : 'negative'}">
                                 ${(p.current_pnl || 0) >= 0 ? '+' : ''}${(p.current_pnl || 0).toFixed(2)}%
                             </span>
