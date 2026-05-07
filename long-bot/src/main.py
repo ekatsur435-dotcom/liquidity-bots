@@ -1142,9 +1142,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         # Применяем RSI корректировки к базовому бонусу
         base_score_bonus = base_score_bonus + rsi_30m_adj + rsi_4h_adj
 
-        hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 7)
-        price_trend   = state.pattern_detector._get_price_trend(ohlcv_30m)
-        patterns      = state.pattern_detector.detect_all(ohlcv_30m, hourly_deltas, md)
+        # ✅ FIX LONG#1: используем ohlcv_primary (уже переключённый symbol profiler'ом ТФ: 15m/1h/30m)
+        # Раньше всегда ohlcv_30m → паттерны никогда не находились при переключении на 15m/1h → 0/30 pts
+        hourly_deltas = await state.binance.get_hourly_volume_profile(symbol, 12)  # 12ч вместо 7 — лучше тренд
+        price_trend   = state.pattern_detector._get_price_trend(ohlcv_primary)     # ← был ohlcv_30m
+        patterns      = state.pattern_detector.detect_all(ohlcv_primary, hourly_deltas, md)  # ← был ohlcv_30m
         p4d           = await _get_price_change_4d(symbol, md.price_change_24h * 4)
 
         # ── OI Proxy (LONG специфика) ─────────────────────────────────────────
@@ -1234,10 +1236,12 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
         
-        # ✅ FIX v7: Детальные логи score breakdown
+        # ✅ FIX v7: Детальные логи score breakdown + паттерны
+        _pat_names = [p.name for p in patterns] if patterns else []
         print(f"📊 [SCORE] {symbol}: total={score_result.total_score:.1f}% valid={score_result.is_valid} "
               f"rsi={getattr(md,'rsi_1h',0):.0f} fund={getattr(md,'funding_rate',0):.3f}% "
-              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality}")
+              f"oi4d={getattr(md,'oi_change_4d',0):.1f}% ob_q={ob_quality} "
+              f"tf={primary_tf} pats={_pat_names or 'none'}")
 
         # Pre-filter: allow coins within 10pts of MIN_SCORE so realtime/Elliott bonuses can push them over
         _pre_filter_min = max(0, Config.MIN_SCORE - 10)
