@@ -951,14 +951,15 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         rsi_current = md.rsi_1h or 0
         _rsi_tracker.update(symbol, rsi_current)
 
-        # ✅ Multi-TF загрузка: 15m + 30m + 1h + 2h + 4h (фокус на 2h/4h по бэктесту)
-        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)  # Увеличили до 200
+        # ✅ Multi-TF загрузка: 1d + 15m + 30m + 1h + 2h + 4h
+        ohlcv_1d_task  = state.binance.get_klines(symbol, "1d",  3)   # PDH/PDL (3 дня)
+        ohlcv_15m_task = state.binance.get_klines(symbol, "15m", 200)
         ohlcv_30m_task = state.binance.get_klines(symbol, "30m", 50)
-        ohlcv_1h_task = state.binance.get_klines(symbol, "1h", 30)
-        ohlcv_2h_task = state.binance.get_klines(symbol, "2h", 20)
-        ohlcv_4h_task = state.binance.get_klines(symbol, "4h", 22)
-        ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
-            ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
+        ohlcv_1h_task  = state.binance.get_klines(symbol, "1h",  30)
+        ohlcv_2h_task  = state.binance.get_klines(symbol, "2h",  20)
+        ohlcv_4h_task  = state.binance.get_klines(symbol, "4h",  22)
+        ohlcv_1d, ohlcv_15m, ohlcv_30m, ohlcv_1h, ohlcv_2h, ohlcv_4h = await asyncio.gather(
+            ohlcv_1d_task, ohlcv_15m_task, ohlcv_30m_task, ohlcv_1h_task, ohlcv_2h_task, ohlcv_4h_task
         )
 
         # 🆕 NEW: Сохраняем свечи в Candle History Manager для точного анализа
@@ -1039,38 +1040,90 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         # =========================================================================
         # ✅ v2.9: ORDER BLOCK DETECTOR — институциональные зоны
         # =========================================================================
-        ob_data = None
+        # =========================================================================
+        # ✅ v3.1: ORDER BLOCK DETECTOR — MTF: 4H → 1H → primary (Fix #3)
+        # 4H OB самый сильный (институциональный), 1H — средний, primary — слабый
+        # =========================================================================
+        ob_data   = None
         ob_result = None
+        ob_quality_4h = 0
         try:
             current_price = md.price
-            ob_result = detect_order_blocks(
-                ohlcv_primary, 
-                direction="short",  # Для SHORT бота ищем bearish OB
-                current_price=current_price
-            )
-            
-            if ob_result and ob_result.bearish_ob:
-                ob = ob_result.bearish_ob
-                if ob.quality >= 60 and ob.freshness.value in ["fresh", "medium"]:
-                    ob_data = format_ob_for_signal(ob)
-                    print(f"🎯 [v2.9] {symbol}: OB detected @ ${ob.price_optimal:.6f} (Q:{ob.quality}, {ob.freshness.value})")
+
+            # Приоритет 1: OB на 4H (самый сильный — институциональный уровень)
+            if ohlcv_4h and len(ohlcv_4h) >= 20:
+                ob_result_4h = detect_order_blocks(ohlcv_4h, direction="short", current_price=current_price)
+                if ob_result_4h and ob_result_4h.bearish_ob:
+                    ob_4h = ob_result_4h.bearish_ob
+                    ob_quality_4h = ob_4h.quality
+                    if ob_4h.quality >= 55 and ob_4h.freshness.value in ["fresh", "medium"]:
+                        ob_result = ob_result_4h
+                        ob_data   = format_ob_for_signal(ob_4h)
+                        print(f"🏦 [OB-4H-SHORT] {symbol}: bearish OB @ ${ob_4h.price_optimal:.6g} "
+                              f"Q:{ob_4h.quality} {ob_4h.freshness.value} ← институциональный!")
+                    else:
+                        print(f"📊 [OB-4H-SHORT] {symbol}: OB Q:{ob_4h.quality} {ob_4h.freshness.value} — не хватает качества")
+                else:
+                    print(f"📊 [OB-4H-SHORT] {symbol}: bearish OB на 4H не найден")
+
+            # Приоритет 2: OB на 1H (если нет качественного 4H OB)
+            if ob_data is None and ohlcv_1h and len(ohlcv_1h) >= 20:
+                ob_result_1h = detect_order_blocks(ohlcv_1h, direction="short", current_price=current_price)
+                if ob_result_1h and ob_result_1h.bearish_ob:
+                    ob_1h = ob_result_1h.bearish_ob
+                    if ob_1h.quality >= 60 and ob_1h.freshness.value in ["fresh", "medium"]:
+                        ob_result = ob_result_1h
+                        ob_data   = format_ob_for_signal(ob_1h)
+                        print(f"⏱️ [OB-1H-SHORT] {symbol}: bearish OB @ ${ob_1h.price_optimal:.6g} "
+                              f"Q:{ob_1h.quality} {ob_1h.freshness.value}")
+                    else:
+                        print(f"📊 [OB-1H-SHORT] {symbol}: OB Q:{ob_1h.quality} {ob_1h.freshness.value} — не хватает качества")
+                else:
+                    print(f"📊 [OB-1H-SHORT] {symbol}: bearish OB на 1H не найден")
+
+            # Приоритет 3: OB на primary TF (fallback)
+            if ob_data is None:
+                ob_result_p = detect_order_blocks(ohlcv_primary, direction="short", current_price=current_price)
+                if ob_result_p and ob_result_p.bearish_ob:
+                    ob_p = ob_result_p.bearish_ob
+                    if ob_p.quality >= 65 and ob_p.freshness.value in ["fresh", "medium"]:
+                        ob_result = ob_result_p
+                        ob_data   = format_ob_for_signal(ob_p)
+                        print(f"📍 [OB-PRI-SHORT] {symbol}: bearish OB @ ${ob_p.price_optimal:.6g} "
+                              f"Q:{ob_p.quality} TF={primary_tf}")
+                    else:
+                        print(f"📊 [OB-PRI-SHORT] {symbol}: OB Q:{ob_p.quality} {ob_p.freshness.value} — ниже порога")
+                else:
+                    print(f"📊 [OB-PRI-SHORT] {symbol}: bearish OB на {primary_tf} не найден")
+
         except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: OB detection error: {e}")
+            print(f"⚠️ [OB-MTF-SHORT] {symbol}: ошибка OB: {e}")
 
         # =========================================================================
-        # ✅ v2.9: TBS (Test Before Strike) — ретест зоны сопротивления/поддержки
+        # ✅ v3.0: CRT уровни + TBS multi-TF + AMD v2.0
         # =========================================================================
+        from core.crt_levels import build_crt
+        from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus
         tbs_found = False
-        tbs_zone = None
+        tbs_zone  = None
+        tbs       = None
+        _crt      = None
+        _extra_reasons: list = []   # Block 4: AMD+TBS confluence reasons (appended after scorer)
         try:
-            from core.tbs_detector import detect_tbs_entry
-            tbs = detect_tbs_entry(ohlcv_primary, direction="short")
+            _crt = build_crt(ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h)
+            tbs = detect_tbs_entry(ohlcv_primary, direction="short",
+                                   ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h)
             if tbs and tbs["found"]:
                 tbs_found = True
-                tbs_zone = tbs['zone']
-                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs_zone:.4f}")
-        except Exception as e:
-            pass  # TBS не критичен
+                tbs_zone  = tbs["zone"]
+                print(f"🎯 [TBS-SHORT] {symbol}: TBS {tbs['tf']} зона=${tbs_zone:.6g} "
+                      f"CRT={tbs['crt_level']:.6g} conf={tbs['confidence']}% +{tbs['bonus']}")
+            else:
+                _p = _crt.primary() if _crt else None
+                _lvl = f"CRT=[{_p.low:.6g}–{_p.high:.6g}] EQ={_p.eq:.6g}" if (_p and _p.is_valid) else "нет CRT"
+                print(f"📊 [TBS-SHORT] {symbol}: TBS не найден | {_lvl}")
+        except Exception as _e:
+            print(f"⚠️ [TBS-SHORT] {symbol}: ошибка CRT/TBS: {_e}")
 
         # =========================================================================
         # ✅ v2.9: ENTRY CONFIRMATION SYSTEM (мульти-ТФ + объём + ATR + уровни)
@@ -1162,14 +1215,52 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"⚠️ [v2.9] {symbol}: Ошибка EntryConfirmation: {e}")
             base_score_bonus = 0  # При ошибке продолжаем без бонуса
         
-        # ✅ v2.9: TBS (Test Before Strike) — ретест Order Block
+        # ✅ v3.0: AMD v2.0 (CRT позиция + биржевые данные)
+        # ✅ Block 4: TBS + AMD конфлюенс (мульти-ТФ)
+        _amd_phase_str = "unknown"
         try:
-            tbs = detect_tbs_entry(ohlcv_primary, direction="short")
-            if tbs and tbs["found"]:
-                print(f"🎯 [v2.9] {symbol}: TBS DETECTED! Ретест зоны ${tbs['zone']:.4f}")
-                base_score_bonus += 15  # +15 за TBS (усилено для слабых рынков)
-        except Exception as e:
-            print(f"⚠️ [v2.9] {symbol}: TBS error: {e}")
+            if state.amd_detector and _crt:
+                _amd_res2 = state.amd_detector.analyze_with_crt(
+                    crt=_crt,
+                    current_price=md.price,
+                    oi_change_4d=getattr(md, "oi_change_4d", 0.0),
+                    funding_rate=getattr(md, "funding_rate", 0.0),
+                    long_ratio=getattr(md, "long_ratio", 50.0),
+                    direction="short",
+                )
+                _amd_phase_str = _amd_res2.phase.value
+
+                # Детальный лог AMD фазы
+                print(f"🏗️ [AMD-SHORT] {symbol}: Фаза={_amd_phase_str.upper()} "
+                      f"conf={_amd_res2.confidence:.0f}% align={_amd_res2.crt_alignment}/9 "
+                      f"ready={_amd_res2.is_ready_for_move} TF={_amd_res2.tf_phases} "
+                      f"OI={_amd_res2.oi_confirms} Fund={_amd_res2.funding_confirms} LS={_amd_res2.ls_confirms}")
+                for _r in _amd_res2.reasons:
+                    print(f"   📎 {_r}")
+
+                # Block 4: TBS + AMD конфлюенс (матрица бонусов)
+                tbs_dict = ({"found": True, "bonus": tbs["bonus"], "tf": tbs["tf"]}
+                            if tbs_found and tbs else {})
+                _conf_bonus, _conf_reasons = amd_tbs_confluence_bonus(
+                    _amd_phase_str, tbs_dict, "short")
+
+                if _conf_bonus != 0:
+                    base_score_bonus += _conf_bonus
+                    _extra_reasons.extend(_conf_reasons)
+                    for r in _conf_reasons:
+                        print(f"   🔥 [CONF4-SHORT] {r}")
+                else:
+                    print(f"   ℹ️ [CONF4-SHORT] {symbol}: конфлюенс нейтральный (фаза={_amd_phase_str}, TBS={tbs_found})")
+            elif tbs_found and tbs:
+                _tbs_b = tbs.get("bonus", 12)
+                base_score_bonus += _tbs_b
+                _extra_reasons.append(f"🎯 TBS {tbs['tf']} (без AMD) +{_tbs_b}")
+                print(f"   ℹ️ [CONF4-SHORT] {symbol}: нет AMD → TBS бонус +{_tbs_b}")
+        except Exception as _e:
+            print(f"⚠️ [AMD-SHORT] {symbol}: ошибка AMD/конфлюенс: {_e}")
+            if tbs_found and tbs:
+                _tbs_b = tbs.get("bonus", 12)
+                base_score_bonus += _tbs_b
 
         # ✅ RSI 30m — информационный контекст (НЕ блокер!)
         # В даунтренде RSI 30m < 25 — это ПОДТВЕРЖДЕНИЕ падения, а не повод блокировать
@@ -1344,7 +1435,102 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         # ✅ BUG#3 FIX: записываем base_score до override-бонусов (SMC/Z/Delta)
         base_score_before_override = final_score
 
-        reasons     = list(score_result.reasons)
+        reasons = list(score_result.reasons)
+        # Block 4: добавляем AMD+TBS конфлюенс причины в сигнал
+        if _extra_reasons:
+            reasons.extend(_extra_reasons)
+
+        # =========================================================================
+        # Block 5: PDH/PDL — Previous Day High/Low (ключевые ICT уровни)
+        # =========================================================================
+        try:
+            if ohlcv_1d and len(ohlcv_1d) >= 2:
+                _yd = ohlcv_1d[-2]  # вчерашняя свеча
+                _pdh = float(getattr(_yd, "high",  0) or (_yd[1] if isinstance(_yd, (list, tuple)) else 0))
+                _pdl = float(getattr(_yd, "low",   0) or (_yd[2] if isinstance(_yd, (list, tuple)) else 0))
+                _price = md.price
+                if _pdh > 0 and _pdl > 0 and _price > 0:
+                    _pct_to_pdh = (_pdh - _price) / _price * 100   # >0 = ниже PDH (не пробит)
+                    _pct_to_pdl = (_price - _pdl) / _price * 100   # >0 = выше PDL
+
+                    # SHORT: цена у PDH или только пробила (отличный шорт вход)
+                    if -0.3 <= _pct_to_pdh <= 0.8:  # цена в 0-0.8% ниже PDH или чуть выше
+                        _pdh_bonus = 8
+                        # Конфлюенс с CRT High
+                        _crt_prim = _crt.primary() if _crt else None
+                        if _crt_prim and _crt_prim.is_valid:
+                            _crt_dist = abs(_pdh - _crt_prim.high) / _pdh * 100
+                            if _crt_dist < 1.0:
+                                _pdh_bonus = 13
+                                reasons.append(f"🔑 PDH+CRT конфлюенс ${_pdh:.6g} (SHORT) +13")
+                                print(f"🔑 [PDH-SHORT] {symbol}: PDH=${_pdh:.6g} ≈ CRT High={_crt_prim.high:.6g} "
+                                      f"(dist={_crt_dist:.2f}%) — двойной уровень! +13")
+                            else:
+                                reasons.append(f"🔑 PDH уровень ${_pdh:.6g} ({_pct_to_pdh:+.2f}%) +8")
+                                print(f"🔑 [PDH-SHORT] {symbol}: цена у PDH=${_pdh:.6g} ({_pct_to_pdh:+.2f}%) +8")
+                        else:
+                            reasons.append(f"🔑 PDH уровень ${_pdh:.6g} ({_pct_to_pdh:+.2f}%) +8")
+                            print(f"🔑 [PDH-SHORT] {symbol}: цена у PDH=${_pdh:.6g} ({_pct_to_pdh:+.2f}%) +8")
+                        final_score = min(100, final_score + _pdh_bonus)
+                    else:
+                        print(f"📊 [PDH-SHORT] {symbol}: PDH=${_pdh:.6g} PDL=${_pdl:.6g} | "
+                              f"dist_pdh={_pct_to_pdh:+.2f}% dist_pdl={_pct_to_pdl:+.2f}% — нейтрально")
+                else:
+                    print(f"⚠️ [PDH-SHORT] {symbol}: нет 1D данных для PDH/PDL")
+        except Exception as _e:
+            print(f"⚠️ [PDH-SHORT] {symbol}: ошибка PDH/PDL: {_e}")
+
+        # =========================================================================
+        # Block 6: Психологические уровни (Round Levels)
+        # =========================================================================
+        try:
+            _price = md.price
+            if _price > 0:
+                # Определяем шаги для уровней в зависимости от размера цены
+                if _price >= 10000:
+                    _key_step, _maj_step, _min_step = 1000, 500, 100
+                elif _price >= 1000:
+                    _key_step, _maj_step, _min_step = 100,  50,  10
+                elif _price >= 100:
+                    _key_step, _maj_step, _min_step = 10,   5,   1
+                elif _price >= 10:
+                    _key_step, _maj_step, _min_step = 1,    0.5, 0.1
+                elif _price >= 1:
+                    _key_step, _maj_step, _min_step = 0.1,  0.05, 0.01
+                else:
+                    _key_step, _maj_step, _min_step = 0.01, 0.005, 0.001
+
+                def _nearest_round(p, step):
+                    import math
+                    return round(round(p / step) * step, 10)
+
+                _near_key = _nearest_round(_price, _key_step)
+                _near_maj = _nearest_round(_price, _maj_step)
+                _near_min = _nearest_round(_price, _min_step)
+
+                _dist_key = abs(_price - _near_key) / _price * 100
+                _dist_maj = abs(_price - _near_maj) / _price * 100
+
+                _rl_bonus = 0
+                _rl_msg   = ""
+
+                # SHORT: цена ВЫШЕ или ТОЧНО НА круглом уровне = сопротивление
+                if _dist_key < 0.3 and _price >= _near_key:
+                    _rl_bonus = 4; _rl_msg = f"ключевой ${_near_key:.6g}"
+                elif _dist_key < 0.5 and _price >= _near_key:
+                    _rl_bonus = 3; _rl_msg = f"ключевой ${_near_key:.6g}"
+                elif _dist_maj < 0.5 and _price >= _near_maj:
+                    _rl_bonus = 2; _rl_msg = f"мажорный ${_near_maj:.6g}"
+
+                if _rl_bonus:
+                    final_score = min(100, final_score + _rl_bonus)
+                    reasons.append(f"🔢 Round level {_rl_msg} +{_rl_bonus}")
+                    print(f"🔢 [ROUND-SHORT] {symbol}: {_rl_msg} dist={_dist_key:.3f}% +{_rl_bonus}")
+                else:
+                    print(f"📊 [ROUND-SHORT] {symbol}: ${_price:.6g} | ключ=${_near_key:.6g}(±{_dist_key:.3f}%) "
+                          f"мажор=${_near_maj:.6g}(±{_dist_maj:.3f}%) — нейтрально")
+        except Exception as _e:
+            print(f"⚠️ [ROUND-SHORT] {symbol}: ошибка round levels: {_e}")
 
         # 🆕 NEW: Market Data Integrator — полный рыночный контекст
         market_context_adjustment = 0
@@ -1498,48 +1684,6 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         except Exception as e:
             print(f"🌊 [ELLIOTT-ERROR-SHORT] {symbol}: {e}")
             elliott_data = {"error": str(e)}
-
-        # 🏗️ AMD PHASE (Accumulation/Manipulation/Distribution)
-        try:
-            def _candle_dict(c):
-                if isinstance(c, dict):
-                    return c
-                return {
-                    "high": float(getattr(c, "high", 0) or 0),
-                    "low":  float(getattr(c, "low",  0) or 0),
-                    "close": float(getattr(c, "close", 0) or 0),
-                    "volume": float(getattr(c, "volume", 0) or 0),
-                }
-            _amd_candles = [_candle_dict(c) for c in ohlcv_primary[-30:]]
-            if len(_amd_candles) >= 20:
-                _amd_res = state.amd_detector.analyze(
-                    candles=_amd_candles,
-                    cvd_pressure=None,
-                    current_price=md.price
-                )
-                _amd_phase = _amd_res.phase.value
-                if _amd_res.phase.value == "distribution" and _amd_res.confidence >= 60:
-                    _amd_boost = 6
-                    final_score += _amd_boost
-                    reasons.append(f"🏗️ AMD Распределение (conf={_amd_res.confidence:.0f}%) +{_amd_boost}")
-                    print(f"🏗️ [AMD-SHORT] {symbol}: Фаза=РАСПРЕДЕЛЕНИЕ conf={_amd_res.confidence:.0f}% → +{_amd_boost}")
-                elif _amd_res.phase.value == "manipulation" and _amd_res.expected_direction == "down":
-                    _amd_boost = 8
-                    final_score += _amd_boost
-                    reasons.append(f"🎯 AMD Манипуляция↓ (EQH sweep) +{_amd_boost}")
-                    print(f"🎯 [AMD-SHORT] {symbol}: Фаза=МАНИПУЛЯЦИЯ вниз → +{_amd_boost}")
-                elif _amd_res.phase.value == "decline":
-                    final_score += 3
-                    reasons.append("📉 AMD Падение (decline) +3")
-                    print(f"📉 [AMD-SHORT] {symbol}: Фаза=ПАДЕНИЕ")
-                elif _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 65:
-                    # Накопление противоречит SHORT — снижаем скор
-                    final_score -= 5
-                    print(f"⚠️ [AMD-SHORT] {symbol}: Фаза=НАКОПЛЕНИЕ (против SHORT) -5")
-                else:
-                    print(f"📊 [AMD-SHORT] {symbol}: Фаза={_amd_phase} conf={_amd_res.confidence:.0f}%")
-        except Exception as _e:
-            print(f"🏗️ [AMD-ERROR-SHORT] {symbol}: {_e}")
 
         # =========================================================================
         # 🛡️ F1-F5 SMART FILTERS: Защита от плохих шортов
@@ -1754,11 +1898,43 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         if (stop_loss - price) / price < min_sl_dist:
             stop_loss = price * (1 + Config.SL_BUFFER / 100)
 
-        # TP НИЖЕ входа для SHORT
-        take_profits = [
-            (round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
-            for i, tp in enumerate(tp_levels)
-        ]
+        # TP НИЖЕ входа для SHORT — Block 3: CRT EQ/Low как приоритетные таргеты
+        try:
+            _crt_tp = _crt if '_crt' in locals() and _crt else None
+            _primary_tp = _crt_tp.primary() if _crt_tp else None
+            if _primary_tp and _primary_tp.is_valid and _primary_tp.eq > 0:
+                _eq   = _primary_tp.eq
+                _clow = _primary_tp.low
+                # EQ должен быть ниже цены входа (для SHORT), и не слишком далеко (макс 25%)
+                if _eq < price and (_eq / price) > 0.75:
+                    _eq_pct  = round((price - _eq)  / price * 100, 2)
+                    _low_pct = round((price - _clow) / price * 100, 2) if _clow < price else None
+                    if _low_pct and _low_pct > 0.5:
+                        # TP1=CRT EQ, TP2=CRT Low, TP3+=стандартные
+                        _std_tps = [(round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+                                    for i, tp in enumerate(tp_levels)]
+                        take_profits = [
+                            (round(_eq,   8), 35),
+                            (round(_clow, 8), 30),
+                        ] + [(p, max(5, w - 10)) for p, w in _std_tps[2:4]]
+                        print(f"🎯 [CRT-TP-SHORT] {symbol}: TP1=EQ {_eq:.6g} (-{_eq_pct:.1f}%), "
+                              f"TP2=Low {_clow:.6g} (-{_low_pct:.1f}%)")
+                    else:
+                        # Только EQ доступен
+                        _std_tps = [(round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+                                    for i, tp in enumerate(tp_levels)]
+                        take_profits = [(round(_eq, 8), 40)] + [(p, max(5, w - 5)) for p, w in _std_tps[1:4]]
+                        print(f"🎯 [CRT-TP-SHORT] {symbol}: TP1=EQ {_eq:.6g} (-{_eq_pct:.1f}%)")
+                else:
+                    take_profits = [(round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+                                    for i, tp in enumerate(tp_levels)]
+            else:
+                take_profits = [(round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+                                for i, tp in enumerate(tp_levels)]
+        except Exception as _tp_e:
+            take_profits = [(round(price * (1 - tp / 100), 8), tp_weights[i] if i < len(tp_weights) else 15)
+                            for i, tp in enumerate(tp_levels)]
+            print(f"⚠️ [CRT-TP-SHORT] {symbol}: fallback TPs: {_tp_e}")
 
         sl_pct = round((stop_loss - price) / price * 100, 2)
         
