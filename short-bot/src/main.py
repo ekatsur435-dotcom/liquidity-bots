@@ -1557,14 +1557,20 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         _price_short = md.price
 
         # F1: RSI 4H вырос > 5 пунктов за 3 бара И > 50 → восстановление, шорт запрещён
+        # ✅ FIX v2.9: ИСКЛЮЧЕНИЕ — если RSI 4H уже >= 78, это НЕ восстановление, а ДИСТРИБУЦИЯ
+        # Пример: RSI 4H 83→91 — экстремальная перекупленность, ЛУЧШАЯ точка для шорта (XAGUSDT, XAUTUSDT тип)
         try:
             if ohlcv_4h and len(ohlcv_4h) >= 22:
                 _cl4 = [c.close for c in ohlcv_4h]
                 _rsi4_now  = _rsi_w(_cl4[-17:])
                 _rsi4_3ago = _rsi_w(_cl4[-20:-3])
                 if (_rsi4_now - _rsi4_3ago) > 5.0 and _rsi4_now > 50:
-                    print(f"🚫 [F1-RSI4H-RISING] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} (+{_rsi4_now-_rsi4_3ago:.1f}) + >50 → восстановление, шорт запрещён")
-                    return None
+                    if _rsi4_now >= 78:
+                        # Экстремальная перекупленность — восстановление тут невозможно, это Distribution
+                        print(f"⚠️ [F1-EXTREME-OB] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} ≥ 78 — ДИСТРИБУЦИЯ, не восстановление → шорт разрешён")
+                    else:
+                        print(f"🚫 [F1-RSI4H-RISING] {symbol}: RSI 4H {_rsi4_3ago:.1f}→{_rsi4_now:.1f} (+{_rsi4_now-_rsi4_3ago:.1f}) + >50 → восстановление, шорт запрещён")
+                        return None
         except Exception as _fe:
             print(f"[F1] {symbol}: {_fe}")
 
@@ -1608,14 +1614,21 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             print(f"[F4] {symbol}: {_fe}")
 
         # F5: RSI 1H вырос > 8 пунктов за 2 бара + RSI > 55 → бычий импульс, ждём пика
+        # ✅ FIX v2.9: ИСКЛЮЧЕНИЕ — если RSI 1H уже >= 75, импульс ЗАВЕРШЁН — это уже пик, шорт разрешён
+        # Пример: RSI 1H 48→57 (+9) → ждём пика ✅ правильно
+        #         RSI 1H 73→82 (+9) → это И ЕСТЬ пик, шорт нужен ✅ разрешаем
         try:
             if ohlcv_1h and len(ohlcv_1h) >= 19:
                 _cl1b = [c.close for c in ohlcv_1h]
                 _rsi1_now  = _rsi_w(_cl1b[-15:])
                 _rsi1_2ago = _rsi_w(_cl1b[-17:-2])
                 if (_rsi1_now - _rsi1_2ago) > 8.0 and _rsi1_now > 55:
-                    print(f"🚫 [F5-RSI1H-MOMENTUM] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} (+{_rsi1_now-_rsi1_2ago:.1f}) за 2 бара → бычий импульс, ждём пика")
-                    return None
+                    if _rsi1_now >= 75:
+                        # RSI уже в зоне перекупленности — импульс достиг пика, шорт валиден
+                        print(f"⚠️ [F5-PEAK-OB] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} ≥ 75 — пик импульса, шорт разрешён")
+                    else:
+                        print(f"🚫 [F5-RSI1H-MOMENTUM] {symbol}: RSI 1H {_rsi1_2ago:.1f}→{_rsi1_now:.1f} (+{_rsi1_now-_rsi1_2ago:.1f}) за 2 бара → бычий импульс, ждём пика")
+                        return None
         except Exception as _fe:
             print(f"[F5] {symbol}: {_fe}")
         # =========================================================================
