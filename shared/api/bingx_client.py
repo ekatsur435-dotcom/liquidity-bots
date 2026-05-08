@@ -86,12 +86,9 @@ class BingXClient:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[int] = None
         self._time_offset: int = 0   # ✅ FIX: server time offset
-        # ✅ RATE LIMITING: минимум 500ms между запросами (избегаем 109429)
+        # ✅ RATE LIMITING: минимум 300ms между запросами (избегаем 109429)
         self._last_request_time: float = 0
-        self._rate_limit_delay: float = 0.5  # 500ms (was 300ms)
-        # 🆕 Семафор для предотвращения параллельных запросов к klines
-        import asyncio
-        self._klines_semaphore = asyncio.Semaphore(3)  # Макс 3 параллельных запроса
+        self._rate_limit_delay: float = 0.3  # 300ms
         print(f"🚀 BingX Client ({'DEMO' if self.demo else 'REAL'})")
 
     async def _get_session(self):
@@ -139,8 +136,8 @@ class BingXClient:
             await asyncio.sleep(wait)
         self._last_request_time = time.time()
 
-    async def _execute_request(self, method, endpoint, params=None, body=None, signed=True):
-        """Выполняет один HTTP запрос к BingX."""
+    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
+        await self._rate_limit()  # ✅ RATE LIMITING: ждём перед каждым запросом
         try:
             session  = await self._get_session()
             all_p    = {}
@@ -148,7 +145,7 @@ class BingXClient:
             if body:   all_p.update(body)
             if signed:
                 all_p["timestamp"] = self._get_timestamp()
-                all_p["recvWindow"] = 10000
+                all_p["recvWindow"] = 10000   # ✅ FIX: 10s окно (было не задано)
                 raw_qs = self._build_raw_qs(all_p)
                 full_url = f"{self.base_url}{endpoint}?{raw_qs}&signature={self._sign(raw_qs)}"
             else:
@@ -162,17 +159,6 @@ class BingXClient:
             self.last_error = str(e)
             print(f"❌ [BingX] {method} {endpoint}: {e}")
             return None
-
-    async def _make_request(self, method, endpoint, params=None, body=None, signed=True):
-        await self._rate_limit()
-        result = await self._execute_request(method, endpoint, params, body, signed)
-        # Retry once on timestamp mismatch — _sync_server_time() already called inside _parse_response
-        if self.last_error_code == 109400:
-            print(f"   🔄 [BingX] 109400 timestamp sync done → retry {endpoint}")
-            await asyncio.sleep(0.3)
-            await self._rate_limit()
-            result = await self._execute_request(method, endpoint, params, body, signed)
-        return result
 
     async def _parse_response(self, response, endpoint=""):
         text = await response.text()
@@ -291,15 +277,8 @@ class BingXClient:
         return round(price, info.get("price_precision", 4))
 
     def _normalize_symbol(self, symbol: str) -> str:
-        """Нормализует символ для BingX API (добавляет дефис)."""
-        # Убираем существующие дефисы/подчёркивания
-        symbol = symbol.replace('-', '').replace('_', '').upper()
-        # Добавляем дефис перед USDT или USDC
-        if symbol.endswith('USDT') and '-' not in symbol:
-            symbol = symbol[:-4] + '-USDT'
-        elif symbol.endswith('USDC') and '-' not in symbol:
-            symbol = symbol[:-4] + '-USDC'
-        return symbol
+        """Нормализует символ для BingX API (убирает дефисы)."""
+        return symbol.replace('-', '').replace('_', '')
 
     def _format_symbol_for_positions(self, symbol: str) -> str:
         """
@@ -654,32 +633,30 @@ class BingXClient:
         Returns:
             List[Dict]: [{'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, 'time': int}, ...]
         """
-        # 🆕 Семафор: ограничиваем параллельные запросы к klines
-        async with self._klines_semaphore:
-            try:
-                symbol_api = self._normalize_symbol(symbol)
-                result = await self._make_request(
-                    "GET", "/openApi/swap/v3/quote/klines",
-                    params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
-                )
-                
-                if result and result.get("code") == 0:
-                    data = result.get("data", [])
-                    klines = []
-                    for item in data:
-                        klines.append({
-                            'time': item[0],      # Open time
-                            'open': float(item[1]),
-                            'high': float(item[2]),
-                            'low': float(item[3]),
-                            'close': float(item[4]),
-                            'volume': float(item[5])
-                        })
-                    return klines
-                return []
-            except Exception as e:
-                print(f"⚠️  get_klines {symbol}: {e}")
-                return []
+        try:
+            symbol_api = self._normalize_symbol(symbol)
+            result = await self._make_request(
+                "GET", "/openApi/swap/v3/quote/klines",
+                params={"symbol": symbol_api, "interval": interval, "limit": str(limit)}
+            )
+            
+            if result and result.get("code") == 0:
+                data = result.get("data", [])
+                klines = []
+                for item in data:
+                    klines.append({
+                        'time': item[0],      # Open time
+                        'open': float(item[1]),
+                        'high': float(item[2]),
+                        'low': float(item[3]),
+                        'close': float(item[4]),
+                        'volume': float(item[5])
+                    })
+                return klines
+            return []
+        except Exception as e:
+            print(f"⚠️  get_klines {symbol}: {e}")
+            return []
 
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
         """
