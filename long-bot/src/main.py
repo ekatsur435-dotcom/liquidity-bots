@@ -873,6 +873,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
+        _sideways_warning = False  # ✅ FIX v2: инициализируем флаг боковика
         print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
         print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
@@ -916,6 +917,11 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     except Exception as e:
                         print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 return None
+            # ✅ FIX v2: Боковик — ставим флаг, проверим после ob_quality
+            _sideways_warning = any("боковик" in w.lower() or "sideways" in w.lower() or "range" in w.lower()
+                                    for w in ctx.warnings)
+            if _sideways_warning:
+                print(f"⚠️ [CTX-LONG] {symbol}: Боковик — отложенная проверка OB/TBS перед входом")
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
 
@@ -1370,6 +1376,14 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality    = (ob_result.bullish_ob.quality if ob_result and ob_result.bullish_ob else 0)
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
+
+        # ✅ FIX v2: Боковик-фильтр — блокируем LONG в боковике без сильного OB
+        _sideways_warning = locals().get("_sideways_warning", False)
+        if _sideways_warning:
+            if not ob_q_high:  # Нужен OB >= 70 в боковике
+                print(f"🚫 [CTX-SIDEWAYS-BLOCK] {symbol}: Боковик + OB={ob_quality} < 70 → LONG заблокирован")
+                return None
+            print(f"⚠️ [CTX-LONG] {symbol}: Боковик, но OB={ob_quality} ≥ 70 — проходим")
         
         # ✅ FIX v7: Детальные логи score breakdown + паттерны
         _pat_names = [p.name for p in patterns] if patterns else []
@@ -1768,7 +1782,19 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     current_price=md.price
                 )
                 _amd_phase = _amd_res.phase.value
-                if _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 60:
+                # ✅ FIX v2: Hard block для фаз противоречащих LONG
+                if _amd_res.phase.value == "distribution" and _amd_res.confidence >= 60:
+                    print(f"🚫 [AMD-BLOCK-LONG] {symbol}: Фаза=DISTRIBUTION conf={_amd_res.confidence:.0f}% — LONG заблокирован (цена в фазе распределения)")
+                    return None
+                elif _amd_res.phase.value == "equilibrium" and _amd_res.confidence >= 70:
+                    # В боковике допускаем только если есть мощные confluences (TBS + OB)
+                    has_strong_confluence = tbs_found and ob_quality >= 65
+                    if not has_strong_confluence:
+                        print(f"🚫 [AMD-BLOCK-LONG] {symbol}: Фаза=EQUILIBRIUM conf={_amd_res.confidence:.0f}% без TBS+OB — LONG заблокирован")
+                        return None
+                    else:
+                        print(f"⚠️ [AMD-LONG] {symbol}: Фаза=EQUILIBRIUM conf={_amd_res.confidence:.0f}% — разрешён (TBS+OB={ob_quality})")
+                elif _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 60:
                     _amd_boost = 6
                     final_score += _amd_boost
                     reasons.append(f"🏗️ AMD Накопление (conf={_amd_res.confidence:.0f}%) +{_amd_boost}")

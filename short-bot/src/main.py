@@ -1915,8 +1915,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                                     for i, tp in enumerate(tp_levels)]
                         take_profits = [
                             (round(_eq,   8), 35),
-                            (round(_clow, 8), 30),
-                        ] + [(p, max(5, w - 10)) for p, w in _std_tps[2:4]]
+                            (round(_clow, 8), 25),
+                        ] + [(p, max(5, w - 15)) for p, w in _std_tps[2:6]]  # ✅ FIX: TP3-6 (было [2:4])
                         print(f"🎯 [CRT-TP-SHORT] {symbol}: TP1=EQ {_eq:.6g} (-{_eq_pct:.1f}%), "
                               f"TP2=Low {_clow:.6g} (-{_low_pct:.1f}%)")
                     else:
@@ -2140,7 +2140,41 @@ async def scan_market():
             # 🆕 STRICT: Проверка объема перед входом
             # ✅ BUG#5 FIX: md недоступен здесь (он локальный в scan_symbol), берём из signal
             quote_volume = signal.get("quote_volume_24h", 0)
-            if quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
+
+            # ✅ FIX: quote_volume может быть 0 если API не вернул данные —
+            # делаем Bybit fallback чтобы не блокировать реальные монеты
+            if not quote_volume:
+                try:
+                    _ticker = await state.binance._bybit(
+                        "/v5/market/tickers", {"category": "linear", "symbol": symbol}
+                    )
+                    if _ticker and _ticker.get("list"):
+                        quote_volume = float(_ticker["list"][0].get("turnover24h", 0))
+                        signal["quote_volume_24h"] = quote_volume  # кешируем
+                except Exception:
+                    pass
+
+            # ✅ MEGA_SHORT bypass: сигналы score >= 100 отправляем в отдельный канал
+            # даже если объём < $5M (монеты реально движутся с высоким score)
+            is_mega_short = signal.get("score", 0) >= 100
+            mega_vol_threshold = 500_000  # $500k — минимум для MEGA_SHORT
+
+            if is_mega_short and quote_volume >= mega_vol_threshold:
+                # Отправляем MEGA_SHORT в отдельный топик если настроен
+                mega_topic = os.getenv("SHORT_MEGA_TOPIC_ID", "")
+                if mega_topic:
+                    try:
+                        await state.telegram.send_message(
+                            f"🔥 <b>MEGA_SHORT LOW-VOL</b> | score={signal['score']:.0f}% | "
+                            f"vol=${quote_volume/1e6:.2f}M\\n#{symbol} — объём мал, но сигнал сильный!\\n"
+                            f"Вход: {signal['entry_price']} | SL: {signal['stop_loss']}",
+                            topic_id=int(mega_topic)
+                        )
+                    except Exception as _me:
+                        print(f"⚠️ [MEGA-SHORT-TOPIC] send error: {_me}")
+                print(f"🔥 [MEGA-SHORT-BYPASS] {symbol}: score={signal['score']:.0f}% vol=${quote_volume/1e6:.2f}M — bypass volume filter!")
+                # MEGA_SHORT продолжает исполнение без блокировки
+            elif quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
                 print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
                 continue
             
