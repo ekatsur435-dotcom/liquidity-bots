@@ -217,21 +217,33 @@ class OKXClient:
     
     async def get_open_interest_history(self, symbol: str, period: str = "1h", limit: int = 100) -> List[Dict]:
         """
-        Получить историю Open Interest
-        
+        Получить историю Open Interest.
+        ✅ FIX: используем правильный endpoint /public/open-interest-history (не /open-interest!)
+        /open-interest — возвращает ТОЛЬКО 1 точку (текущее OI)
+        /open-interest-history — возвращает историю (до 100 точек)
+        Параметр bar: 5m, 1H, 4H, 1D (OKX использует bar, не period)
+
         Returns:
             Список словарей с ключами: timestamp, sumOpenInterest
         """
         okx_symbol = self._convert_symbol(symbol)
-        
-        endpoint = "/api/v5/public/open-interest"
+
+        # ✅ FIX: правильный маппинг period → bar для OKX history endpoint
+        # OKX поддерживает только: 5m, 1H, 4H, 1D
+        bar_map = {
+            "1m": "5m", "5m": "5m", "15m": "5m", "30m": "1H",
+            "1h": "1H", "4h": "4H", "1d": "1D",
+        }
+        bar = bar_map.get(period.lower(), "1H")  # always lowercase lookup
+
+        endpoint = "/api/v5/public/open-interest-history"
         params = {
             "instType": "SWAP",
             "instId": okx_symbol,
-            "period": period.upper(),
-            "limit": str(limit)
+            "bar": bar,
+            "limit": str(min(limit, 100))
         }
-        
+
         data = await self._make_request(endpoint, params)
         if data:
             return [
@@ -478,9 +490,29 @@ class OKXClient:
         return []
     
     # =========================================================================
+    # CANDLES / KLINES
+    # =========================================================================
+
+    async def get_candles(self, symbol: str, bar: str = "1H", limit: int = 200) -> List[List]:
+        """
+        Получить свечи OHLCV с OKX.
+        bar: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 12H, 1D
+        Возвращает список [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        OKX: новейшая свеча первая (нужно reverse() в binance_client).
+        Max limit: 300.
+        """
+        okx_symbol = self._convert_symbol(symbol)
+        data = await self._make_request("/api/v5/market/candles", {
+            "instId": okx_symbol,
+            "bar":    bar,
+            "limit":  str(min(limit, 300)),
+        })
+        return data if data else []
+
+    # =========================================================================
     # RECENT TRADES (ЛЕНТА СДЕЛОК)
     # =========================================================================
-    
+
     async def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
         """
         Получить ленту сделок (Recent Trades)

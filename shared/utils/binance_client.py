@@ -299,34 +299,74 @@ class BinanceFuturesClient:
     # BYBIT / BINANCE REQUESTS
     # =========================================================================
 
-    _bybit_blocked: bool = False  # class-level flag: Bybit geo-blocked
+    _bybit_blocked_until: float = 0.0  # cooldown timestamp (0 = not blocked)
+
+    async def _bybit_request(self, endpoint: str, params: Dict,
+                             proxy: Optional[str] = None) -> Optional[Any]:
+        """Single Bybit attempt — direct or via proxy. Raises on 403/429."""
+        session = await self._get_session()
+        kwargs = {"proxy": proxy} if proxy else {}
+        async with session.get(
+            f"{self.BYBIT_URL}{endpoint}",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=12),
+            **kwargs
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                rc = data.get("retCode", -1)
+                if rc == 0:
+                    return data.get("result")
+                # 10018 = rate limit, other codes = API errors
+                print(f"⚠️ [BYBIT] {endpoint} retCode={rc} msg={data.get('retMsg','')[:80]}")
+                return None
+            if resp.status == 403:
+                raise Exception("geo-block-403")
+            if resp.status == 429:
+                raise Exception("rate-limit-429")
+            return None
 
     async def _bybit(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        """
+        v4: Bybit requests with cooldown + proxy rotation + OKX fallback awareness.
+        Tier order: direct → proxy[0] → proxy[1] → proxy[2]
+        """
         await self._rate_limit()
-        # ✅ FIX: if Bybit is geo-blocked (403), skip immediately - don't spam logs
-        if BinanceFuturesClient._bybit_blocked:
+        params = params or {}
+
+        # Cooldown check (5-min after geo-block, not permanent)
+        if time.time() < BinanceFuturesClient._bybit_blocked_until:
+            remaining = int(BinanceFuturesClient._bybit_blocked_until - time.time())
+            if remaining % 60 == 0:  # log once per minute
+                print(f"⏳ [BYBIT] Geo-block cooldown: {remaining}s remaining")
             return None
+
+        # 1. Direct connection (fastest, works when no geo-block)
         try:
-            session = await self._get_session()
-            async with session.get(
-                f"{self.BYBIT_URL}{endpoint}",
-                params=params or {},
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("retCode") == 0:
-                        return data.get("result")
-                    return None
-                if resp.status == 403:
-                    # Geo-block: Render IP banned. Stop trying Bybit.
-                    if not BinanceFuturesClient._bybit_blocked:
-                        BinanceFuturesClient._bybit_blocked = True
-                        print("⛔ Bybit geo-blocked (403). Switching to Binance-only mode.")
-                    return None
-                return None
-        except Exception:
-            return None
+            result = await self._bybit_request(endpoint, params, proxy=None)
+            if result is not None:
+                return result
+        except Exception as e:
+            err = str(e)
+            if "geo-block-403" in err:
+                BinanceFuturesClient._bybit_blocked_until = time.time() + 300  # 5-min cooldown
+                print(f"⛔ [BYBIT] Geo-blocked (403). Cooldown 5min. Trying proxies...")
+            elif "rate-limit-429" in err:
+                await asyncio.sleep(1)
+            # Fall through to proxy attempts
+
+        # 2. Proxy rotation (PROXY_LIST covers both Binance AND Bybit now)
+        for idx, proxy in enumerate(self._proxies[:4]):
+            try:
+                result = await self._bybit_request(endpoint, params, proxy=proxy)
+                if result is not None:
+                    host = proxy.split('@')[-1] if '@' in proxy else proxy[:30]
+                    print(f"✅ [BYBIT-PROXY] Success via {host}")
+                    return result
+            except Exception:
+                continue
+
+        return None
 
     async def _binance(self, endpoint: str, params: Dict = None) -> Optional[Any]:
         """
@@ -528,18 +568,31 @@ class BinanceFuturesClient:
     # =========================================================================
 
     async def get_price(self, symbol: str) -> Optional[float]:
+        """Tier 1: Binance → Tier 2: Bybit (direct+proxy) → Tier 3: OKX (no proxy needed)"""
         await self._init_source()
+        # Tier 1: Binance
         if self._use_binance:
             d = await self._binance("/fapi/v1/ticker/price", {"symbol": symbol})
             if d:
                 return float(d["price"])
+        # Tier 2: Bybit
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
             items = result.get("list", [])
             if items:
                 p = items[0].get("lastPrice")
-                return float(p) if p else None
+                if p:
+                    return float(p)
+        # Tier 3: OKX (public API, no geo-block on Render)
+        try:
+            okx = get_okx_client()
+            ticker = await okx.get_ticker(symbol)
+            if ticker and ticker.get("price"):
+                print(f"✅ [OKX-FALLBACK] price {symbol}: {ticker['price']}")
+                return float(ticker["price"])
+        except Exception as e:
+            print(f"⚠️ [OKX-FALLBACK] price {symbol}: {e}")
         return None
 
     # =========================================================================
@@ -548,10 +601,19 @@ class BinanceFuturesClient:
 
     async def get_klines(self, symbol: str, interval: str = "1h",
                          limit: int = 100) -> List[CandleData]:
+        """Tier 1: Binance → Tier 2: Bybit (direct+proxy) → Tier 3: OKX"""
         await self._init_source()
+        # Tier 1: Binance
         if self._use_binance:
-            return await self._klines_binance(symbol, interval, limit)
-        return await self._klines_bybit(symbol, interval, limit)
+            result = await self._klines_binance(symbol, interval, limit)
+            if result:
+                return result
+        # Tier 2: Bybit
+        result = await self._klines_bybit(symbol, interval, limit)
+        if result:
+            return result
+        # Tier 3: OKX fallback
+        return await self._klines_okx(symbol, interval, limit)
 
     async def _klines_binance(self, symbol, interval, limit) -> List[CandleData]:
         data = await self._binance("/fapi/v1/klines",
@@ -580,11 +642,50 @@ class BinanceFuturesClient:
         candles.reverse()
         return candles
 
+    async def _klines_okx(self, symbol: str, interval: str, limit: int) -> List[CandleData]:
+        """OKX klines fallback — работает без прокси на Render."""
+        OKX_INTERVAL = {
+            "1m": "1m",  "3m": "3m",  "5m": "5m",  "15m": "15m", "30m": "30m",
+            "1h": "1H",  "2h": "2H",  "4h": "4H",  "6h": "6H",   "12h": "12H",
+            "1d": "1D",  "D":  "1D",
+        }
+        bar = OKX_INTERVAL.get(interval, "1H")
+        okx_sym = symbol.replace("USDT", "-USDT-SWAP") if "USDT" in symbol and "-" not in symbol else symbol
+        try:
+            okx = get_okx_client()
+            raw = await okx.get_candles(okx_sym, bar, min(limit, 300))
+            if not raw:
+                return []
+            candles = []
+            for c in raw:
+                if len(c) < 6:
+                    continue
+                candles.append(CandleData(
+                    timestamp=int(c[0]),
+                    open=float(c[1]),
+                    high=float(c[2]),
+                    low=float(c[3]),
+                    close=float(c[4]),
+                    volume=float(c[5]),
+                    quote_volume=float(c[7]) if len(c) > 7 else 0.0,
+                ))
+            candles.reverse()  # OKX: newest first → oldest first
+            print(f"✅ [OKX-FALLBACK] klines {symbol} {interval}: {len(candles)} candles")
+            return candles
+        except Exception as e:
+            print(f"⚠️ [OKX-FALLBACK] klines {symbol} {interval}: {e}")
+            return []
+
     async def get_24h_ticker(self, symbol: Optional[str] = None) -> Optional[Dict]:
+        """Tier 1: Binance → Tier 2: Bybit → Tier 3: OKX"""
         await self._init_source()
+        # Tier 1: Binance
         if self._use_binance:
             params = {"symbol": symbol} if symbol else {}
-            return await self._binance("/fapi/v1/ticker/24hr", params)
+            result = await self._binance("/fapi/v1/ticker/24hr", params)
+            if result:
+                return result
+        # Tier 2: Bybit
         if symbol:
             result = await self._bybit("/v5/market/tickers",
                                        {"category": "linear", "symbol": symbol})
@@ -599,6 +700,20 @@ class BinanceFuturesClient:
                         "highPrice":          t.get("highPrice24h", 0),
                         "lowPrice":           t.get("lowPrice24h", 0),
                     }
+            # Tier 3: OKX fallback
+            try:
+                okx = get_okx_client()
+                tk = await okx.get_ticker(symbol)
+                if tk:
+                    print(f"✅ [OKX-FALLBACK] 24h ticker {symbol}")
+                    return {
+                        "quoteVolume":        tk.get("volume_ccy_24h", 0),
+                        "priceChangePercent": tk.get("price_change_24h", 0),
+                        "highPrice":          tk.get("high_24h", 0),
+                        "lowPrice":           tk.get("low_24h", 0),
+                    }
+            except Exception as e:
+                print(f"⚠️ [OKX-FALLBACK] ticker {symbol}: {e}")
         return None
 
     # =========================================================================
@@ -645,7 +760,15 @@ class BinanceFuturesClient:
 
     async def get_open_interest(self, symbol: str) -> Optional[float]:
         await self._init_source()
-        # ✅ FIX: Try Bybit FIRST (works without proxies), then Binance
+        # Level 1: OKX (надёжнее всего с EU IP)
+        try:
+            okx = get_okx_client()
+            okx_oi = await okx.get_open_interest(symbol)
+            if okx_oi and okx_oi.oi > 0:
+                return okx_oi.oi  # Не логируем — это single-point, не history
+        except Exception:
+            pass
+        # Level 2: Bybit
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
@@ -654,7 +777,17 @@ class BinanceFuturesClient:
                 oi = items[0].get("openInterest")
                 if oi:
                     return float(oi)
-        # Fallback to Binance
+        # Level 3: CryptoQuant
+        try:
+            from api.cryptoquant_client import get_cryptoquant_client
+            cq = get_cryptoquant_client()
+            if cq.api_key:
+                cq_hist = await cq.get_oi_history(symbol, "1h", 1)
+                if cq_hist:
+                    return cq_hist[-1].get("sumOpenInterest", 0) or None
+        except Exception:
+            pass
+        # Level 4: Binance fallback
         if self._use_binance:
             d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
             if d:
@@ -664,41 +797,20 @@ class BinanceFuturesClient:
     async def get_open_interest_history(self, symbol: str,
                                          period: str = "1h", limit: int = 5) -> List[Dict]:
         """
-        Получить историю Open Interest с многоуровневым fallback:
-        OKX → Bybit → Binance → empty list
+        Получить историю Open Interest.
+        ✅ v2.0: делегирует в OIAggregator (4 источника + estimation fallback)
+        Chain: OKX → Bybit → CryptoQuant → Binance → klines estimation
         """
-        await self._init_source()
-        
-        # 🆕 NEW: Level 1 — OKX (работает без прокси!)
-        okx = get_okx_client()
-        okx_data = await okx.get_open_interest_history(symbol, period, limit)
-        if okx_data:
-            print(f"   ✅ OI from OKX: {len(okx_data)} points")
-            return okx_data
-        
-        # Level 2 — Bybit
-        imap = {"5m": "5min", "15m": "15min", "30m": "30min",
-                "1h": "1h", "4h": "4h", "1d": "1d"}
-        result = await self._bybit("/v5/market/open-interest",
-                                   {"category": "linear", "symbol": symbol,
-                                    "intervalTime": imap.get(period, "1h"),
-                                    "limit": limit})
-        if result and result.get("list"):
-            print(f"   ✅ OI from Bybit: {len(result.get('list', []))} points")
-            return [{"sumOpenInterest": item.get("openInterest", 0), 
-                     "timestamp": int(item.get("ts", 0))}
-                    for item in result.get("list", [])]
-        
-        # Level 3 — Binance (часто не работает /fapi/v1/openInterestHist)
-        if self._use_binance:
-            d = await self._binance("/fapi/v1/openInterestHist",
-                                    {"symbol": symbol, "period": period, "limit": limit})
-            if d:
-                print(f"   ✅ OI from Binance: {len(d)} points")
-                return d
-        
-        print(f"   ⚠️ OI data unavailable for {symbol}")
-        return []
+        try:
+            from core.oi_aggregator import get_oi_history
+            return await get_oi_history(
+                symbol, period, limit,
+                binance_client=self,
+                okx_client=get_okx_client(),
+            )
+        except Exception as e:
+            print(f"   ⚠️ OI aggregator error ({symbol}): {e}")
+            return []
 
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
         history = await self.get_open_interest_history(symbol, "1d", days + 1)
@@ -794,7 +906,18 @@ class BinanceFuturesClient:
             print(f"   ✅ Liquidations from OKX: ${okx_liq.get('total_usd', 0):,.0f}")
             return okx_liq
         
-        # Level 2 — Coinglass (если есть API ключ)
+        # Level 2 — CryptoQuant (высокое качество, dedicated liquidation API)
+        try:
+            from api.cryptoquant_client import get_cryptoquant_client
+            cq = get_cryptoquant_client()
+            if cq.api_key:
+                cq_liq = await cq.get_liquidations(symbol, hours=1)
+                if cq_liq and cq_liq.get("total_usd", 0) > 0:
+                    return cq_liq
+        except Exception:
+            pass
+
+        # Level 3 — Coinglass (если есть API ключ)
         try:
             from api.coinglass_client import get_coinglass_client
             cg = get_coinglass_client()
@@ -815,9 +938,9 @@ class BinanceFuturesClient:
             pass
         
         # 🔴 REMOVED: Binance /fapi/v1/allForceOrders — эндпоинт удалён Binance (HTTP 418/400)
-        # Используем OKX и Coinglass как единственные источники
+        # Используем OKX → CryptoQuant → Coinglass как источники
         
-        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance API disabled, OKX/Coinglass only)")
+        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance disabled, OKX/CQ/CG fallback failed)")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
@@ -825,6 +948,7 @@ class BinanceFuturesClient:
         """
         Получить Long/Short Position Ratio для топ-трейдеров.
         >1.5 = топы в лонгах, <0.8 = топы в шортах.
+        Binance primary → Bybit account-ratio fallback.
         """
         await self._init_source()
         if self._use_binance:
@@ -833,7 +957,24 @@ class BinanceFuturesClient:
             if d and len(d) > 0:
                 long_pos = float(d[0].get("longPosition", 0))
                 short_pos = float(d[0].get("shortPosition", 0))
-                return long_pos / short_pos if short_pos > 0 else None
+                if short_pos > 0:
+                    return long_pos / short_pos
+        # Bybit fallback: /v5/market/account-ratio (general L/S, not top-trader specific)
+        try:
+            bybit_period = "1h" if period in ("1h", "4h") else "15min"
+            result = await self._bybit("/v5/market/account-ratio", {
+                "category": "linear", "symbol": symbol,
+                "period": bybit_period, "limit": 1
+            })
+            if result and isinstance(result, dict):
+                rows = result.get("list", [])
+                if rows:
+                    long_r = float(rows[0].get("buyRatio", 0))
+                    short_r = float(rows[0].get("sellRatio", 0))
+                    if short_r > 0:
+                        return long_r / short_r
+        except Exception:
+            pass
         return None
 
     # =========================================================================

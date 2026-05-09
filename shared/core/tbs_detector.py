@@ -1,290 +1,243 @@
 """
-TBS Detector v2.7
-Test Before Strike / Tap Before Sweep
-SMC концепция: цена делает ретест зоны перед основным движением
+TBS (Test Before Strike / Tap Before Sweep) Detector v2.0
+Переработан на основе CRT уровней (логика Pine Script Statham v135).
+
+Версия 1.x: искала Order Blocks — давала ложные сигналы, зоны "плавали".
+Версия 2.0: TBS привязан к чётким CRT High/Low уровням.
+
+Алгоритм (Pine Script):
+  TBS BEAR: свеча пробила CRT High + закрылась НИЖЕ + медвежья → шорт сигнал
+  TBS BULL: свеча пробила CRT Low  + закрылась ВЫШЕ + бычья   → лонг сигнал
+
+Multi-timeframe (чего нет в TV):
+  1D (macro): бонус +15 (редкий, очень сильный)
+  4H:         бонус +12 (основной)
+  1H:         бонус +8  (точный вход)
+  Два ТФ одновременно → максимальный бонус
+
+Совместимость: detect_tbs_entry() работает как раньше (drop-in replacement).
 """
-from typing import List, Dict, Optional, Tuple, Any
-from dataclasses import dataclass
-from enum import Enum
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Tuple
+
+from .crt_levels import CRTMultiFrame, CRTLevel, build_crt
 
 
-class TBSPhase(Enum):
-    """Фазы TBS паттерна"""
-    NONE = "none"
-    INITIAL_MOVE = "initial_move"      # Первичное движение к зоне
-    TEST = "test"                       # Тест/касание зоны
-    RETEST = "retest"                   # Ретест (TBS фаза)
-    STRIKE = "strike"                   # Основное движение (Strike)
+def _h(c: Any) -> float:
+    if isinstance(c, dict):        return float(c.get("high",  0))
+    if isinstance(c, (list, tuple)): return float(c[1]) if len(c) > 1 else 0.0
+    return float(getattr(c, "high",  0))
+
+def _l(c: Any) -> float:
+    if isinstance(c, dict):        return float(c.get("low",   0))
+    if isinstance(c, (list, tuple)): return float(c[2]) if len(c) > 2 else 0.0
+    return float(getattr(c, "low",   0))
+
+def _c(c: Any) -> float:
+    if isinstance(c, dict):        return float(c.get("close", 0))
+    if isinstance(c, (list, tuple)): return float(c[3]) if len(c) > 3 else 0.0
+    return float(getattr(c, "close", 0))
+
+def _o(c: Any) -> float:
+    if isinstance(c, dict):        return float(c.get("open",  0))
+    if isinstance(c, (list, tuple)): return float(c[0]) if len(c) > 0 else 0.0
+    return float(getattr(c, "open",  0))
 
 
 @dataclass
-class TBSResult:
-    """Результат TBS анализа"""
-    found: bool
-    phase: TBSPhase
-    zone_type: str                      # "order_block" | "breaker" | "liquidity"
-    zone_price: float
-    test_price: float                   # Цена теста
-    retest_price: Optional[float]       # Цена ретеста (если был)
-    entry_price: float                  # Рекомендуемый вход
-    confidence: int                     # 0-100
-    reasons: List[str]
+class TBSSignal:
+    found:      bool
+    direction:  str          # "short" | "long"
+    tf:         str          # "1D" | "4H" | "1H"
+    zone:       float        # цена зоны TBS (midpoint тела свечи)
+    crt_level:  float        # уровень CRT который был пробит
+    bonus:      int          # бонус к скору
+    confidence: int          # 0-100
+    reasons:    List[str] = field(default_factory=list)
+
+    # Совместимость со старым кодом
+    @property
+    def zone_price(self) -> float:
+        return self.zone
 
 
-class TBSDetector:
+def _check_tbs_on_level(
+    candles: List[Any],
+    level: CRTLevel,
+    direction: str,
+    lookback_bars: int = 5,
+) -> Tuple[bool, float, float]:
     """
-    Детектор Test Before Strike (TBS) паттернов.
-    
-    SMC концепция:
-    1. Цена подходит к ключевой зоне (Order Block, Liquidity)
-    2. Делает первичный тест (Test)
-    3. Уходит небольшое движение против тренда
-    4. Возвращается и делает ретест зоны (Retest/TBS)
-    5. После ретеста идёт основное движение (Strike)
-    
-    Это самая сильная точка входа — подтверждённый ретест!
+    Проверяет TBS на конкретном CRT уровне.
+    Смотрит последние lookback_bars свечей.
+    Возвращает: (found, zone_price, crt_price)
     """
-    
-    def __init__(self, ohlcv: List[List[float]], lookback: int = 30):
-        self.ohlcv = ohlcv
-        self.n = len(ohlcv)
-        self.lookback = lookback
-        
-    def _get_price(self, i: int, attr: str) -> float:
-        """Универсальный доступ к данным свечи"""
-        candle = self.ohlcv[i]
-        if isinstance(candle, dict):
-            return candle.get(attr, candle.get('close', 0))
-        elif isinstance(candle, list):
-            mapping = {'open': 0, 'high': 1, 'low': 2, 'close': 3, 'volume': 4}
-            return candle[mapping.get(attr, 3)]
-        elif hasattr(candle, attr):
-            return getattr(candle, attr)
-        return 0.0
-    
-    def _o(self, i: int) -> float: return self._get_price(i, 'open')
-    def _h(self, i: int) -> float: return self._get_price(i, 'high')
-    def _l(self, i: int) -> float: return self._get_price(i, 'low')
-    def _c(self, i: int) -> float: return self._get_price(i, 'close')
-    def _v(self, i: int) -> float: 
-        try:
-            return self._get_price(i, 'volume')
-        except:
-            return 0
-    
-    def find_order_blocks(self) -> List[Dict]:
-        """
-        Находит Order Blocks (свечи перед сильным движением).
-        Это зоны где "умные деньги" набирали позиции.
-        """
-        obs = []
-        
-        for i in range(3, self.n - 3):
-            # Bullish OB: свеча перед сильным ростом
-            if self._c(i) > self._o(i) * 1.01:  # Бычья свеча
-                # Следующие 2 свечи — сильный рост
-                if (self._c(i+2) - self._c(i)) / self._c(i) > 0.02:
-                    obs.append({
-                        "type": "bullish_ob",
-                        "high": self._h(i),
-                        "low": self._l(i),
-                        "mid": (self._h(i) + self._l(i)) / 2,
-                        "index": i,
-                        "strength": 70
-                    })
-            
-            # Bearish OB: свеча перед сильным падением
-            if self._c(i) < self._o(i) * 0.99:  # Медвежья свеча
-                # Следующие 2 свечи — сильное падение
-                if (self._c(i) - self._c(i+2)) / self._c(i) > 0.02:
-                    obs.append({
-                        "type": "bearish_ob",
-                        "high": self._h(i),
-                        "low": self._l(i),
-                        "mid": (self._h(i) + self._l(i)) / 2,
-                        "index": i,
-                        "strength": 70
-                    })
-        
-        return obs
-    
-    def detect_tbs_pattern(self, direction: str = "short",
-                          tolerance: float = 0.01) -> TBSResult:
-        """
-        Детектор TBS (Test Before Strike) паттерна.
-        
-        Алгоритм для SHORT:
-        1. Цена подходит к сопротивлению (Initial Move)
-        2. Тестирует уровень (Test) — может пробить на 0.5-1%
-        3. Делает небольшой откат вниз (имитация слабости)
-        4. ВОЗВРАЩАЕТСЯ к уровню (Retest/TBS) — идеальный вход!
-        5. После ретеста идёт Strike (основное падение)
-        
-        Args:
-            direction: "short" | "long"
-            tolerance: допуск для теста зоны (1%)
-        """
-        if self.n < 15:
-            return TBSResult(False, TBSPhase.NONE, "", 0, 0, None, 0, 0, [])
-        
-        # ✅ FIX: Расширен lookback с 10 → 20 свечей для надёжных уровней
-        lookback_start = max(-min(20, self.n - 5), -self.n)
-        recent_highs = [self._h(i) for i in range(lookback_start, -3)]
-        recent_lows = [self._l(i) for i in range(lookback_start, -3)]
-        
-        if direction == "short":
-            resistance = max(recent_highs)
-            
-            # Проверяем TBS для SHORT
-            # 1. Был ли тест сопротивления?
-            test_candle = None
-            for i in range(-7, -3):  # 4-7 свечей назад
-                if self._h(i) >= resistance * (1 - tolerance):
-                    test_candle = i
-                    break
-            
-            if test_candle is None:
-                return TBSResult(False, TBSPhase.NONE, "resistance", resistance, 0, None, 0, 0, 
-                               ["Нет теста сопротивления"])
-            
-            # 2. Был ли откат после теста?
-            pullback_low = min(self._l(i) for i in range(test_candle+1, -2))
-            pullback_pct = (resistance - pullback_low) / resistance
-            
-            if pullback_pct < 0.003:  # ✅ FIX: Минимум 0.3% откат (было 0.5%)
-                return TBSResult(False, TBSPhase.TEST, "resistance", resistance, 
-                               self._h(test_candle), None, 0, 40,
-                               [f"Тест был, но откат слишком мал ({pullback_pct*100:.1f}%)"])
-            
-            # 3. Был ли ретест (TBS)?
-            current_high = self._h(-1)
-            current_low = self._l(-1)
-            
-            # Цена сейчас у сопротивления снова (ретест)
-            near_resistance = current_high >= resistance * (1 - tolerance * 2)
-            
-            if not near_resistance:
-                return TBSResult(False, TBSPhase.INITIAL_MOVE, "resistance", resistance,
-                               self._h(test_candle), pullback_low, 0, 60,
-                               ["Тест и откат были, ждём ретеста"])
-            
-            # ✅ TBS НАЙДЕН! Идеальный вход для SHORT
-            return TBSResult(
-                found=True,
-                phase=TBSPhase.RETEST,
-                zone_type="resistance",
-                zone_price=resistance,
-                test_price=self._h(test_candle),
-                retest_price=current_high,
-                entry_price=current_low,  # Вход на ближайшем лоу
-                confidence=85,
+    if not level or not level.is_valid:
+        return False, 0.0, 0.0
+
+    recent = candles[-lookback_bars:] if len(candles) >= lookback_bars else candles
+
+    for candle in reversed(recent):
+        ch, cl, cc, co = _h(candle), _l(candle), _c(candle), _o(candle)
+        if cc <= 0:
+            continue
+
+        if direction == "short" and level.is_tbs_bear(ch, cc, co):
+            zone = (cc + co) / 2.0   # midpoint тела свечи (Pine Script логика)
+            return True, zone, level.high
+
+        if direction == "long" and level.is_tbs_bull(cl, cc, co):
+            zone = (cc + co) / 2.0
+            return True, zone, level.low
+
+    return False, 0.0, 0.0
+
+
+def detect_tbs_multi(
+    candles: List[Any],
+    direction: str,
+    ohlcv_1h: Optional[List[Any]] = None,
+    ohlcv_4h: Optional[List[Any]] = None,
+) -> TBSSignal:
+    """
+    Multi-timeframe TBS детектор.
+    Ищет TBS на 1D, 4H, 1H уровнях CRT.
+    Возвращает сигнал с наибольшим бонусом (самый сильный).
+    """
+    _1h = ohlcv_1h or candles
+    crt  = build_crt(ohlcv_1h=_1h, ohlcv_4h=ohlcv_4h)
+
+    # Порядок: сильнейший ТФ первый
+    checks = [
+        ("1D", crt.macro,  15, candles,  3),
+        ("4H", crt.h4,     12, ohlcv_4h or candles, 4),
+        ("1H", crt.h1,      8, _1h,      5),
+    ]
+
+    best: Optional[TBSSignal] = None
+
+    for tf_name, level, bonus, tf_candles, lookback in checks:
+        if not tf_candles:
+            continue
+        found, zone, crt_price = _check_tbs_on_level(tf_candles, level, direction, lookback)
+        if found:
+            dist_pct = abs(zone - crt_price) / crt_price * 100 if crt_price > 0 else 0
+            conf = min(90, 60 + bonus * 2)
+            signal = TBSSignal(
+                found=True, direction=direction,
+                tf=tf_name, zone=zone, crt_level=crt_price,
+                bonus=bonus, confidence=conf,
                 reasons=[
-                    f"🎯 TBS Pattern: Test → Pullback → Retest",
-                    f"📊 Тест: ${self._h(test_candle):.4f}",
-                    f"📉 Откат: {pullback_pct*100:.1f}%",
-                    f"🔄 Ретест: ${current_high:.4f}",
-                    f"⚡ Strike incoming!"
+                    f"TBS {direction.upper()} на {tf_name} CRT={crt_price:.6g} "
+                    f"зона={zone:.6g} (+{bonus} к скору)"
                 ]
             )
-        
-        else:  # LONG
-            support = min(recent_lows)
-            
-            # Проверяем TBS для LONG (зеркально)
-            test_candle = None
-            for i in range(-7, -3):
-                if self._l(i) <= support * (1 + tolerance):
-                    test_candle = i
-                    break
-            
-            if test_candle is None:
-                return TBSResult(False, TBSPhase.NONE, "support", support, 0, None, 0, 0,
-                               ["Нет теста поддержки"])
-            
-            # Тест был найден — проверяем ретест
-            pullback_high = max(self._h(i) for i in range(test_candle+1, -2))
-            pullback_pct = (pullback_high - support) / support
-            
-            if pullback_pct < 0.005:
-                return TBSResult(False, TBSPhase.TEST, "support", support,
-                               self._l(test_candle), None, 0, 40,
-                               [f"Тест был, откат слишком мал"])
-            
-            current_low = self._l(-1)
-            near_support = current_low <= support * (1 + tolerance * 2)
-            
-            if not near_support:
-                return TBSResult(False, TBSPhase.INITIAL_MOVE, "support", support,
-                               self._l(test_candle), pullback_high, 0, 60,
-                               ["Тест и откат были, ждём ретеста"])
-            
-            # ✅ TBS НАЙДЕН для LONG!
-            return TBSResult(
-                found=True,
-                phase=TBSPhase.RETEST,
-                zone_type="support",
-                zone_price=support,
-                test_price=self._l(test_candle),
-                retest_price=current_low,
-                entry_price=self._h(-1),
-                confidence=85,
-                reasons=[
-                    f"🎯 TBS Pattern: Test → Pullback → Retest",
-                    f"📊 Тест: ${self._l(test_candle):.4f}",
-                    f"📈 Откат: {pullback_pct*100:.1f}%",
-                    f"🔄 Ретест: ${current_low:.4f}",
-                    f"⚡ Strike incoming!"
-                ]
-            )
-    
-    def get_entry_timing(self) -> Dict:
-        """
-        Определяет оптимальный тайминг входа по TBS.
-        """
-        short_tbs = self.detect_tbs_pattern("short")
-        long_tbs = self.detect_tbs_pattern("long")
-        
-        if short_tbs.found and short_tbs.confidence > 80:
-            return {
-                "direction": "short",
-                "confidence": short_tbs.confidence,
-                "entry": short_tbs.entry_price,
-                "sl": short_tbs.zone_price * 1.01,  # За зоной
-                "tp": short_tbs.entry_price * 0.96,  # 4%
-                "reasons": short_tbs.reasons
-            }
-        
-        if long_tbs.found and long_tbs.confidence > 80:
-            return {
-                "direction": "long",
-                "confidence": long_tbs.confidence,
-                "entry": long_tbs.entry_price,
-                "sl": long_tbs.zone_price * 0.99,
-                "tp": long_tbs.entry_price * 1.04,
-                "reasons": long_tbs.reasons
-            }
-        
-        return {"direction": "none", "confidence": 0}
+            # Берём максимальный бонус
+            if best is None or bonus > best.bonus:
+                best = signal
+
+    return best or TBSSignal(
+        found=False, direction=direction, tf="", zone=0.0,
+        crt_level=0.0, bonus=0, confidence=0
+    )
 
 
-def detect_tbs_entry(ohlcv: List[Any], direction: str = "short") -> Optional[Dict]:
+def detect_tbs_entry(
+    candles: List[Any],
+    direction: str = "short",
+    ohlcv_1h: Optional[List[Any]] = None,
+    ohlcv_4h: Optional[List[Any]] = None,
+) -> Optional[dict]:
     """
-    Упрощённая функция для быстрой проверки TBS.
-    Принимает как List[List[float]] так и List[CandleData].
+    Drop-in замена старого detect_tbs_entry().
+    Совместим с вызовами из main.py:
+      tbs = detect_tbs_entry(ohlcv_primary, direction="short")
+      if tbs and tbs["found"]:
+          zone = tbs["zone"]
     """
-    if not ohlcv or len(ohlcv) < 10:
+    signal = detect_tbs_multi(candles, direction, ohlcv_1h=ohlcv_1h, ohlcv_4h=ohlcv_4h)
+    if not signal.found:
         return None
-    detector = TBSDetector(ohlcv)
-    result = detector.detect_tbs_pattern(direction)
-    
-    if result.found and result.confidence >= 75:
-        return {
-            "found": True,
-            "pattern": "TBS",
-            "entry": result.entry_price,
-            "zone": result.zone_price,
-            "confidence": result.confidence,
-            "reasons": result.reasons
-        }
-    
-    return None
+    return {
+        "found":      True,
+        "zone":       signal.zone,
+        "crt_level":  signal.crt_level,
+        "tf":         signal.tf,
+        "bonus":      signal.bonus,
+        "confidence": signal.confidence,
+        "reasons":    signal.reasons,
+    }
+
+
+# ── AMD + TBS конфлюенс ───────────────────────────────────────────────────────
+
+def amd_tbs_confluence_bonus(
+    amd_phase: str,       # значение AMDPhase.value
+    tbs_signal: dict,     # результат detect_tbs_entry()
+    direction: str,       # "short" | "long"
+) -> Tuple[int, List[str]]:
+    """
+    Матрица бонусов TBS + AMD конфлюенса.
+    Вызывается из main.py после отдельного расчёта AMD и TBS.
+
+    SHORT:
+      DISTRIBUTION + TBS BEAR → +18 (максимум)
+      OUTSIDE_HIGH + TBS BEAR → +20 (экстремальная перекупленность)
+      DISTRIBUTION            → +5
+      TBS BEAR только         → бонус от ТФ (8/12/15)
+
+    LONG:
+      ACCUMULATION + TBS BULL → +18
+      OUTSIDE_LOW  + TBS BULL → +20
+      ACCUMULATION            → +5
+      TBS BULL только         → бонус от ТФ
+    """
+    bonus = 0
+    reasons = []
+
+    tbs_found = tbs_signal and tbs_signal.get("found", False)
+    tbs_bonus = tbs_signal.get("bonus", 0) if tbs_found else 0
+    tbs_tf    = tbs_signal.get("tf", "")   if tbs_found else ""
+
+    if direction == "short":
+        if amd_phase == "outside_high" and tbs_found:
+            bonus = 20
+            reasons.append(f"🔥 AMD OUTSIDE_HIGH + TBS {tbs_tf} = экстрем. распределение +20")
+        elif amd_phase == "distribution" and tbs_found:
+            bonus = 18
+            reasons.append(f"🎯 AMD DISTRIBUTION + TBS {tbs_tf} = максимальный шорт +18")
+        elif amd_phase == "distribution":
+            bonus = 5
+            reasons.append("🏗️ AMD DISTRIBUTION +5")
+        elif amd_phase == "manipulation" and tbs_found:
+            bonus = tbs_bonus + 2
+            reasons.append(f"⚡ AMD MANIPULATION + TBS {tbs_tf} +{bonus}")
+        elif tbs_found:
+            bonus = tbs_bonus
+            reasons.append(f"🎯 TBS {tbs_tf} +{tbs_bonus}")
+        elif amd_phase in ("accumulation", "outside_low"):
+            bonus = -5
+            reasons.append("⚠️ AMD ACCUMULATION — против SHORT -5")
+
+    else:  # long
+        if amd_phase == "outside_low" and tbs_found:
+            bonus = 20
+            reasons.append(f"🔥 AMD OUTSIDE_LOW + TBS {tbs_tf} = экстрем. накопление +20")
+        elif amd_phase == "accumulation" and tbs_found:
+            bonus = 18
+            reasons.append(f"🎯 AMD ACCUMULATION + TBS {tbs_tf} = максимальный лонг +18")
+        elif amd_phase == "accumulation":
+            bonus = 5
+            reasons.append("🏗️ AMD ACCUMULATION +5")
+        elif amd_phase == "manipulation" and tbs_found:
+            bonus = tbs_bonus + 2
+            reasons.append(f"⚡ AMD MANIPULATION + TBS {tbs_tf} +{bonus}")
+        elif tbs_found:
+            bonus = tbs_bonus
+            reasons.append(f"🎯 TBS {tbs_tf} +{tbs_bonus}")
+        elif amd_phase in ("distribution", "outside_high"):
+            bonus = -5
+            reasons.append("⚠️ AMD DISTRIBUTION — против LONG -5")
+
+    return bonus, reasons

@@ -82,6 +82,7 @@ class AutoTrader:
         self.total_pnl    = 0.0
         self.win_count    = 0
         self.loss_count   = 0
+        self.be_count     = 0
         self.last_reset   = datetime.utcnow().date()
         self._last_open_ts = 0.0
 
@@ -131,8 +132,10 @@ class AutoTrader:
             allowed, reason = await self.bingx.check_trend(symbol, direction)
             print(f"📊 [TREND][{symbol}] {reason}")
             if not allowed:
-                print(f"🚫 [AutoTrader][{symbol}] Сделка отклонена по фильтру тренда")
+                print(f"🚫 [AutoTrader][{symbol}] SKIP — TREND FILTER: {reason}")
                 return None
+        else:
+            print(f"📊 [TREND][{symbol}] Фильтр тренда отключён — вход разрешён")
         
         # 🎯 Phase 3: Limit Executor — проверяем возможность лимитного входа
         if self.limit_executor.should_use_limit(signal):
@@ -353,12 +356,27 @@ class AutoTrader:
             print(f"{pfx} ⏸ SKIP — score {signal_score:.1f} < {self.config.min_score_for_trade}")
             return None
 
+        # ── 0. Emergency Stop (Стоп-кран при критической просадке) ───────────
+        emergency_stop = self.redis.get(f"{self.bot_type}:emergency_stop")
+        if emergency_stop:
+            print(f"🛑 [EMERGENCY STOP] {self.bot_type.upper()} bot halted due to critical loss. Restart manually.")
+            return None
+        
         # ── 1. Daily risk ─────────────────────────────────────────────────────
         self._check_daily_reset()
         if self.daily_pnl <= -self.config.max_daily_risk:
             reason = f"DAILY_LIMIT: {self.daily_pnl:.2f}% <= -{self.config.max_daily_risk}%"
             print(f"{pfx} ⏸ SKIP — {reason}")
             print(f"📊 [SKIP-REASON] #{symbol}: {reason}")
+            # 🆕 Активируем emergency stop при достижении -15%
+            if self.daily_pnl <= -15.0:
+                self.redis.set(f"{self.bot_type}:emergency_stop", "true", ex=86400)  # 24 часа
+                await self._tg(
+                    f"🛑 <b>EMERGENCY STOP</b>\n"
+                    f"<code>#{self.bot_type.upper()}</code> остановлен!\n"
+                    f"Просадка: {self.daily_pnl:.2f}% | Лимит: -15%\n"
+                    f"Перезапустите бота вручную завтра."
+                )
             await self._tg(
                 f"⏸ <b>[{mode}]</b> <code>#{symbol}</code>: "
                 f"дневной лимит ({self.daily_pnl:.2f}% ≤ -{self.config.max_daily_risk}%)"
@@ -465,6 +483,9 @@ class AutoTrader:
             confidence="HIGH" if signal_score >= 80 else ("MEDIUM" if signal_score >= 65 else "LOW")
         )
         
+        # 🔧 FIX: Расчёт sl_distance ДО использования в Kelly!
+        sl_distance = abs(entry_price - stop_loss) / entry_price
+        
         # Получаем капитал из equity
         self.kelly_rm.update_capital(equity)
         
@@ -487,7 +508,6 @@ class AutoTrader:
         risk_mult   = 1.5 if signal_score >= 85 else (1.2 if signal_score >= 75 else 1.0)
         actual_risk = self.config.risk_per_trade * risk_mult
         risk_amount = available * actual_risk
-        sl_distance = abs(entry_price - stop_loss) / entry_price
 
         print(f"{pfx} 📐 entry={entry_price} | SL={stop_loss} | sl_dist={sl_distance:.4%}")
         print(f"{pfx} 🎯 Kelly: kelly_pct={kelly_result.kelly_pct:.1f}% | "
@@ -757,6 +777,7 @@ class AutoTrader:
                 "total_pnl":      self.total_pnl,
                 "win_count":      self.win_count,
                 "loss_count":     self.loss_count,
+                "be_count":       self.be_count,
                 "mode":           "DEMO" if self.config.demo_mode else "REAL",
             }
         except Exception as e:
@@ -788,10 +809,12 @@ class AutoTrader:
 
     def record_trade_result(self, pnl_pct: float):
         """pnl_pct в % (напр. 1.5 = +1.5%). daily_pnl та же единица."""
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         self.total_pnl    += pnl_pct
         self.daily_pnl    += pnl_pct
         self.daily_trades += 1
-        if pnl_pct > 0: self.win_count  += 1
-        else:           self.loss_count += 1
+        if pnl_pct > 0:            self.win_count  += 1
+        elif pnl_pct < _BE_FLOOR:  self.loss_count += 1
+        else:                      self.be_count   += 1
         print(f"📊 Trade: {pnl_pct:+.2f}% | Day: {self.daily_pnl:+.2f}% | "
               f"Total trades: {self.daily_trades}")

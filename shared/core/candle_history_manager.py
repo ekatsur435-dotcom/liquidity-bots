@@ -232,20 +232,37 @@ class CandleHistoryManager:
     def update_candles(self, symbol: str, timeframe: str, ohlcv_data: List[List]):
         """
         Обновить свечи из OHLCV данных
-        
+
         Args:
             ohlcv_data: [[timestamp, open, high, low, close, volume], ...]
+                        или List[CandleData] — объекты из BinanceFuturesClient.get_klines()
         """
         try:
             history = self.get_or_create_history(symbol, timeframe)
-            
+
             # Проверка типа данных
             if not isinstance(ohlcv_data, (list, tuple)):
                 print(f"⚠️ [CHM] Invalid data type for {symbol} {timeframe}: {type(ohlcv_data)}")
                 return
-            
+
             for candle_data in ohlcv_data:
-                # Пропускаем если это не список/кортеж (например, CandleData объект)
+                # ✅ FIX: поддержка CandleData объектов (из BinanceFuturesClient.get_klines)
+                # CandleData имеет атрибуты: timestamp, open, high, low, close, volume
+                if hasattr(candle_data, 'timestamp') and hasattr(candle_data, 'close'):
+                    candle = Candle(
+                        timestamp=int(candle_data.timestamp),
+                        open=float(candle_data.open),
+                        high=float(candle_data.high),
+                        low=float(candle_data.low),
+                        close=float(candle_data.close),
+                        volume=float(candle_data.volume),
+                        quote_volume=float(getattr(candle_data, 'quote_volume', 0.0)),
+                        taker_buy_volume=float(getattr(candle_data, 'taker_buy_volume', 0.0)),
+                    )
+                    history.add_candle(candle)
+                    continue
+
+                # Оригинальный путь для list/tuple [[ts, o, h, l, c, v], ...]
                 if not isinstance(candle_data, (list, tuple)):
                     continue
                 if len(candle_data) >= 6:
@@ -258,9 +275,9 @@ class CandleHistoryManager:
                         volume=float(candle_data[5])
                     )
                     history.add_candle(candle)
-            
+
             self._stats["updates"] += 1
-            
+
         except Exception as e:
             self._stats["errors"] += 1
             print(f"❌ Error updating candles for {symbol} {timeframe}: {e}")

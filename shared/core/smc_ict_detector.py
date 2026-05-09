@@ -91,9 +91,11 @@ class SMCDetector:
         """
         Медвежий Order Block — последняя бычья свеча перед сильным падением.
         После неё должен быть импульс вниз ≥ 2 свечей подряд.
-        
+
         В SHORT боте: ищем зону где шортисты набирали позиции.
         Цена часто возвращается к OB для ретеста — там и входим.
+
+        ✅ v4: Mitigation check — OB инвалидируется если свеча закрылась ВЫШЕ ob.high
         """
         blocks = []
         start = max(0, self.n - lookback)
@@ -104,7 +106,6 @@ class SMCDetector:
                 continue
 
             # После неё должно быть сильное падение
-            # Проверяем 2 следующие свечи
             next_bearish = 0
             for j in range(i + 1, min(i + 4, self.n)):
                 if self._c(j) < self._o(j):
@@ -117,14 +118,22 @@ class SMCDetector:
             low_after = min(self._l(j) for j in range(i + 1, min(i + 4, self.n)))
             drop_pct = (self._h(i) - low_after) / self._h(i) * 100
 
-            if drop_pct < 0.5:  # Слишком маленькое движение
+            if drop_pct < 0.5:
+                continue
+
+            # ✅ MITIGATION CHECK: если после импульса свеча закрылась ВЫШЕ ob.high
+            # → медвежий OB инвалидирован (покупатели поглотили зону)
+            ob_high = self._h(i)
+            impulse_end = min(i + 4, self.n)
+            mitigated = any(self._c(k) > ob_high for k in range(impulse_end, self.n))
+            if mitigated:
                 continue
 
             strength = min(100, int(drop_pct * 20))
 
             blocks.append(OrderBlock(
                 direction="bearish",
-                high=self._h(i),
+                high=ob_high,
                 low=self._l(i),
                 open=self._o(i),
                 close=self._c(i),
@@ -134,12 +143,14 @@ class SMCDetector:
 
         # Сортируем по свежести (ближе к текущей свече) и силе
         blocks.sort(key=lambda b: (self.n - b.index) * -1 + b.strength, reverse=True)
-        return blocks[:3]  # Топ-3
+        return blocks[:3]
 
     def find_bullish_order_blocks(self, lookback: int = 30) -> List[OrderBlock]:
         """
         Бычий Order Block — последняя медвежья свеча перед сильным ростом.
         В LONG боте: зона где покупатели набирали позиции.
+
+        ✅ v4: Mitigation check — OB инвалидируется если свеча закрылась НИЖЕ ob.low
         """
         blocks = []
         start = max(0, self.n - lookback)
@@ -162,12 +173,20 @@ class SMCDetector:
             if rise_pct < 0.5:
                 continue
 
+            # ✅ MITIGATION CHECK: если после импульса свеча закрылась НИЖЕ ob.low
+            # → бычий OB инвалидирован (продавцы поглотили зону)
+            ob_low = self._l(i)
+            impulse_end = min(i + 4, self.n)
+            mitigated = any(self._c(k) < ob_low for k in range(impulse_end, self.n))
+            if mitigated:
+                continue
+
             strength = min(100, int(rise_pct * 20))
 
             blocks.append(OrderBlock(
                 direction="bullish",
                 high=self._h(i),
-                low=self._l(i),
+                low=ob_low,
                 open=self._o(i),
                 close=self._c(i),
                 index=i,
@@ -299,24 +318,30 @@ class SMCDetector:
             obs = self.find_bearish_order_blocks()
             fvgs = self.find_bearish_fvg()
 
-            # Проверяем Order Block
+            # ✅ v4: Directional check для SHORT
+            # Медвежий OB: цена должна быть ВНУТРИ или НИЖЕ ob.high (подходит снизу/внутри)
+            # Не использовать OB если цена уже ВЫШЕ ob.high (зона пройдена насквозь вверх)
             for ob in obs:
-                if self._price_near_zone(current_price, ob.low, ob.high, tolerance_pct=0.3):
-                    ob_entry = (ob.low + ob.high) / 2  # Вход в середину OB
-                    refined_sl = ob.high * 1.002        # SL чуть выше OB
+                in_zone = ob.low * 0.997 <= current_price <= ob.high * 1.005
+                if in_zone:
+                    ob_entry = (ob.low + ob.high) / 2
+                    refined_sl = ob.high * 1.003        # SL чуть выше OB (буфер 0.3%)
                     bonus = min(10, ob.strength // 10)
                     score_bonus += bonus
                     reasons.append(f"Bearish OB [{ob.low:.4f}-{ob.high:.4f}] +{bonus}pts")
                     break
 
-            # FVG
+            # FVG для SHORT
             for fvg in fvgs:
-                if fvg.upper >= current_price >= fvg.lower:
+                if fvg.lower <= current_price <= fvg.upper:
+                    # Цена внутри медвежьего FVG — SL за верхнюю границу
                     fvg_zone = (fvg.lower, fvg.upper)
+                    if refined_sl is None:
+                        refined_sl = fvg.upper * 1.003   # SL чуть выше FVG (если нет OB SL)
                     score_bonus += 5
                     reasons.append(f"In Bearish FVG [{fvg.lower:.4f}-{fvg.upper:.4f}] +5pts")
                     break
-                elif current_price > fvg.upper and self._price_near_zone(current_price, fvg.lower, fvg.upper, 0.2):
+                elif current_price > fvg.upper and abs(current_price - fvg.upper) / current_price < 0.003:
                     fvg_zone = (fvg.lower, fvg.upper)
                     score_bonus += 3
                     reasons.append(f"Near Bearish FVG [{fvg.lower:.4f}-{fvg.upper:.4f}] +3pts")
@@ -326,28 +351,36 @@ class SMCDetector:
             obs = self.find_bullish_order_blocks()
             fvgs = self.find_bullish_fvg()
 
+            # ✅ v4: Directional check для LONG
+            # Бычий OB: цена должна быть ВНУТРИ зоны или ВЫШЕ ob.low (подходит сверху/внутри)
+            # Не использовать OB если цена уже НИЖЕ ob.low (OB пробит вниз → инвалидирован)
             for ob in obs:
-                if self._price_near_zone(current_price, ob.low, ob.high, tolerance_pct=0.3):
+                in_zone = ob.low * 0.995 <= current_price <= ob.high * 1.005
+                if in_zone:
                     ob_entry = (ob.low + ob.high) / 2
-                    refined_sl = ob.low * 0.998         # SL чуть ниже OB
+                    refined_sl = ob.low * 0.997         # SL чуть ниже OB (буфер 0.3%)
                     bonus = min(10, ob.strength // 10)
                     score_bonus += bonus
                     reasons.append(f"Bullish OB [{ob.low:.4f}-{ob.high:.4f}] +{bonus}pts")
                     break
 
+            # FVG для LONG
             for fvg in fvgs:
                 if fvg.lower <= current_price <= fvg.upper:
+                    # Цена внутри бычьего FVG — SL за нижнюю границу
                     fvg_zone = (fvg.lower, fvg.upper)
+                    if refined_sl is None:
+                        refined_sl = fvg.lower * 0.997   # SL чуть ниже FVG (если нет OB SL)
                     score_bonus += 5
                     reasons.append(f"In Bullish FVG [{fvg.lower:.4f}-{fvg.upper:.4f}] +5pts")
                     break
-                elif current_price < fvg.lower and self._price_near_zone(current_price, fvg.lower, fvg.upper, 0.2):
+                elif current_price < fvg.lower and abs(current_price - fvg.lower) / current_price < 0.003:
                     fvg_zone = (fvg.lower, fvg.upper)
                     score_bonus += 3
                     reasons.append(f"Near Bullish FVG [{fvg.lower:.4f}-{fvg.upper:.4f}] +3pts")
                     break
 
-        # Если SL не уточнён через OB — используем базовый
+        # Если SL не уточнён через OB/FVG — используем базовый
         if refined_sl is None:
             if direction == "short":
                 refined_sl = current_price * (1 + base_sl_pct / 100)
