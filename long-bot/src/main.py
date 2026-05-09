@@ -79,7 +79,7 @@ from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
+from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus  # ✅ v2.7 TBS
 from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
@@ -1150,7 +1150,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         
         # ✅ v3.0: CRT уровни + TBS multi-TF + AMD v2.0
         from core.crt_levels import build_crt
-        from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus
+        # amd_tbs_confluence_bonus imported at top-level ✅
         tbs_found  = False
         tbs_zone   = None
         _crt_long  = None
@@ -1276,9 +1276,13 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         base_score_before_override = 0
 
         try:
-            oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+            from core.oi_aggregator import get_oi_history
+            oi_history = await get_oi_history(
+                symbol, "15m", 5,
+                binance_client=state.binance,
+                okx_client=state.okx if hasattr(state, "okx") else None,
+            )
             # ✅ FIX L2: проверяем что OI данные свежие (не старше 30 мин)
-            # Если Bybit геоблокирован и fallback Binance — OI может быть stale
             if oi_history:
                 latest_ts = oi_history[-1].get("timestamp", 0) if isinstance(oi_history[-1], dict) else 0
                 if latest_ts and (time.time() * 1000 - latest_ts) > 1_800_000:  # >30 мин

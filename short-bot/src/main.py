@@ -81,7 +81,7 @@ from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
+from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus  # ✅ v2.7 TBS
 from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile  # ✅ v2.8
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
@@ -1103,7 +1103,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         # ✅ v3.0: CRT уровни + TBS multi-TF + AMD v2.0
         # =========================================================================
         from core.crt_levels import build_crt
-        from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus
+        # amd_tbs_confluence_bonus imported at top-level ✅
         tbs_found = False
         tbs_zone  = None
         tbs       = None
@@ -1327,9 +1327,14 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             # ✅ BUG#4 FIX: fallback на md.oi_change_4d если API вернул 404/400
             oi_history = None
             try:
-                oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+                from core.oi_aggregator import get_oi_history
+                oi_history = await get_oi_history(
+                    symbol, "15m", 5,
+                    binance_client=state.binance,
+                    okx_client=state.okx if hasattr(state, "okx") else None,
+                )
             except Exception as _oi_e:
-                print(f"[OI-PROXY] {symbol}: API error ({_oi_e.__class__.__name__}) — using md.oi_change_4d fallback")
+                print(f"[OI-PROXY] {symbol}: aggregator error ({_oi_e.__class__.__name__}) — using md.oi_change_4d fallback")
 
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
