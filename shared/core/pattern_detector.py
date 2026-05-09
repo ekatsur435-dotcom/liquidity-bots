@@ -573,11 +573,10 @@ class ShortPatternDetector:
         l     = min(c.low  for c in dist)
         h     = max(c.high for c in dist)
         r_pct = (h - l) / l * 100 if l else 999
-        # Raised range cap 3%→8%: real distribution zones can be 3-8% wide
-        if r_pct > 8.0 or r_pct < 0.5 or last.close >= l:
+        if r_pct > 3.0 or r_pct < 0.5 or last.close >= l:
             return None
         vol_spike     = _vol_spike(candles, 20)
-        if vol_spike < 1.2:
+        if vol_spike < 1.3:
             return None
         breakdown_pct = (l - last.close) / l * 100
         bonus         = min(18, int(10 + vol_spike * 2 + breakdown_pct))
@@ -604,10 +603,7 @@ class ShortPatternDetector:
         if prev.high < r_h or prev.close > r_h:
             return None
         avg_vol = _avg_vol(dist, min(len(dist), 15))
-        # Classic Wyckoff UTAD: high-volume spike above resistance that closes back below
-        # We do NOT block high volume — high volume on the spike IS the upthrust signature.
-        # We only block very low volume (no conviction on rejection).
-        if prev.quote_volume < avg_vol * 0.5:
+        if prev.quote_volume > avg_vol * 1.5:
             return None
         if last.close > r_h or last.close >= last.open:
             return None
