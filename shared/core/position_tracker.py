@@ -552,7 +552,13 @@ class PositionTracker:
             signal["pnl_pct"]     = round(total_pnl, 4)
             signal["pnl"]         = round(total_pnl, 4)  # ✅ FIX v6: dashboard compatibility
             signal["tp_level"]    = tp_label
-            
+
+            # 🗑️ FIX: Удаляем positions key — иначе дашборд показывает закрытые позиции 7 дней
+            try:
+                self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+            except Exception:
+                pass
+
             # 🎢 Phase 2: Очистка Micro-Step Trailing при закрытии всех TP
             self.micro_trailing.remove(symbol)
 
@@ -688,6 +694,13 @@ class PositionTracker:
         else:
             sl_type_label = "SL"
         signal["tp_level"]    = sl_type_label
+
+        # 🗑️ FIX: Удаляем positions key — иначе дашборд показывает закрытые позиции 7 дней
+        try:
+            self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+        except Exception:
+            pass
+
         self._save(symbol, signal)
 
         d_emoji  = "🔴" if direction == "short" else "🟢"
@@ -743,13 +756,15 @@ class PositionTracker:
 
             # Bot state (backward compat)
             try:
+                _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
                 state_data = self.redis.get_bot_state(self.bot_type) or {}
                 daily = state_data.get("daily_trades", {})
-                day   = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+                day   = daily.get(today, {"trades": 0, "wins": 0, "losses": 0, "be": 0, "pnl": 0.0})
                 day["trades"] += 1
                 day["pnl"]     = round(day["pnl"] + pnl_pct, 4)
-                if pnl_pct > 0: day["wins"]   += 1
-                else:           day["losses"] += 1
+                if pnl_pct > 0:             day["wins"]   = day.get("wins", 0)   + 1
+                elif pnl_pct < _BE_FLOOR:   day["losses"] = day.get("losses", 0) + 1
+                else:                       day["be"]     = day.get("be", 0)     + 1
                 daily[today] = day
                 if len(daily) > 30:
                     del daily[sorted(daily.keys())[0]]
@@ -760,12 +775,14 @@ class PositionTracker:
 
             # stats:daily:{date} (для /stats команды)
             try:
+                _BE_FLOOR = -0.1
                 day2 = self.redis.get_daily_stats(self.bot_type, today) or \
-                       {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+                       {"trades": 0, "wins": 0, "losses": 0, "be": 0, "pnl": 0.0}
                 day2["trades"] += 1
                 day2["pnl"]     = round(day2.get("pnl", 0.0) + pnl_pct, 4)
-                if pnl_pct > 0: day2["wins"]   = day2.get("wins", 0) + 1
-                else:           day2["losses"] = day2.get("losses", 0) + 1
+                if pnl_pct > 0:           day2["wins"]   = day2.get("wins", 0)   + 1
+                elif pnl_pct < _BE_FLOOR: day2["losses"] = day2.get("losses", 0) + 1
+                else:                     day2["be"]     = day2.get("be", 0)     + 1
                 self.redis.update_daily_stats(self.bot_type, today, day2)
             except Exception as e:
                 print(f"[PT] daily_stats: {e}")
@@ -954,11 +971,24 @@ class PositionTracker:
         except Exception as e:
             print(f"[PT] redis save: {e}")
 
-    def _update_position_pnl(self, symbol: str, current_price: float, unrealized_pnl: float):
-        """Обновляем текущий P&L и цену в позиции для дашборда"""
+    def _update_position_pnl(self, symbol: str, current_price: float, unrealized_pnl: float,
+                             signal: Dict = None):
+        """Обновляем текущий P&L и цену в позиции для дашборда (upsert — пересоздаёт если удалён)"""
         try:
-            # Получаем текущую позицию
             pos = self.redis.get_position(self.bot_type, symbol)
+            if not pos and signal:
+                # Ключ удалён (напр. через cleanup) — пересоздаём из текущего сигнала
+                pos = {
+                    "symbol": symbol,
+                    "direction": signal.get("direction", ""),
+                    "entry_price": signal.get("entry_price", 0),
+                    "stop_loss": signal.get("stop_loss", 0),
+                    "take_profits": signal.get("take_profits", []),
+                    "leverage": signal.get("leverage", 20),
+                    "status": "active",
+                    "opened_at": signal.get("timestamp", datetime.utcnow().isoformat()),
+                    "confirmed": signal.get("confirmed", True),
+                }
             if pos:
                 pos["current_price"] = current_price
                 pos["unrealized_pnl"] = round(unrealized_pnl, 2)

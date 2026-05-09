@@ -41,8 +41,45 @@ class CryptoQuantClient:
             )
         return self._session
 
-    async def get_liquidations(self, symbol: str, hours: int = 1) -> Optional[Dict]:
+    async def get_oi_history(self, symbol: str, period: str = "1h",
+                              limit: int = 5) -> list:
         """
+        Получить историю Open Interest через CryptoQuant.
+        Returns: [{"sumOpenInterest": float, "timestamp": int}, ...]
+        """
+        if not self.api_key:
+            return []
+        try:
+            slug = _slug(symbol)
+            # Маппинг period → CryptoQuant window
+            window_map = {
+                "5m": "5m", "15m": "15m", "30m": "30m",
+                "1h": "1h", "4h": "4h", "1d": "1d",
+            }
+            window = window_map.get(period.lower(), "1h")
+            url = f"{_CRYPTOQUANT_BASE}/futures/{slug}/open-interest"
+            params = {"window": window, "limit": limit}
+            session = await self._get_session()
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                rows = data.get("result", {}).get("data", [])
+                if not rows:
+                    return []
+                result = []
+                for r in rows:
+                    oi = float(r.get("open_interest_usd", r.get("openInterest", 0)) or 0)
+                    ts = int(r.get("date", r.get("ts", 0)) or 0)
+                    if oi > 0:
+                        result.append({"sumOpenInterest": oi, "timestamp": ts})
+                result.sort(key=lambda x: x["timestamp"])
+                return result
+        except Exception as e:
+            print(f"   ⚠️ CryptoQuant OI error ({symbol}): {e}")
+            return []
+
+    async def get_liquidations(self, symbol: str, hours: int = 1) -> Optional[Dict]:        """
         Получить объём ликвидаций за последний час.
         Returns: {"total_usd": float, "long_liq_usd": float, "short_liq_usd": float,
                   "dominant_side": "LONG"|"SHORT"}

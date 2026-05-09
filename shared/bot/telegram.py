@@ -767,6 +767,8 @@ class TelegramCommandHandler:
         try:
             total_trades = 0
             total_wins   = 0
+            total_losses = 0
+            total_be     = 0
             total_pnl    = 0.0
             lines        = []
 
@@ -775,16 +777,22 @@ class TelegramCommandHandler:
                 d    = self._get_daily_stats_from_redis(date)
                 tr   = d.get("trades", 0)
                 w    = d.get("wins",   0)
+                l    = d.get("losses", 0)
+                be   = d.get("be",     0)
                 pnl  = d.get("pnl",    0.0)
                 if tr:
-                    wr   = round(w / tr * 100, 1) if tr else 0
+                    decisive = w + l
+                    wr   = round(w / decisive * 100, 1) if decisive else 0
                     wemj = self._wr_emoji(wr)
-                    lines.append(f"  {date}: {tr} сд  {wemj}{wr}%  P&L: {pnl:+.2f}%")
+                    lines.append(f"  {date}: {tr} сд  {wemj}{wr}%  ✅{w} ❌{l} ⚖️{be}  P&L: {pnl:+.2f}%")
                 total_trades += tr
                 total_wins   += w
+                total_losses += l
+                total_be     += be
                 total_pnl    += pnl
 
-            winrate  = round(total_wins / total_trades * 100, 1) if total_trades else 0
+            decisive_total = total_wins + total_losses
+            winrate  = round(total_wins / decisive_total * 100, 1) if decisive_total else 0
             wr_emoji = self._wr_emoji(winrate)
 
             msg = (
@@ -792,6 +800,8 @@ class TelegramCommandHandler:
                 f"📨 Сигналов: {getattr(self.state, 'daily_signals', 0)}\n"
                 f"🔄 Сделок закрыто: {total_trades}\n"
                 f"✅ Победных: {total_wins}  ({wr_emoji}{winrate}%)\n"
+                f"❌ Убыточных: {total_losses}\n"
+                f"⚖️ BE/Flat: {total_be}\n"
                 f"💵 P&L: <b>{total_pnl:+.2f}%</b>\n"
             )
             if lines:
@@ -1223,10 +1233,13 @@ class TelegramCommandHandler:
                 f"📅 <b>Дневной отчёт {date}</b>\n\nСделок нет.")
             return
 
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         wins   = [t for t in trades if t.get("pnl", 0) > 0]
-        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        losses = [t for t in trades if t.get("pnl", 0) < _BE_FLOOR]
+        be_lst = [t for t in trades if _BE_FLOOR <= t.get("pnl", 0) <= 0]
         total  = len(trades)
-        wr     = round(len(wins) / total * 100, 1) if total else 0
+        decisive = len(wins) + len(losses)
+        wr     = round(len(wins) / decisive * 100, 1) if decisive else 0
         pnl    = sum(t.get("pnl", 0) for t in trades)
 
         durations = []
@@ -1256,7 +1269,7 @@ class TelegramCommandHandler:
             side = t.get("direction", "?").upper()
             pnl_ = t.get("pnl", 0)
             tp_l = t.get("tp_level", "SL")
-            ico  = "✅" if pnl_ > 0 else "❌"
+            ico  = "✅" if pnl_ > 0 else ("⚖️" if pnl_ >= _BE_FLOOR else "❌")
             try:
                 dur_s = (datetime.fromisoformat(t.get("closed_at","")) -
                          datetime.fromisoformat(t.get("opened_at",""))).total_seconds()
@@ -1269,7 +1282,7 @@ class TelegramCommandHandler:
         msg = (
             f"📅 <b>Дневной отчёт {date}</b>\n\n"
             f"📊 Win Rate: {wr_emoji} {wr}%\n"
-            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"✅ Прибыль: {len(wins)}   ❌ Убыток: {len(losses)}   ⚖️ BE: {len(be_lst)}\n"
             f"📈 Всего закрыто: {total}\n"
             f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
             f"⏱ Ср. время: {avg_dur}\n"
@@ -1302,11 +1315,13 @@ class TelegramCommandHandler:
                 await self._reply(reply_chat_id, "Нет данных.")
                 return
 
-            total = len(trades)
+            _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
+            total  = len(trades)
             wins   = [t for t in trades if t.get("pnl", 0) > 0]
-            losses = [t for t in trades if t.get("pnl", 0) < 0]
-            be_tr  = [t for t in trades if t.get("tp_level") == "BE"]
-            wr     = round(len(wins) / total * 100, 1) if total else 0
+            losses = [t for t in trades if t.get("pnl", 0) < _BE_FLOOR]
+            be_tr  = [t for t in trades if _BE_FLOOR <= t.get("pnl", 0) <= 0]
+            decisive = len(wins) + len(losses)
+            wr     = round(len(wins) / decisive * 100, 1) if decisive else 0
             pnl    = round(sum(t.get("pnl", 0) for t in trades), 2)
 
             # TP распределение (сортировка: TP1-6 → BE → SL → SL-TRAIL → ?)
@@ -1342,10 +1357,10 @@ class TelegramCommandHandler:
             best  = max(trades, key=lambda t: t.get("pnl", 0))
             worst = min(trades, key=lambda t: t.get("pnl", 0))
 
-            # Max consecutive losses
+            # Max consecutive losses (только реальные убытки < -0.1%)
             max_loss_streak = streak = 0
             for t in sorted(trades, key=lambda t: t.get("opened_at", "")):
-                if t.get("pnl", 0) < 0:
+                if t.get("pnl", 0) < _BE_FLOOR:
                     streak += 1
                     max_loss_streak = max(max_loss_streak, streak)
                 else:
@@ -1363,8 +1378,8 @@ class TelegramCommandHandler:
                 f"📈 <b>ОБЩЕЕ:</b>\n"
                 f"   Сделок: {total}\n"
                 f"   ✅ Прибыльных: {len(wins)} ({wr}%)\n"
-                f"   ❌ Убыточных: {len(losses)} ({round(len(losses)/total*100,1)}%)\n"
-                f"   ⚖️ BE: {len(be_tr)}\n"
+                f"   ❌ Убыточных: {len(losses)} ({round(len(losses)/decisive*100,1) if decisive else 0}%)\n"
+                f"   ⚖️ BE/Flat: {len(be_tr)}\n"
                 f"   💰 Итого P&L: {pnl:+.2f}%\n"
                 f"   ⏱ Avg время: {avg_hold//60}ч {avg_hold%60}м\n"
                 f"   🔴 Макс. серия SL: {max_loss_streak}\n\n"
@@ -1433,10 +1448,13 @@ class TelegramCommandHandler:
                 f"📅 <b>Недельный отчёт</b>\n\nСделок нет.")
             return
 
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         wins   = [t for t in trades if t.get("pnl", 0) > 0]
-        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        losses = [t for t in trades if t.get("pnl", 0) < _BE_FLOOR]
+        be_lst = [t for t in trades if _BE_FLOOR <= t.get("pnl", 0) <= 0]
         total  = len(trades)
-        wr     = round(len(wins) / total * 100, 1) if total else 0
+        decisive = len(wins) + len(losses)
+        wr     = round(len(wins) / decisive * 100, 1) if decisive else 0
         pnl    = sum(t.get("pnl", 0) for t in trades)
 
         durations = []
@@ -1469,7 +1487,7 @@ class TelegramCommandHandler:
             f"📅 <b>Недельный отчёт</b>\n"
             f"с {date_from} по {date_to}\n\n"
             f"📊 Win Rate: {wr_emoji} {wr}%\n"
-            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"✅ Прибыль: {len(wins)}   ❌ Убыток: {len(losses)}   ⚖️ BE: {len(be_lst)}\n"
             f"📈 Всего закрыто: {total}\n"
             f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
             f"⏱ Ср. время: {avg_dur}\n"
@@ -1489,10 +1507,13 @@ class TelegramCommandHandler:
                 f"📅 <b>Месячный отчёт</b>\n\nСделок нет.")
             return
 
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         wins   = [t for t in trades if t.get("pnl", 0) > 0]
-        losses = [t for t in trades if t.get("pnl", 0) <= 0]
+        losses = [t for t in trades if t.get("pnl", 0) < _BE_FLOOR]
+        be_lst = [t for t in trades if _BE_FLOOR <= t.get("pnl", 0) <= 0]
         total  = len(trades)
-        wr     = round(len(wins) / total * 100, 1) if total else 0
+        decisive = len(wins) + len(losses)
+        wr     = round(len(wins) / decisive * 100, 1) if decisive else 0
         pnl    = sum(t.get("pnl", 0) for t in trades)
 
         durations = []
@@ -1532,7 +1553,7 @@ class TelegramCommandHandler:
         msg = (
             f"📅 <b>Месячный отчёт — {month_name}</b>\n\n"
             f"📊 Win Rate: {wr_emoji} {wr}%\n"
-            f"✅ TP: {len(wins)}   ❌ SL: {len(losses)}\n"
+            f"✅ Прибыль: {len(wins)}   ❌ Убыток: {len(losses)}   ⚖️ BE: {len(be_lst)}\n"
             f"📈 Всего закрыто: {total}\n"
             f"💵 P&L: <b>{pnl:+.2f}%</b>\n"
             f"⏱ Ср. время: {avg_dur}\n"
@@ -1553,29 +1574,34 @@ class TelegramCommandHandler:
             return
 
         # Группируем по символу
+        _BE_FLOOR = -0.1  # BE/Flat: от -0.1% до 0%
         by_sym: Dict[str, Dict] = {}
         for t in trades:
             sym = t.get("symbol","?")
             if sym not in by_sym:
-                by_sym[sym] = {"wins":0,"losses":0,"tps":{}}
+                by_sym[sym] = {"wins":0,"losses":0,"be":0,"tps":{}}
             pnl = t.get("pnl", 0)
             tp_lvl = t.get("tp_level","")
             if pnl > 0:
                 by_sym[sym]["wins"] += 1
                 if tp_lvl:
                     by_sym[sym]["tps"][tp_lvl] = by_sym[sym]["tps"].get(tp_lvl, 0) + 1
-            else:
+            elif pnl < _BE_FLOOR:
                 by_sym[sym]["losses"] += 1
+            else:
+                by_sym[sym]["be"] += 1
 
-        # Фильтр: мин. 2 сделки
+        # Фильтр: мин. 2 decisive сделки (без BE)
         stats = []
         for sym, d in by_sym.items():
-            total = d["wins"] + d["losses"]
-            if total < 2:
+            decisive = d["wins"] + d["losses"]
+            if decisive < 2:
                 continue
-            wr = round(d["wins"] / total * 100, 1)
+            total = decisive + d["be"]
+            wr = round(d["wins"] / decisive * 100, 1)
             stats.append({"sym": sym, "wr": wr, "wins": d["wins"],
-                          "losses": d["losses"], "total": total, "tps": d["tps"]})
+                          "losses": d["losses"], "be": d["be"],
+                          "total": total, "tps": d["tps"]})
 
         stats.sort(key=lambda x: (x["wr"], x["wins"]), reverse=True)
 
@@ -1587,9 +1613,10 @@ class TelegramCommandHandler:
             tp_summary = " ".join(f"TP{k.replace('TP','')}×{v}"
                                    for k,v in sorted(s["tps"].items()))
             medal = medals[i] if i < len(medals) else "▪️"
+            be_str = f" ⚖️{s['be']}" if s.get("be") else ""
             best_lines += (
                 f"{medal} <b>#{s['sym']}</b> — WR {s['wr']}%"
-                f" ({s['wins']}W/{s['losses']}L из {s['total']})\n"
+                f" (✅{s['wins']} ❌{s['losses']}{be_str} из {s['total']})\n"
                 + (f"   {tp_summary}\n" if tp_summary else "")
             )
 
@@ -1598,15 +1625,16 @@ class TelegramCommandHandler:
         worst.sort(key=lambda x: x["wr"])
         worst_lines = ""
         for s in worst[:5]:
+            be_str = f" ⚖️{s['be']}" if s.get("be") else ""
             worst_lines += (
                 f"🔻 <b>#{s['sym']}</b> — WR {s['wr']}%"
-                f" ({s['wins']}W/{s['losses']}L)\n"
+                f" (✅{s['wins']} ❌{s['losses']}{be_str})\n"
             )
 
-        # Общий WR
-        total_all   = sum(s["total"] for s in stats)
-        total_wins  = sum(s["wins"]  for s in stats)
-        overall_wr  = round(total_wins / total_all * 100, 1) if total_all else 0
+        # Общий WR (от decisive)
+        total_decisive = sum(s["wins"] + s["losses"] for s in stats)
+        total_wins     = sum(s["wins"] for s in stats)
+        overall_wr  = round(total_wins / total_decisive * 100, 1) if total_decisive else 0
         wr_emoji    = self._wr_emoji(overall_wr)
 
         now = datetime.utcnow()

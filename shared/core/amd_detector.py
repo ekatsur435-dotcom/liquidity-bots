@@ -1,320 +1,214 @@
 """
-AMD (Accumulation / Manipulation / Distribution) Detector v1.0
-Детектор фаз рынка по методологии ICT/Smart Money Concepts.
+AMD (Accumulation / Manipulation / Distribution) Detector v2.0
+ПОЛНАЯ ПЕРЕРАБОТКА на основе CRT уровней.
 
-Фазы:
-  1. ACCUMULATION (Накопление): Smart Money собирает позицию
-     - Диапазон цен, низкая волатильность
-     - Большие объёмы, но цена не растёт (поглощение ликвидности)
-     - CVD показывает накопление (buy/sell pressure)
-     
-  2. MANIPULATION (Манипуляция): Выбивание стопов, сбор ликвидности
-     - Ложный пробой уровней
-     - Быстрое движение + возврат
-     - Большой объём на свече манипуляции
-     
-  3. DISTRIBUTION (Распределение): Smart Money разгружает позицию
-     - Диапазон цен, цена "залипает" на highs
-     - Распределение объёма на продажу
-     - Подготовка к падению
+Версия 1.0 (старая) использовала CVD данные — которых у нас нет → всегда unknown 30%.
+Версия 2.0 использует:
+  1. CRT позицию цены (логика Pine Script Statham v135) — основа
+  2. Реальные данные биржи (OI, Funding, L/S ratio) — усиление/фильтрация
 
-  4. ADVANCE (Рост): Фаза после накопления
-  5. DECLINE (Падение): Фаза после распределения
+Фазы AMD (как в Pine Script):
+  ACCUMULATION : цена в нижних 35% CRT диапазона
+  EQUILIBRIUM  : цена в средних 30%
+  DISTRIBUTION : цена в верхних 35% (65%+ от Low)
+  MANIPULATION : TBS detected (sweep CRT уровня + возврат)
+  OUTSIDE      : цена вне CRT диапазона
 
-Признаки:
-  - EQH/EQL зоны (пули ликвидности)
-  - OB качество (Order Blocks)
-  - CVD divergence
-  - Volume Profile (пики объёма)
+Усиление реальными данными (чего нет в TradingView):
+  OI + Funding + L/S → подтверждают или повышают уверенность
 """
-
 from __future__ import annotations
-
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
-logger = logging.getLogger("amd_detector")
+from .crt_levels import CRTMultiFrame, build_crt
 
 
 class AMDPhase(Enum):
-    """Фазы AMD"""
-    UNKNOWN = "unknown"
-    ACCUMULATION = "accumulation"      # Накопление (готовимся к росту)
-    MANIPULATION = "manipulation"      # Манипуляция (выбиваем стопы)
-    DISTRIBUTION = "distribution"      # Распределение (готовимся к падению)
-    ADVANCE = "advance"               # Рост (после накопления)
-    DECLINE = "decline"               # Падение (после распределения)
-
-
-@dataclass
-class AMDConfig:
-    """Конфигурация AMD Detector"""
-    # Для ACCUMULATION
-    accumulation_range_pct: float = 3.0     # Диапазон накопления (%)
-    accumulation_min_candles: int = 10      # Мин свечей в диапазоне
-    accumulation_volume_spike: float = 1.5  # Всплеск объёма при накоплении
-    
-    # Для MANIPULATION
-    manipulation_reversal_pct: float = 1.5   # Откат после пробоя (%)
-    manipulation_speed: float = 2.0          # Скорость движения (ATR множитель)
-    
-    # Для DISTRIBUTION
-    distribution_range_pct: float = 4.0     # Диапазон распределения (%)
-    distribution_top_rejections: int = 3    # Мин отторжений от верха
-    
-    # CVD thresholds
-    cvd_accumulation_threshold: float = 65.0   # Давление покупок
-    cvd_distribution_threshold: float = 35.0   # Давление продаж
+    UNKNOWN       = "unknown"
+    ACCUMULATION  = "accumulation"
+    MANIPULATION  = "manipulation"
+    DISTRIBUTION  = "distribution"
+    EQUILIBRIUM   = "equilibrium"
+    OUTSIDE_HIGH  = "outside_high"   # выше CRT High — сильная перекупленность
+    OUTSIDE_LOW   = "outside_low"    # ниже CRT Low  — сильная перепроданность
+    DECLINE       = "decline"        # совместимость со старым кодом
+    ADVANCE       = "advance"        # совместимость со старым кодом
 
 
 @dataclass
 class AMDResult:
-    """Результат анализа AMD"""
-    phase: AMDPhase
-    confidence: float                  # 0-100 уверенность
-    reasons: List[str] = field(default_factory=list)
-    
-    # Детали фазы
-    phase_duration: int = 0           # Сколько свечей в фазе
-    range_high: Optional[float] = None
-    range_low: Optional[float] = None
-    
-    # Сигналы
-    is_ready_for_move: bool = False   # Готов ли импульс
-    expected_direction: Optional[str] = None  # "up" или "down"
-    
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    phase:              AMDPhase
+    confidence:         float           # 0-100
+    reasons:            List[str] = field(default_factory=list)
+
+    crt_alignment:      int  = 0        # 0-9 совпадение ТФ
+    tf_phases:          Dict[str, str] = field(default_factory=dict)
+
+    is_ready_for_move:  bool = False
+    expected_direction: Optional[str] = None   # "up" | "down"
+
+    oi_confirms:        bool = False
+    funding_confirms:   bool = False
+    ls_confirms:        bool = False
+
+    # Совместимость со старым кодом
+    phase_duration:     int  = 0
+    range_high:         Optional[float] = None
+    range_low:          Optional[float] = None
+    metadata:           Dict = field(default_factory=dict)
 
 
-@dataclass
-class RangeInfo:
-    """Информация о ценовом диапазоне"""
-    high: float
-    low: float
-    duration: int                      # Свечей в диапазоне
-    volume_profile: Dict[float, float] = field(default_factory=dict)  # Цена -> объём
-    touches_high: int = 0             # Касаний верха
-    touches_low: int = 0              # Касаний низа
+def _exchange_confirmation(
+    phase: AMDPhase,
+    direction: str,
+    oi_change_4d: float = 0.0,
+    funding_rate:  float = 0.0,
+    long_ratio:    float = 50.0,
+) -> Tuple[bool, bool, bool, int, List[str]]:
+    """
+    Подтверждение AMD фазы реальными данными биржи.
+    Возвращает: (oi_ok, funding_ok, ls_ok, bonus, reasons)
+    """
+    oi_ok = funding_ok = ls_ok = False
+    bonus = 0
+    reasons = []
+
+    if direction == "short":
+        if phase in (AMDPhase.DISTRIBUTION, AMDPhase.OUTSIDE_HIGH):
+            if oi_change_4d >= 10:
+                oi_ok = True; bonus += 3
+                reasons.append(f"OI +{oi_change_4d:.1f}% — лонги в ловушке +3")
+            if funding_rate >= 0.05:
+                funding_ok = True; bonus += 3
+                reasons.append(f"Funding {funding_rate:.3f}% — лонги переплачивают +3")
+            if long_ratio >= 60:
+                ls_ok = True; bonus += 2
+                reasons.append(f"L/S {long_ratio:.0f}% лонгов — толпа против нас +2")
+    else:
+        if phase in (AMDPhase.ACCUMULATION, AMDPhase.OUTSIDE_LOW):
+            if funding_rate <= -0.05:
+                funding_ok = True; bonus += 3
+                reasons.append(f"Funding {funding_rate:.3f}% — шорты переплачивают +3")
+            if long_ratio <= 40:
+                ls_ok = True; bonus += 2
+                reasons.append(f"L/S {long_ratio:.0f}% лонгов — толпа в шортах +2")
+            if oi_change_4d <= -5:
+                oi_ok = True; bonus += 2
+                reasons.append(f"OI {oi_change_4d:.1f}% — шорты выходят +2")
+
+    return oi_ok, funding_ok, ls_ok, bonus, reasons
 
 
 class AMDDetector:
-    """
-    Детектор фаз Accumulation/Manipulation/Distribution.
-    Определяет где находится цена и готов ли Smart Money к движению.
-    """
-    
-    def __init__(self, config: Optional[AMDConfig] = None):
-        self.cfg = config or AMDConfig()
-        
-    def analyze_range(self, candles: List[Dict]) -> RangeInfo:
-        """Анализировать ценовой диапазон"""
-        if len(candles) < 5:
-            return RangeInfo(high=0, low=0, duration=0)
-        
-        highs = [c["high"] for c in candles]
-        lows = [c["low"] for c in candles]
-        
-        range_high = max(highs)
-        range_low = min(lows)
-        
-        # Считаем касания
-        tolerance = (range_high - range_low) * 0.02  # 2% от диапазона
-        touches_high = sum(1 for h in highs if h >= range_high - tolerance)
-        touches_low = sum(1 for l in lows if l <= range_low + tolerance)
-        
-        # Volume profile
-        vol_profile = {}
-        for c in candles:
-            price_level = round(c["close"] / (range_high - range_low) * 10) * ((range_high - range_low) / 10)
-            vol_profile[price_level] = vol_profile.get(price_level, 0) + c.get("volume", 0)
-        
-        return RangeInfo(
-            high=range_high,
-            low=range_low,
-            duration=len(candles),
-            volume_profile=vol_profile,
-            touches_high=touches_high,
-            touches_low=touches_low
+    """AMD Detector v2.0 — CRT позиция + биржевые данные."""
+
+    def analyze(
+        self,
+        candles: List[Any],
+        cvd_pressure: Any = None,      # не используется (совместимость)
+        current_price: float = 0.0,
+        oi_change_4d: float = 0.0,
+        funding_rate:  float = 0.0,
+        long_ratio:    float = 50.0,
+        ohlcv_1h: Optional[List[Any]] = None,
+        ohlcv_4h: Optional[List[Any]] = None,
+    ) -> AMDResult:
+        """Старый интерфейс — совместим с вызовами из main.py"""
+        _1h = ohlcv_1h or candles
+        crt = build_crt(ohlcv_1h=_1h, ohlcv_4h=ohlcv_4h)
+        return self._run(crt, current_price, oi_change_4d, funding_rate, long_ratio)
+
+    def analyze_with_crt(
+        self,
+        crt: CRTMultiFrame,
+        current_price: float,
+        oi_change_4d: float = 0.0,
+        funding_rate:  float = 0.0,
+        long_ratio:    float = 50.0,
+        direction: str = "short",
+    ) -> AMDResult:
+        """Новый интерфейс — принимает готовые CRT уровни."""
+        return self._run(crt, current_price, oi_change_4d, funding_rate, long_ratio, direction)
+
+    def _run(
+        self,
+        crt: CRTMultiFrame,
+        price: float,
+        oi_change_4d: float,
+        funding_rate:  float,
+        long_ratio:    float,
+        direction: str = "both",
+    ) -> AMDResult:
+        if price <= 0:
+            return AMDResult(phase=AMDPhase.UNKNOWN, confidence=0,
+                             reasons=["Нет данных цены"])
+
+        primary = crt.primary()
+        if not primary or not primary.is_valid:
+            return AMDResult(phase=AMDPhase.UNKNOWN, confidence=20,
+                             reasons=["CRT диапазон не определён (мало данных)"])
+
+        zone = primary.classify(price)
+        phase_map = {
+            "ACCUMULATION": AMDPhase.ACCUMULATION,
+            "DISTRIBUTION":  AMDPhase.DISTRIBUTION,
+            "EQUILIBRIUM":   AMDPhase.EQUILIBRIUM,
+            "OUTSIDE_HIGH":  AMDPhase.OUTSIDE_HIGH,
+            "OUTSIDE_LOW":   AMDPhase.OUTSIDE_LOW,
+        }
+        phase = phase_map.get(zone, AMDPhase.UNKNOWN)
+
+        reasons = [
+            f"CRT [{primary.low:.6g} — {primary.high:.6g}] "
+            f"EQ={primary.eq:.6g} | цена={price:.6g} → {zone}"
+        ]
+
+        # Multi-TF выравнивание
+        tf_phases = crt.classify_all(price)
+        align_dir = ("short" if phase in (AMDPhase.DISTRIBUTION, AMDPhase.OUTSIDE_HIGH) else
+                     "long"  if phase in (AMDPhase.ACCUMULATION, AMDPhase.OUTSIDE_LOW) else direction)
+        align_score, align_reasons = crt.alignment_score(price, align_dir)
+        reasons.extend(align_reasons)
+
+        # Биржевые данные
+        ex_dir = ("short" if phase in (AMDPhase.DISTRIBUTION, AMDPhase.OUTSIDE_HIGH) else
+                  "long"  if phase in (AMDPhase.ACCUMULATION, AMDPhase.OUTSIDE_LOW)  else align_dir)
+        oi_ok, funding_ok, ls_ok, ex_bonus, ex_reasons = _exchange_confirmation(
+            phase, ex_dir, oi_change_4d, funding_rate, long_ratio)
+        reasons.extend(ex_reasons)
+
+        base = {
+            AMDPhase.DISTRIBUTION: 55, AMDPhase.OUTSIDE_HIGH: 65,
+            AMDPhase.ACCUMULATION: 55, AMDPhase.OUTSIDE_LOW:  65,
+            AMDPhase.EQUILIBRIUM:  35,
+        }.get(phase, 25)
+
+        confidence = min(95, base + align_score * 4 + ex_bonus * 2)
+
+        is_ready = (
+            phase in (AMDPhase.DISTRIBUTION, AMDPhase.OUTSIDE_HIGH, AMDPhase.ACCUMULATION, AMDPhase.OUTSIDE_LOW)
+            and confidence >= 55
         )
-    
-    def detect_manipulation(self, 
-                            candles: List[Dict], 
-                            eqh: Optional[float] = None,
-                            eql: Optional[float] = None) -> Tuple[bool, List[str]]:
-        """Детекция манипуляции (liquidity sweep)"""
-        if len(candles) < 3:
-            return False, []
-        
-        reasons = []
-        
-        # Проверяем пробой EQH с возвратом
-        if eqh:
-            recent_high = candles[-2]["high"]  # Предпоследняя свеча
-            if recent_high > eqh:
-                # Вернулись обратно?
-                current_close = candles[-1]["close"]
-                if current_close < eqh:
-                    drop_pct = (recent_high - current_close) / recent_high * 100
-                    if drop_pct >= self.cfg.manipulation_reversal_pct:
-                        reasons.append(f"EQH sweep + {drop_pct:.1f}% reversal")
-                        return True, reasons
-        
-        # Проверяем пробой EQL с возвратом
-        if eql:
-            recent_low = candles[-2]["low"]
-            if recent_low < eql:
-                current_close = candles[-1]["close"]
-                if current_close > eql:
-                    bounce_pct = (current_close - recent_low) / recent_low * 100
-                    if bounce_pct >= self.cfg.manipulation_reversal_pct:
-                        reasons.append(f"EQL sweep + {bounce_pct:.1f}% reversal")
-                        return True, reasons
-        
-        # Проверяем быстрое движение с возвратом
-        if len(candles) >= 3:
-            c1, c2, c3 = candles[-3], candles[-2], candles[-1]
-            
-            # Лонг: резкий дамп + быстрый отскок
-            if c2["low"] < c1["low"] * 0.98 and c3["close"] > c2["open"]:
-                reasons.append("Quick dump + recovery")
-                return True, reasons
-            
-            # Шорт: резкий памп + быстрое падение
-            if c2["high"] > c1["high"] * 1.02 and c3["close"] < c2["open"]:
-                reasons.append("Quick pump + drop")
-                return True, reasons
-        
-        return False, reasons
-    
-    def analyze(self,
-                candles: List[Dict],
-                cvd_pressure: Optional[float] = None,  # 0-100
-                eqh: Optional[float] = None,
-                eql: Optional[float] = None,
-                current_price: Optional[float] = None
-                ) -> AMDResult:
-        """
-        Анализировать фазу AMD.
-        
-        Args:
-            candles: Свечи для анализа (минимум 20)
-            cvd_pressure: Давление CVD (0=sell, 100=buy)
-            eqh: Equal Highs (пул ликвидности сверху)
-            eql: Equal Lows (пул ликвидности снизу)
-            current_price: Текущая цена
-        """
-        
-        if len(candles) < 20:
-            return AMDResult(
-                phase=AMDPhase.UNKNOWN,
-                confidence=0,
-                reasons=["Insufficient candles (need 20+)"]
-            )
-        
-        reasons = []
-        price = current_price or candles[-1]["close"]
-        
-        # Анализируем диапазон
-        range_info = self.analyze_range(candles[-20:])
-        range_pct = (range_info.high - range_info.low) / range_info.low * 100
-        
-        # 1. Проверяем манипуляцию (самый сильный сигнал)
-        is_manipulation, mani_reasons = self.detect_manipulation(candles[-5:], eqh, eql)
-        if is_manipulation:
-            reasons.extend(mani_reasons)
-            # Определяем направление после манипуляции
-            direction = "up" if "EQL" in str(mani_reasons) else "down"
-            return AMDResult(
-                phase=AMDPhase.MANIPULATION,
-                confidence=80,
-                reasons=reasons,
-                is_ready_for_move=True,
-                expected_direction=direction,
-                metadata={"manipulation_type": "liquidity_sweep"}
-            )
-        
-        # 2. Проверяем накопление
-        if range_pct <= self.cfg.accumulation_range_pct:
-            if range_info.duration >= self.cfg.accumulation_min_candles:
-                volume_avg = sum(c.get("volume", 0) for c in candles[-20:]) / 20
-                recent_volume = sum(c.get("volume", 0) for c in candles[-5:]) / 5
-                
-                if recent_volume > volume_avg * self.cfg.accumulation_volume_spike:
-                    if cvd_pressure and cvd_pressure >= self.cfg.cvd_accumulation_threshold:
-                        reasons.append(f"Tight range {range_pct:.1f}% + volume spike + buy pressure")
-                        return AMDResult(
-                            phase=AMDPhase.ACCUMULATION,
-                            confidence=75,
-                            reasons=reasons,
-                            phase_duration=range_info.duration,
-                            range_high=range_info.high,
-                            range_low=range_info.low,
-                            is_ready_for_move=range_info.touches_low >= 3,  # 3+ касания низа
-                            expected_direction="up",
-                            metadata={
-                                "touches_high": range_info.touches_high,
-                                "touches_low": range_info.touches_low
-                            }
-                        )
-        
-        # 3. Проверяем распределение
-        if range_pct <= self.cfg.distribution_range_pct:
-            if range_info.touches_high >= self.cfg.distribution_top_rejections:
-                if cvd_pressure and cvd_pressure <= self.cfg.cvd_distribution_threshold:
-                    reasons.append(f"Range {range_pct:.1f}% + {range_info.touches_high} top rejections + sell pressure")
-                    return AMDResult(
-                        phase=AMDPhase.DISTRIBUTION,
-                        confidence=70,
-                        reasons=reasons,
-                        phase_duration=range_info.duration,
-                        range_high=range_info.high,
-                        range_low=range_info.low,
-                        is_ready_for_move=range_info.touches_high >= 4,
-                        expected_direction="down",
-                        metadata={
-                            "touches_high": range_info.touches_high,
-                            "touches_low": range_info.touches_low
-                        }
-                    )
-        
-        # 4. Проверяем тренд (advance/decline)
-        if len(candles) >= 10:
-            price_10_ago = candles[-10]["close"]
-            price_change = (price - price_10_ago) / price_10_ago * 100
-            
-            if price_change > 5:  # Рост > 5% за 10 свечей
-                return AMDResult(
-                    phase=AMDPhase.ADVANCE,
-                    confidence=60,
-                    reasons=[f"Uptrend: +{price_change:.1f}% in 10 candles"],
-                    expected_direction="up"
-                )
-            elif price_change < -5:  # Падение > 5%
-                return AMDResult(
-                    phase=AMDPhase.DECLINE,
-                    confidence=60,
-                    reasons=[f"Downtrend: {price_change:.1f}% in 10 candles"],
-                    expected_direction="down"
-                )
-        
-        # Не определили фазу
+        expected_dir = (
+            "down" if phase in (AMDPhase.DISTRIBUTION, AMDPhase.OUTSIDE_HIGH) else
+            "up"   if phase in (AMDPhase.ACCUMULATION, AMDPhase.OUTSIDE_LOW)  else None
+        )
+
         return AMDResult(
-            phase=AMDPhase.UNKNOWN,
-            confidence=30,
-            reasons=[f"Range {range_pct:.1f}%, no clear phase detected"],
-            range_high=range_info.high,
-            range_low=range_info.low
+            phase=phase, confidence=round(confidence, 1), reasons=reasons,
+            crt_alignment=align_score, tf_phases=tf_phases,
+            is_ready_for_move=is_ready, expected_direction=expected_dir,
+            oi_confirms=oi_ok, funding_confirms=funding_ok, ls_confirms=ls_ok,
+            range_high=primary.high, range_low=primary.low,
         )
 
 
-# Singleton instance
-_amd: Optional[AMDDetector] = None
+_instance: Optional[AMDDetector] = None
 
-def get_amd_detector(config: Optional[AMDConfig] = None) -> AMDDetector:
-    """Get or create AMDDetector singleton"""
-    global _amd
-    if _amd is None:
-        _amd = AMDDetector(config)
-    return _amd
+def get_amd_detector() -> AMDDetector:
+    global _instance
+    if _instance is None:
+        _instance = AMDDetector()
+    return _instance
