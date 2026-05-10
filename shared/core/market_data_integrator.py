@@ -210,19 +210,8 @@ class MarketDataIntegrator:
         except Exception as e:
             errors.append(f"Funding: {e}")
         
-        # 5. Liquidations (из Binance или OKX)
-        try:
-            if self.binance:
-                liq = await self.binance.get_liquidations(symbol)
-                if liq:
-                    context.liq_1h_usd = liq.get("total_usd", 0)
-                    context.liq_dominant_side = liq.get("dominant_side")
-                    data_points += 1
-        except Exception as e:
-            errors.append(f"Liq: {e}")
-        
-        # Оценка качества данных
-        context.data_quality_score = int((data_points / 5) * 100)
+        # Оценка качества данных (liquidations removed — API unavailable)
+        context.data_quality_score = int((data_points / 4) * 100)
         
         if context.data_quality_score >= 80:
             context.confidence = "high"

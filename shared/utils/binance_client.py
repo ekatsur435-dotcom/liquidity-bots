@@ -12,7 +12,6 @@ Market Data Client v3.0 — Multi-Source Fallback Architecture
   ✅ OKX Client integration — полный fallback для всех broken Binance endpoints
   ✅ get_open_interest_history — OKX → Bybit → Binance → estimation
   ✅ get_taker_buy_sell_ratio — OKX taker volume → estimation from klines
-  ✅ get_liquidations — OKX → Coinglass → estimation
   ✅ get_funding_rate — OKX → Bybit → Binance
   ✅ Автоматический source switching при ошибках API
 """
@@ -96,12 +95,6 @@ class MarketData:
     # Taker buy/sell ratio: 0.0 = все продают, 1.0 = все покупают
     # >0.6 = агрессивные покупки (бычье давление), <0.4 = агрессивные продажи
     taker_buy_sell_ratio: Optional[float] = None
-
-    # Ликвидации в USD за последний период (15m/1h)
-    recent_liquidations_usd: Optional[float] = None
-
-    # Сторона доминирующих ликвидаций: "LONG" | "SHORT" | None
-    liq_side: Optional[str] = None
 
     # Top trader L/S ratio - "умные деньги" позиции
     # >1.5 = топы в лонгах, <0.8 = топы в шортах
@@ -760,15 +753,7 @@ class BinanceFuturesClient:
 
     async def get_open_interest(self, symbol: str) -> Optional[float]:
         await self._init_source()
-        # Level 1: OKX (надёжнее всего с EU IP)
-        try:
-            okx = get_okx_client()
-            okx_oi = await okx.get_open_interest(symbol)
-            if okx_oi and okx_oi.oi > 0:
-                return okx_oi.oi  # Не логируем — это single-point, не history
-        except Exception:
-            pass
-        # Level 2: Bybit
+        # ✅ FIX: Try Bybit FIRST (works without proxies), then Binance
         result = await self._bybit("/v5/market/tickers",
                                    {"category": "linear", "symbol": symbol})
         if result:
@@ -777,17 +762,7 @@ class BinanceFuturesClient:
                 oi = items[0].get("openInterest")
                 if oi:
                     return float(oi)
-        # Level 3: CryptoQuant
-        try:
-            from api.cryptoquant_client import get_cryptoquant_client
-            cq = get_cryptoquant_client()
-            if cq.api_key:
-                cq_hist = await cq.get_oi_history(symbol, "1h", 1)
-                if cq_hist:
-                    return cq_hist[-1].get("sumOpenInterest", 0) or None
-        except Exception:
-            pass
-        # Level 4: Binance fallback
+        # Fallback to Binance
         if self._use_binance:
             d = await self._binance("/fapi/v1/openInterest", {"symbol": symbol})
             if d:
@@ -797,20 +772,41 @@ class BinanceFuturesClient:
     async def get_open_interest_history(self, symbol: str,
                                          period: str = "1h", limit: int = 5) -> List[Dict]:
         """
-        Получить историю Open Interest.
-        ✅ v2.0: делегирует в OIAggregator (4 источника + estimation fallback)
-        Chain: OKX → Bybit → CryptoQuant → Binance → klines estimation
+        Получить историю Open Interest с многоуровневым fallback:
+        OKX → Bybit → Binance → empty list
         """
-        try:
-            from core.oi_aggregator import get_oi_history
-            return await get_oi_history(
-                symbol, period, limit,
-                binance_client=self,
-                okx_client=get_okx_client(),
-            )
-        except Exception as e:
-            print(f"   ⚠️ OI aggregator error ({symbol}): {e}")
-            return []
+        await self._init_source()
+        
+        # 🆕 NEW: Level 1 — OKX (работает без прокси!)
+        okx = get_okx_client()
+        okx_data = await okx.get_open_interest_history(symbol, period, limit)
+        if okx_data:
+            print(f"   ✅ OI from OKX: {len(okx_data)} points")
+            return okx_data
+        
+        # Level 2 — Bybit
+        imap = {"5m": "5min", "15m": "15min", "30m": "30min",
+                "1h": "1h", "4h": "4h", "1d": "1d"}
+        result = await self._bybit("/v5/market/open-interest",
+                                   {"category": "linear", "symbol": symbol,
+                                    "intervalTime": imap.get(period, "1h"),
+                                    "limit": limit})
+        if result and result.get("list"):
+            print(f"   ✅ OI from Bybit: {len(result.get('list', []))} points")
+            return [{"sumOpenInterest": item.get("openInterest", 0), 
+                     "timestamp": int(item.get("ts", 0))}
+                    for item in result.get("list", [])]
+        
+        # Level 3 — Binance (часто не работает /fapi/v1/openInterestHist)
+        if self._use_binance:
+            d = await self._binance("/fapi/v1/openInterestHist",
+                                    {"symbol": symbol, "period": period, "limit": limit})
+            if d:
+                print(f"   ✅ OI from Binance: {len(d)} points")
+                return d
+        
+        print(f"   ⚠️ OI data unavailable for {symbol}")
+        return []
 
     async def get_oi_change(self, symbol: str, days: int = 4) -> float:
         history = await self.get_open_interest_history(symbol, "1d", days + 1)
@@ -891,13 +887,6 @@ class BinanceFuturesClient:
         
         return None
 
-    async def get_liquidations(self, symbol: str,
-                                limit: int = 100) -> Optional[Dict]:
-        """
-        Ликвидационные данные — все внешние источники недоступны с Render EU IP.
-        Возвращаем None без лишних запросов и без спама в логах.
-        """
-        return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
                                              period: str = "15m") -> Optional[float]:
@@ -1145,19 +1134,13 @@ class BinanceFuturesClient:
             # ── Realtime метрики (параллельно для скорости) ───────────────────
             realtime_results = await asyncio.gather(
                 self.get_taker_buy_sell_ratio(symbol, "15m"),
-                self.get_liquidations(symbol, 100),
                 self.get_top_trader_position_ratio(symbol, "15m"),
                 return_exceptions=True
             )
-            taker_ratio, liq_data, top_trader_ls = realtime_results
+            taker_ratio, top_trader_ls = realtime_results
 
             # Обработка realtime метрик
             taker_buy_sell_ratio = None if isinstance(taker_ratio, Exception) else taker_ratio
-            recent_liquidations_usd = None
-            liq_side = None
-            if not isinstance(liq_data, Exception) and liq_data:
-                recent_liquidations_usd = liq_data.get("total_usd")
-                liq_side = liq_data.get("dominant_side")
             top_trader_long_short_ratio = None if isinstance(top_trader_ls, Exception) else top_trader_ls
 
 
@@ -1209,8 +1192,6 @@ class BinanceFuturesClient:
                 long_short_ratio=float(ratio) if isinstance(ratio, (int, float)) else (ratio.get("longShortRatio", 1.0) if isinstance(ratio, dict) else 1.0),
                 hourly_deltas=hourly_vols,
                 taker_buy_sell_ratio=taker_buy_sell_ratio,
-                recent_liquidations_usd=recent_liquidations_usd,
-                liq_side=liq_side,
                 top_trader_long_short_ratio=top_trader_long_short_ratio,
                 last_updated=datetime.utcnow(),
                 breakout_score=breakout_score,

@@ -79,7 +79,7 @@ from core.position_tracker import PositionTracker
 from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus  # ✅ v2.7 TBS
+from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
 from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ v2.8
@@ -873,7 +873,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
       - volume_spike_ratio + atr_14_pct → scorer
     """
     try:
-        _sideways_warning = False  # ✅ FIX v2: инициализируем флаг боковика
         print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: ENTERED scan_symbol!")  # DEBUG ENTRY
         print(f"🔬 [SCAN-LONG-ENTRY] {symbol}: calling get_complete_market_data...")  # DEBUG
         md = await state.binance.get_complete_market_data(symbol)
@@ -917,11 +916,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     except Exception as e:
                         print(f"   ⚠️ Failed to send BTC block alert: {e}")
                 return None
-            # ✅ FIX v2: Боковик — ставим флаг, проверим после ob_quality
-            _sideways_warning = any("боковик" in w.lower() or "sideways" in w.lower() or "range" in w.lower()
-                                    for w in ctx.warnings)
-            if _sideways_warning:
-                print(f"⚠️ [CTX-LONG] {symbol}: Боковик — отложенная проверка OB/TBS перед входом")
             for w in ctx.warnings:
                 print(f"⚠️ [CTX-LONG] {symbol}: {w}")
 
@@ -1150,7 +1144,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         
         # ✅ v3.0: CRT уровни + TBS multi-TF + AMD v2.0
         from core.crt_levels import build_crt
-        # amd_tbs_confluence_bonus imported at top-level ✅
+        from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus
         tbs_found  = False
         tbs_zone   = None
         _crt_long  = None
@@ -1276,13 +1270,9 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         base_score_before_override = 0
 
         try:
-            from core.oi_aggregator import get_oi_history
-            oi_history = await get_oi_history(
-                symbol, "15m", 5,
-                binance_client=state.binance,
-                okx_client=state.okx if hasattr(state, "okx") else None,
-            )
+            oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
             # ✅ FIX L2: проверяем что OI данные свежие (не старше 30 мин)
+            # Если Bybit геоблокирован и fallback Binance — OI может быть stale
             if oi_history:
                 latest_ts = oi_history[-1].get("timestamp", 0) if isinstance(oi_history[-1], dict) else 0
                 if latest_ts and (time.time() * 1000 - latest_ts) > 1_800_000:  # >30 мин
@@ -1380,14 +1370,6 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
         ob_quality    = (ob_result.bullish_ob.quality if ob_result and ob_result.bullish_ob else 0)
         ob_quality_ok = ob_quality >= 60   # ✅ Снижен порог с 70 → 60
         ob_q_high     = ob_quality >= 70   # Высокое качество
-
-        # ✅ FIX v2: Боковик-фильтр — блокируем LONG в боковике без сильного OB
-        _sideways_warning = locals().get("_sideways_warning", False)
-        if _sideways_warning:
-            if not ob_q_high:  # Нужен OB >= 70 в боковике
-                print(f"🚫 [CTX-SIDEWAYS-BLOCK] {symbol}: Боковик + OB={ob_quality} < 70 → LONG заблокирован")
-                return None
-            print(f"⚠️ [CTX-LONG] {symbol}: Боковик, но OB={ob_quality} ≥ 70 — проходим")
         
         # ✅ FIX v7: Детальные логи score breakdown + паттерны
         _pat_names = [p.name for p in patterns] if patterns else []
@@ -1786,19 +1768,7 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     current_price=md.price
                 )
                 _amd_phase = _amd_res.phase.value
-                # ✅ FIX v2: Hard block для фаз противоречащих LONG
-                if _amd_res.phase.value == "distribution" and _amd_res.confidence >= 60:
-                    print(f"🚫 [AMD-BLOCK-LONG] {symbol}: Фаза=DISTRIBUTION conf={_amd_res.confidence:.0f}% — LONG заблокирован (цена в фазе распределения)")
-                    return None
-                elif _amd_res.phase.value == "equilibrium" and _amd_res.confidence >= 70:
-                    # В боковике допускаем только если есть мощные confluences (TBS + OB)
-                    has_strong_confluence = tbs_found and ob_quality >= 65
-                    if not has_strong_confluence:
-                        print(f"🚫 [AMD-BLOCK-LONG] {symbol}: Фаза=EQUILIBRIUM conf={_amd_res.confidence:.0f}% без TBS+OB — LONG заблокирован")
-                        return None
-                    else:
-                        print(f"⚠️ [AMD-LONG] {symbol}: Фаза=EQUILIBRIUM conf={_amd_res.confidence:.0f}% — разрешён (TBS+OB={ob_quality})")
-                elif _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 60:
+                if _amd_res.phase.value == "accumulation" and _amd_res.confidence >= 60:
                     _amd_boost = 6
                     final_score += _amd_boost
                     reasons.append(f"🏗️ AMD Накопление (conf={_amd_res.confidence:.0f}%) +{_amd_boost}")
@@ -1813,10 +1783,29 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
                     final_score += 3
                     reasons.append("📈 AMD Рост (advance) +3")
                     print(f"📈 [AMD-LONG] {symbol}: Фаза=РОСТ")
-                elif _amd_res.phase.value == "distribution" and _amd_res.confidence >= 65:
-                    # Распределение противоречит LONG — снижаем скор
-                    final_score -= 5
-                    print(f"⚠️ [AMD-LONG] {symbol}: Фаза=РАСПРЕДЕЛЕНИЕ (против LONG) -5")
+                elif _amd_res.phase.value == "distribution":
+                    # ✅ FIX-AMD: DISTRIBUTION противоречит LONG — жёсткий штраф
+                    # conf>=80%: hard block (цена готовится падать, лонг — ошибка)
+                    # conf>=65%: сильный штраф (-15)
+                    # conf<65%:  лёгкий штраф (-5)
+                    if _amd_res.confidence >= 80:
+                        print(f"🚫 [AMD-DIST-BLOCK] {symbol}: DISTRIBUTION conf={_amd_res.confidence:.0f}% — LONG заблокирован")
+                        return None  # Hard block — не входим в лонг при явном распределении
+                    elif _amd_res.confidence >= 65:
+                        final_score -= 15
+                        print(f"⚠️ [AMD-LONG] {symbol}: DISTRIBUTION conf={_amd_res.confidence:.0f}% (против LONG) -15")
+                    else:
+                        final_score -= 5
+                        print(f"⚠️ [AMD-LONG] {symbol}: DISTRIBUTION conf={_amd_res.confidence:.0f}% (слабое) -5")
+                elif _amd_res.phase.value == "equilibrium":
+                    # ✅ FIX-AMD: EQUILIBRIUM = боковик, лонг в боковике — слабее
+                    # Без TBS и без высокого OB quality — фильтруем
+                    if not tbs_found and ob_quality < 70:
+                        print(f"🚫 [AMD-EQ-BLOCK] {symbol}: EQUILIBRIUM (боковик) без TBS/OB — LONG слабый, пропуск")
+                        return None
+                    else:
+                        final_score -= 8
+                        print(f"⚠️ [AMD-LONG] {symbol}: EQUILIBRIUM (боковик) без подтверждения -8")
                 else:
                     print(f"📊 [AMD-LONG] {symbol}: Фаза={_amd_phase} conf={_amd_res.confidence:.0f}%")
         except Exception as _e:
@@ -2094,26 +2083,19 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.5 FIX: Считаем ТОЛЬКО LONG позиции.
-    BingX использует position_side (не side) — старый фильтр по .side всегда давал 0
-    → exchange_full никогда не срабатывал → бот открывал 21+ позицию при лимите 15.
+    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
+    Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
     """
     if state.auto_trader:
         try:
-            pos = await state.auto_trader.bingx.get_positions()
-            # ✅ FIX: BingX возвращает position_side, не side
-            long_pos = [
-                p for p in pos
-                if getattr(p, "position_side", getattr(p, "side", "")).upper() == "LONG"
-                and abs(getattr(p, "size", 0)) > 0
-            ]
+            pos      = await state.auto_trader.bingx.get_positions()
+            long_pos = [p for p in pos if getattr(p, "side", "").upper() == "LONG"]
             if long_pos:
-                print(f"[LONG] Open positions on exchange: {len(long_pos)} "
+                print(f"[LONG] Open positions: {len(long_pos)} "
                       f"({', '.join(getattr(p,'symbol','?') for p in long_pos[:5])})")
             return len(long_pos)
         except Exception as e:
             print(f"[LONG] _count_real_positions error: {e}")
-    # Redis fallback
     cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
     try:
         all_active = state.redis.get_active_signals(Config.BOT_TYPE)
@@ -2155,6 +2137,12 @@ async def scan_market():
             continue
         _scanned_this_run.add(symbol)
         try:
+            # ✅ FIX-DEDUP: пропускаем символ если уже есть открытая позиция (real или virtual)
+            try:
+                if state.redis.has_open_position_for_symbol(Config.BOT_TYPE, symbol):
+                    continue
+            except Exception:
+                pass
             # Дедупликация: не повторяем недавний сигнал по этому символу
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue

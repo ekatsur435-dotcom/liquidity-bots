@@ -95,9 +95,6 @@ class RealtimeScorer:
     TRADE_MIN_SCORE   = 67     # ✅ BACKTEST: соответствует MIN_SHORT_SCORE=67
 
     # Пороги ликвидаций
-    LIQ_MEDIUM   = 300_000     # $300k
-    LIQ_LARGE    = 1_000_000   # $1M
-    LIQ_EXTREME  = 5_000_000   # $5M
 
     # 🆕 CoinGecko trending cache
     _trending_cache: Set[str] = set()
@@ -240,42 +237,8 @@ class RealtimeScorer:
                 elif top_ls < 0.8:
                     bonus -= 3
 
-        # ── 4. Ликвидации (до +10) ───────────────────────────────────────
-        liq_usd  = getattr(market_data, "recent_liquidations_usd", None) or 0.0
-        liq_side = getattr(market_data, "liq_side", None)  # "LONG" | "SHORT" | None
-
-        if liq_usd and liq_side:
-            if direction == "long" and liq_side == "SHORT":
-                # Шорты ликвидируют → short squeeze → хорошо для лонга
-                if liq_usd >= self.LIQ_EXTREME:
-                    bonus += 10
-                    factors.append(f"🔥 КОРОТКИЕ ликвидации ${liq_usd/1e6:.1f}M — short squeeze!")
-                elif liq_usd >= self.LIQ_LARGE:
-                    bonus += 7
-                    factors.append(f"Short squeeze ${liq_usd/1e6:.1f}M ликвидаций")
-                elif liq_usd >= self.LIQ_MEDIUM:
-                    bonus += 4
-                    factors.append(f"Short ликвидации ${liq_usd/1e3:.0f}k")
-
-            elif direction == "short" and liq_side == "LONG":
-                # Лонги ликвидируют → обвал → хорошо для шорта
-                if liq_usd >= self.LIQ_EXTREME:
-                    bonus += 10
-                    factors.append(f"🔥 ДЛИННЫЕ ликвидации ${liq_usd/1e6:.1f}M — каскад!")
-                elif liq_usd >= self.LIQ_LARGE:
-                    bonus += 7
-                    factors.append(f"Long ликвидации ${liq_usd/1e6:.1f}M — давление шортов")
-                elif liq_usd >= self.LIQ_MEDIUM:
-                    bonus += 4
-                    factors.append(f"Long ликвидации ${liq_usd/1e3:.0f}k")
-
-            # Ликвидации ПРОТИВ нашего направления — слабый негатив
-            elif direction == "long" and liq_side == "LONG" and liq_usd >= self.LIQ_LARGE:
-                bonus -= 5
-            elif direction == "short" and liq_side == "SHORT" and liq_usd >= self.LIQ_LARGE:
-                bonus -= 5
-
-        # ── 5. Объём — всплеск по hourly_deltas (до +5) ─────────────────
+        # ── 4. Объём (было 5 — ликвидационный блок удалён: данные недоступны)
+        # ── 4. Объём — всплеск по hourly_deltas (до +5) ─────────────────
         if hourly_deltas and len(hourly_deltas) >= 2:
             last_hour  = abs(hourly_deltas[-1]) if hourly_deltas else 0
             avg_recent = sum(abs(d) for d in hourly_deltas[:-1]) / max(len(hourly_deltas) - 1, 1)
