@@ -40,8 +40,7 @@ class PositionTracker:
       6. Записывает P&L в stats:daily:{date}
     """
 
-    CHECK_INTERVAL      = 30   # секунды между итерациями трекера
-    RECONCILE_INTERVAL  = 10  # итераций → 10×30s = 5 минут (1 батчевый запрос на биржу)
+    CHECK_INTERVAL = 30
 
     # ── Трейлинг (активируется ПОСЛЕ BE, не сразу) ───────────────────────────
     TRAIL_DISTANCE  = 0.008   # 0.8% ниже текущей цены (для LONG)
@@ -103,19 +102,11 @@ class PositionTracker:
         if not signals:
             return
 
-        # Счётчик итераций
+        # ✅ v4.0: Zombie cleanup — раз в 10 итераций чистим «мёртвые» Redis позиции
         if not hasattr(self, '_scan_count'):
             self._scan_count = 0
         self._scan_count += 1
-
-        # ✅ Батчевая сверка с биржей раз в RECONCILE_INTERVAL итераций (5 мин)
-        # Один вызов get_positions() на ВСЕ позиции — не per-symbol, дёшево.
-        # Ловит: ручное закрытие на бирже, SL/TP без уведомления, делистинг.
-        if self._scan_count % self.RECONCILE_INTERVAL == 0:
-            await self._reconcile_with_exchange(signals)
-
-        # Zombie cleanup (старый механизм, резервный)
-        if self._scan_count % 20 == 0:
+        if self._scan_count % 10 == 0:
             await self._cleanup_zombie_positions(signals)
 
         for sig in signals:
@@ -126,117 +117,6 @@ class PositionTracker:
             except Exception as e:
                 print(f"[PositionTracker] {sig.get('symbol')} error: {e}")
             await asyncio.sleep(0.3)
-
-    async def _reconcile_with_exchange(self, signals: list):
-        """
-        Батчевая сверка Redis с биржей — 1 API запрос на все позиции.
-
-        Алгоритм:
-          1. get_positions() — все открытые позиции на BingX за 1 вызов
-          2. Строим set активных символов по стороне (LONG/SHORT)
-          3. Для каждого Redis-сигнала: если нет в bingx_set → закрываем с P&L
-          4. Уведомление в Telegram с указанием причины (ручное закрытие / SL биржи)
-
-        Не трогает unconfirmed позиции (confirmed=False) — они ещё не открыты.
-        """
-        if not self.auto_trader or not getattr(self.auto_trader, 'bingx', None):
-            return
-
-        bingx = self.auto_trader.bingx
-        try:
-            all_bingx = await bingx.get_positions()  # все позиции за 1 запрос
-        except Exception as e:
-            print(f"[PT-RECONCILE] get_positions error: {e}")
-            return
-
-        # Строим set: "BTCUSDT:LONG", "ETHUSDT:SHORT" и т.д.
-        bingx_open: set = set()
-        for p in (all_bingx or []):
-            try:
-                sym = (p.symbol if hasattr(p, 'symbol') else p.get('symbol', ''))
-                sym = sym.replace('-', '').replace('_', '').upper()
-                side = (p.position_side if hasattr(p, 'position_side') else p.get('positionSide', ''))
-                size = float(p.size if hasattr(p, 'size') else p.get('positionAmt', 0))
-                if size != 0 and sym and side:
-                    bingx_open.add(f"{sym}:{side.upper()}")
-            except Exception:
-                pass
-
-        closed_count = 0
-        for sig in signals:
-            if sig.get('status') != 'active':
-                continue
-            if not sig.get('confirmed', False):
-                continue  # не трогаем неподтверждённые
-
-            symbol    = sig.get('symbol', '')
-            direction = sig.get('direction', 'long')
-            entry     = _f(sig.get('entry_price', 0))
-            pos_side  = 'LONG' if direction == 'long' else 'SHORT'
-            lookup    = f"{symbol.replace('-','').upper()}:{pos_side}"
-
-            if lookup in bingx_open:
-                continue  # позиция жива — всё ок
-
-            # Позиции нет на бирже — закрываем Redis
-            market_price = None
-            try:
-                ticker = await bingx.get_ticker(symbol)
-                if ticker:
-                    market_price = float(
-                        ticker.get('lastPrice') or ticker.get('price') or 0
-                    ) or None
-            except Exception:
-                pass
-
-            close_price = market_price or entry
-            pnl = _pnl(direction, entry, close_price)
-
-            sig['status']      = 'closed_manual'
-            sig['close_price'] = close_price
-            sig['close_time']  = datetime.utcnow().isoformat()
-            sig['pnl_pct']     = round(pnl, 4)
-            sig['pnl']         = round(pnl, 4)
-            sig['tp_level']    = 'MANUAL_CLOSE'
-            self._save(symbol, sig)
-            self.micro_trailing.remove(symbol)
-
-            try:
-                self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
-            except Exception:
-                pass
-
-            taken = sig.get('taken_tps', [])
-            d_emoji = '🟢' if direction == 'long' else '🔴'
-            price_info = f"${close_price:,.6f}" + (" (рынок)" if market_price else " (вход, цена недоступна)")
-            taken_str = f"TP взято: {len(taken)}
-" if taken else ""
-
-            await self._notify(sig, (
-                f"🤚 <b>Позиция закрыта вручную</b>
-
-"
-                f"{d_emoji} <b>#{symbol}</b> {direction.upper()}
-"
-                f"📍 Вход:  <b>${entry:,.6f}</b>
-"
-                f"💰 Цена:  <b>{price_info}</b>
-"
-                f"{taken_str}"
-                f"📊 P&L:   <b>{pnl:+.2f}%</b>
-"
-                f"<i>Позиция не найдена на бирже (закрыта вручную или по SL/TP)</i>"
-            ))
-
-            await self._record_pnl(sig, pnl, 'manual_close', 'MANUAL_CLOSE')
-            print(f"[PT-RECONCILE] {symbol} {pos_side}: не на бирже → закрыт. "
-                  f"P&L={pnl:+.2f}% цена={close_price:.6f}")
-            closed_count += 1
-
-        if closed_count:
-            print(f"[PT-RECONCILE] ✅ Сверка завершена: закрыто {closed_count} позиций")
-        else:
-            print(f"[PT-RECONCILE] ✅ Все {len([s for s in signals if s.get('confirmed')])} подтверждённых позиций на бирже")
 
     async def _cleanup_zombie_positions(self, signals: list):
         """
@@ -272,7 +152,14 @@ class PositionTracker:
                     for p in positions
                 )
                 if not has_real_position:
-                    # Позиция есть в Redis, нет на бирже — это zombie
+                    # Позиция есть в Redis, нет на бирже — zombie
+                    # ✅ FIX v2.5: удаляем ОБА ключа (signals: и positions:)
+                    try:
+                        self.redis.client.delete(f"{self.bot_type}:signals:{symbol}")
+                        self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+                        print(f"🗑️ [ZOMBIE] Redis очищен: {symbol}")
+                    except Exception:
+                        pass
                     entry = sig.get('entry_price', 0)
                     redis_price = sig.get('last_price', entry)
                     opened_at = sig.get('timestamp', '')
@@ -391,63 +278,6 @@ class PositionTracker:
                     return
             except Exception:
                 pass
-
-        # ✅ FIX-DESYNC: Быстрая проверка синхронизации с биржей для ПОДТВЕРЖДЁННЫХ позиций
-        # Если позиция была закрыта биржей (SL/TP) но Redis не знает — zombie обнаруживаем здесь
-        confirmed = signal.get("confirmed", False)
-        if confirmed and self.auto_trader and hasattr(self.auto_trader, "bingx") and self.auto_trader.bingx:
-            try:
-                pos_side = "LONG" if direction == "long" else "SHORT"
-                bingx_positions = await self.auto_trader.bingx.get_positions(symbol)
-                has_real = any(
-                    abs(p.size) > 0 and p.position_side == pos_side
-                    for p in (bingx_positions or [])
-                )
-                if not has_real:
-                    # Позиция закрыта биржей (SL/TP сработал), Redis не знал
-                    market_price = None
-                    try:
-                        ticker = await self.auto_trader.bingx.get_ticker(symbol)
-                        if ticker:
-                            market_price = float(ticker.get("lastPrice") or ticker.get("price") or 0) or None
-                    except Exception:
-                        pass
-                    close_price = market_price or entry
-                    pnl = _pnl(direction, entry, close_price)
-                    signal["status"]      = "closed_exchange"
-                    signal["close_price"] = close_price
-                    signal["close_time"]  = datetime.utcnow().isoformat()
-                    signal["pnl_pct"]     = round(pnl, 4)
-                    signal["pnl"]         = round(pnl, 4)
-                    signal["tp_level"]    = "EXCHANGE_CLOSED"
-                    self._save(symbol, signal)
-                    self.micro_trailing.remove(symbol)
-                    # Чистим positions key
-                    try:
-                        self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
-                    except Exception:
-                        pass
-                    d_emoji = "🟢" if direction == "long" else "🔴"
-                    price_src = f"рынок ${close_price:,.6f}" if market_price else f"Redis вход ${entry:,.6f}"
-                    await self._notify(signal, (
-                        f"🔄 <b>Позиция закрыта биржей</b>
-
-"
-                        f"{d_emoji} <b>#{symbol}</b> {direction.upper()}
-"
-                        f"📍 Вход:  <b>${entry:,.6f}</b>
-"
-                        f"💰 Цена:  <b>{price_src}</b>
-"
-                        f"📊 P&L:   <b>{pnl:+.2f}%</b>
-"
-                        f"<i>SL/TP сработал на бирже, Redis синхронизирован</i>"
-                    ))
-                    await self._record_pnl(signal, pnl, "exchange_close", "EXCHANGE_CLOSED")
-                    print(f"[PT-SYNC] {symbol}: позиция закрыта биржей, Redis обновлён. P&L={pnl:+.2f}%")
-                    return
-            except Exception as _sync_err:
-                print(f"[PT-SYNC] {symbol}: sync check error: {_sync_err}")
 
         md = await self.binance.get_complete_market_data(symbol)
         if not md:
@@ -625,45 +455,14 @@ class PositionTracker:
                         position_exists = True
                         break
                 if not position_exists:
-                    # ✅ FIX-DESYNC: позиция закрыта биржей — синхронизируем Redis
-                    market_price = None
+                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — закрыта. Синхронизируем Redis.")
+                    # ✅ FIX v2.5: правильный ключ signals: (не signal:)
                     try:
-                        ticker = await self.auto_trader.bingx.get_ticker(symbol)
-                        if ticker:
-                            market_price = float(ticker.get("lastPrice") or ticker.get("price") or 0) or None
-                    except Exception:
-                        pass
-                    close_price = market_price or _f(signal.get("last_price", entry))
-                    pnl = _pnl(direction, entry, close_price)
-                    signal["status"]      = "closed_exchange"
-                    signal["close_price"] = close_price
-                    signal["close_time"]  = datetime.utcnow().isoformat()
-                    signal["pnl_pct"]     = round(pnl, 4)
-                    signal["pnl"]         = round(pnl, 4)
-                    signal["tp_level"]    = "EXCHANGE_CLOSED"
-                    self._save(symbol, signal)
-                    self.micro_trailing.remove(symbol)
-                    try:
+                        self.redis.client.delete(f"{self.bot_type}:signals:{symbol}")
                         self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
-                    except Exception:
-                        pass
-                    print(f"[PT-SYNC][_move_sl] {symbol}: не найдена на бирже → закрываем Redis. P&L={pnl:+.2f}%")
-                    d_emoji = "🟢" if direction == "long" else "🔴"
-                    await self._notify(signal, (
-                        f"🔄 <b>Синхронизация позиции</b>
-
-"
-                        f"{d_emoji} <b>#{symbol}</b> {direction.upper()}
-"
-                        f"📍 Вход: <b>${entry:,.6f}</b>
-"
-                        f"💰 Выход: <b>${close_price:,.6f}</b>
-"
-                        f"📊 P&L: <b>{pnl:+.2f}%</b>
-"
-                        f"<i>Позиция была закрыта биржей (SL/TP), Redis синхронизирован</i>"
-                    ))
-                    await self._record_pnl(signal, pnl, "exchange_close", "EXCHANGE_CLOSED")
+                        print(f"🗑️ [PT] Redis очищен для {symbol} (позиция закрыта на бирже)")
+                    except Exception as _re:
+                        print(f"⚠️ [PT] Redis cleanup error {symbol}: {_re}")
                     return
             except Exception as e:
                 print(f"⚠️  [PT] _move_sl: ошибка проверки позиции {symbol}: {e}")

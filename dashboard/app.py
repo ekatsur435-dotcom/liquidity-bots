@@ -393,12 +393,14 @@ def api_positions():
                             pos = json.loads(pos_data)
                             symbol = key.split(":")[-1]
                             
-                            # 🔧 FIX: Нормализуем символ (убираем '-') для отображения
+                            # 🔧 FIX v2.5: включаем направление в ключ дедупликации
+                            # Раньше: BTCUSDT short + BTCUSDT long = одно пропускалось как dup
                             symbol_normalized = symbol.replace('-', '').upper()
-                            if symbol_normalized in seen_symbols:
+                            dedup_key = f"{prefix}:{symbol_normalized}"
+                            if dedup_key in seen_symbols:
                                 debug_info["skipped_dup"] += 1
-                                continue  # Пропускаем дубликат
-                            seen_symbols.add(symbol_normalized)
+                                continue
+                            seen_symbols.add(dedup_key)
                             
                             # ✅ Дополнительные поля для отображения
                             status = pos.get('status', 'active')

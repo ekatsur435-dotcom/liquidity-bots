@@ -229,12 +229,12 @@ class OKXClient:
         okx_symbol = self._convert_symbol(symbol)
 
         # ✅ FIX: правильный маппинг period → bar для OKX history endpoint
+        # OKX поддерживает только: 5m, 1H, 4H, 1D
         bar_map = {
             "1m": "5m", "5m": "5m", "15m": "5m", "30m": "1H",
-            "1h": "1H", "1H": "1H", "4h": "4H", "4H": "4H",
-            "1d": "1D", "1D": "1D"
+            "1h": "1H", "4h": "4H", "1d": "1D",
         }
-        bar = bar_map.get(period.upper(), bar_map.get(period.lower(), "1H"))
+        bar = bar_map.get(period.lower(), "1H")  # always lowercase lookup
 
         endpoint = "/api/v5/public/open-interest-history"
         params = {

@@ -81,7 +81,7 @@ from core.short_filter import get_short_filter, get_short_tp_config
 from core.realtime_scorer import get_realtime_scorer
 from core.liquidity_detector import detect_smart_money_entry  # ✅ v2.7
 from core.entry_confirmation import EntryConfirmation  # ✅ v2.7
-from core.tbs_detector import detect_tbs_entry  # ✅ v2.7 TBS
+from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus  # ✅ v2.7 TBS
 from core.symbol_profiler import SymbolProfile, get_symbol_profiler, get_profile  # ✅ v2.8
 from core.order_block_detector import detect_order_blocks, format_ob_for_signal  # ✅ v2.8
 from core.liquidity_pool_scanner import scan_liquidity_pools, LiquidityPoolScanner  # ✅ Phase 3
@@ -876,20 +876,22 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
-    БЫЛО: len(get_positions()) — считало ВСЕ позиции BingX включая
-          Результат: SHORT бот всегда видел 19-20 и был заблокирован навсегда!
-    СТАЛО: фильтр side == "SHORT" → считаем только наши шорты.
+    ✅ v2.5 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
+    BingX использует position_side (не side) — старый фильтр по .side давал 0
+    → бот открывал неограниченное число позиций при лимите 15.
     """
     if state.auto_trader:
         try:
             pos = await state.auto_trader.bingx.get_positions()
-            # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SELL"]
+            # ✅ FIX: BingX возвращает position_side="SHORT", не side="SELL"
+            short_pos = [
+                p for p in pos
+                if getattr(p, "position_side", getattr(p, "side", "")).upper() in ("SHORT", "SELL")
+                and abs(getattr(p, "size", 0)) > 0
+            ]
             if short_pos:
-                msg = f"""📉 <b>SHORT Позиции {'[DEMO] ' if Config.DEMO_MODE else ''}({len(short_pos)}):</b>\n\n"""
-                msg += "\n".join(f"  • {getattr(p,'symbol','?')} {getattr(p,'size',0):.2f} @ {getattr(p,'entry_price',0):.4f} (UPNL: {getattr(p,'unrealized_pnl',0):.2f})" for p in short_pos)
-                print(msg)
+                print(f"[SHORT] Open positions on exchange: {len(short_pos)} "
+                      f"({', '.join(getattr(p,'symbol','?') for p in short_pos[:5])})")
             return len(short_pos)
         except Exception as e:
             print(f"[SHORT] _count_real_positions BingX error: {e}")
@@ -1103,7 +1105,7 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
         # ✅ v3.0: CRT уровни + TBS multi-TF + AMD v2.0
         # =========================================================================
         from core.crt_levels import build_crt
-        from core.tbs_detector import detect_tbs_entry, amd_tbs_confluence_bonus
+        # amd_tbs_confluence_bonus imported at top-level ✅
         tbs_found = False
         tbs_zone  = None
         tbs       = None
@@ -1327,9 +1329,14 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
             # ✅ BUG#4 FIX: fallback на md.oi_change_4d если API вернул 404/400
             oi_history = None
             try:
-                oi_history = await state.binance.get_open_interest_history(symbol, "15m", 5)
+                from core.oi_aggregator import get_oi_history
+                oi_history = await get_oi_history(
+                    symbol, "15m", 5,
+                    binance_client=state.binance,
+                    okx_client=state.okx if hasattr(state, "okx") else None,
+                )
             except Exception as _oi_e:
-                print(f"[OI-PROXY] {symbol}: API error ({_oi_e.__class__.__name__}) — using md.oi_change_4d fallback")
+                print(f"[OI-PROXY] {symbol}: aggregator error ({_oi_e.__class__.__name__}) — using md.oi_change_4d fallback")
 
             if oi_history and len(oi_history) >= 3:
                 ois  = [float(h.get("sumOpenInterest", 0)) for h in oi_history]
@@ -1915,8 +1922,8 @@ async def scan_symbol(symbol: str, btc_1h: float | None = None) -> Optional[Dict
                                     for i, tp in enumerate(tp_levels)]
                         take_profits = [
                             (round(_eq,   8), 35),
-                            (round(_clow, 8), 30),
-                        ] + [(p, max(5, w - 10)) for p, w in _std_tps[2:4]]
+                            (round(_clow, 8), 25),
+                        ] + [(p, max(5, w - 15)) for p, w in _std_tps[2:6]]  # ✅ FIX: TP3-6 (было [2:4])
                         print(f"🎯 [CRT-TP-SHORT] {symbol}: TP1=EQ {_eq:.6g} (-{_eq_pct:.1f}%), "
                               f"TP2=Low {_clow:.6g} (-{_low_pct:.1f}%)")
                     else:
@@ -2096,14 +2103,6 @@ async def scan_market():
             continue
         _scanned_this_run.add(symbol)
         try:
-            # ✅ FIX-DEDUP: пропускаем символ если уже есть открытая позиция (real или virtual)
-            # Предотвращает повторные сигналы и skipped_dup=21 в дашборде
-            try:
-                if state.redis.has_open_position_for_symbol(Config.BOT_TYPE, symbol):
-                    continue
-            except Exception:
-                pass
-
             if _is_fresh(state.redis.get_signals(Config.BOT_TYPE, symbol, limit=1)):
                 continue
 
@@ -2147,20 +2146,43 @@ async def scan_market():
 
             # 🆕 STRICT: Проверка объема перед входом
             # ✅ BUG#5 FIX: md недоступен здесь (он локальный в scan_symbol), берём из signal
-            # ✅ FIX-VOL: MEGA_SHORT (score>=100) + HIGH_SCORE (score>=90) имеют пониженный
-            #   порог объёма — не отфильтровываем сильные сигналы на low-cap монетах.
             quote_volume = signal.get("quote_volume_24h", 0)
-            signal_score = signal.get("score", 0)
-            if signal_score >= 100:
-                # MEGA_SHORT: порог снижен до 00K (сигнал очень сильный)
-                _vol_threshold = max(500_000, Config.MIN_ENTRY_VOLUME_USDT // 20)
-            elif signal_score >= 90:
-                # HIGH_SCORE: порог снижен до M
-                _vol_threshold = max(1_000_000, Config.MIN_ENTRY_VOLUME_USDT // 10)
-            else:
-                _vol_threshold = Config.MIN_ENTRY_VOLUME_USDT
-            if quote_volume < _vol_threshold:
-                print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${_vol_threshold/1e6:.1f}M (score={signal_score:.0f}) — skip")
+
+            # ✅ FIX: quote_volume может быть 0 если API не вернул данные —
+            # делаем Bybit fallback чтобы не блокировать реальные монеты
+            if not quote_volume:
+                try:
+                    _ticker = await state.binance._bybit(
+                        "/v5/market/tickers", {"category": "linear", "symbol": symbol}
+                    )
+                    if _ticker and _ticker.get("list"):
+                        quote_volume = float(_ticker["list"][0].get("turnover24h", 0))
+                        signal["quote_volume_24h"] = quote_volume  # кешируем
+                except Exception:
+                    pass
+
+            # ✅ MEGA_SHORT bypass: сигналы score >= 100 отправляем в отдельный канал
+            # даже если объём < $5M (монеты реально движутся с высоким score)
+            is_mega_short = signal.get("score", 0) >= 100
+            mega_vol_threshold = 500_000  # $500k — минимум для MEGA_SHORT
+
+            if is_mega_short and quote_volume >= mega_vol_threshold:
+                # Отправляем MEGA_SHORT в отдельный топик если настроен
+                mega_topic = os.getenv("SHORT_MEGA_TOPIC_ID", "")
+                if mega_topic:
+                    try:
+                        await state.telegram.send_message(
+                            f"🔥 <b>MEGA_SHORT LOW-VOL</b> | score={signal['score']:.0f}% | "
+                            f"vol=${quote_volume/1e6:.2f}M\\n#{symbol} — объём мал, но сигнал сильный!\\n"
+                            f"Вход: {signal['entry_price']} | SL: {signal['stop_loss']}",
+                            topic_id=int(mega_topic)
+                        )
+                    except Exception as _me:
+                        print(f"⚠️ [MEGA-SHORT-TOPIC] send error: {_me}")
+                print(f"🔥 [MEGA-SHORT-BYPASS] {symbol}: score={signal['score']:.0f}% vol=${quote_volume/1e6:.2f}M — bypass volume filter!")
+                # MEGA_SHORT продолжает исполнение без блокировки
+            elif quote_volume < Config.MIN_ENTRY_VOLUME_USDT:
+                print(f"📊 [VOLUME-FILTER-SHORT] {symbol}: ${quote_volume/1e6:.1f}M < ${Config.MIN_ENTRY_VOLUME_USDT/1e6:.0f}M — skip")
                 continue
             
             # 🆕 BTC FILTER: Не шортить если BTC растет (не шортим против тренда)

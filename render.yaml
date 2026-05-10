@@ -26,10 +26,6 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: CRYPTOQUANT_API_KEY
-        sync: false
-      - key: USE_BINANCE
-        value: "false"
       - key: USE_SMC
         value: "true"
       - key: USE_TBS
@@ -84,12 +80,6 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: CRYPTOQUANT_API_KEY
-        sync: false
-      - key: USE_BINANCE
-        value: "false"
-      - key: MIN_ENTRY_VOLUME_USDT
-        value: "10000000"
       - key: USE_SMC
         value: "true"
       - key: USE_TBS

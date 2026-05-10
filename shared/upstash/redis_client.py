@@ -33,7 +33,7 @@ class UpstashRedisClient:
         self.TTL = {
             "signal": 86400,        # 24 часа для сигналов
             "position": 604800,     # 7 дней для подтвержденных позиций
-            "position_unconfirmed": 60,  # 🆕 60 сек для НЕподтвержденных позиций
+            "position_unconfirmed": 1800,  # ✅ FIX v2: 30 мин (было 60s — вызывало re-scan и дублирование)
             "state": 3600,          # 1 час для состояния
             "stats": 2592000,       # 30 дней для статистики
             "cache": 300            # 5 минут для кэша API
@@ -54,23 +54,40 @@ class UpstashRedisClient:
     def save_signal(self, bot_type: str, symbol: str, signal_data: Dict) -> bool:
         try:
             key = f"{bot_type}:signals:{symbol}"
+            
+            # ✅ DEDUP FIX v2: Write-level dedup — не пишем если свежий active сигнал уже есть
+            # Это устраняет skipped_dup=21 и двойные записи при быстрых сканах
+            try:
+                existing = self.client.lrange(key, 0, 0)
+                if existing:
+                    prev = json.loads(existing[0])
+                    if prev.get("status") == "active":
+                        prev_ts = prev.get("timestamp", "")
+                        if prev_ts:
+                            age_s = (datetime.utcnow() -
+                                     datetime.fromisoformat(prev_ts.replace("Z", ""))).total_seconds()
+                            if age_s < 300:  # Свежий (< 5 мин) → не дублируем
+                                print(f"⏭️ [Redis-DEDUP] {symbol}: active сигнал уже есть ({age_s:.0f}s) — пропущен")
+                                return False
+            except Exception:
+                pass  # При ошибке чтения — продолжаем запись
+
             if "timestamp" not in signal_data:
                 signal_data["timestamp"] = datetime.utcnow().isoformat()
             
-            # 🆕 Динамический TTL: 60 сек для неподтвержденных, 7 дней для подтвержденных
+            # Динамический TTL: 30 мин для неподтвержденных, 7 дней для подтвержденных
             confirmed = signal_data.get("confirmed", False)
             if confirmed:
                 ttl = self.TTL["position"]  # 7 дней
             else:
-                ttl = self.TTL["position_unconfirmed"]  # 60 сек
+                ttl = self.TTL["position_unconfirmed"]  # 30 мин
             
             self.client.lpush(key, json.dumps(signal_data))
             self.client.expire(key, ttl)
             self.client.ltrim(key, 0, 49)
             
-            # 🆕 Логирование TTL для дебага
             if not confirmed:
-                print(f"⏱️ [Redis] {symbol}: TTL=60s (unconfirmed), will auto-expire if not confirmed")
+                print(f"⏱️ [Redis] {symbol}: TTL=30min (unconfirmed), will auto-expire if not confirmed")
             
             return True
         except Exception as e:
