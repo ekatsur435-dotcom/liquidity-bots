@@ -2094,19 +2094,26 @@ async def scan_symbol(symbol: str) -> Optional[Dict]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4: Считаем ТОЛЬКО LONG позиции этого бота.
-    Оба бота на одном BingX аккаунте — фильтр по side=LONG обязателен.
+    ✅ v2.5 FIX: Считаем ТОЛЬКО LONG позиции.
+    BingX использует position_side (не side) — старый фильтр по .side всегда давал 0
+    → exchange_full никогда не срабатывал → бот открывал 21+ позицию при лимите 15.
     """
     if state.auto_trader:
         try:
-            pos      = await state.auto_trader.bingx.get_positions()
-            long_pos = [p for p in pos if getattr(p, "side", "").upper() == "LONG"]
+            pos = await state.auto_trader.bingx.get_positions()
+            # ✅ FIX: BingX возвращает position_side, не side
+            long_pos = [
+                p for p in pos
+                if getattr(p, "position_side", getattr(p, "side", "")).upper() == "LONG"
+                and abs(getattr(p, "size", 0)) > 0
+            ]
             if long_pos:
-                print(f"[LONG] Open positions: {len(long_pos)} "
+                print(f"[LONG] Open positions on exchange: {len(long_pos)} "
                       f"({', '.join(getattr(p,'symbol','?') for p in long_pos[:5])})")
             return len(long_pos)
         except Exception as e:
             print(f"[LONG] _count_real_positions error: {e}")
+    # Redis fallback
     cutoff = datetime.utcnow() - timedelta(hours=Config.SIGNAL_TTL_HOURS)
     try:
         all_active = state.redis.get_active_signals(Config.BOT_TYPE)

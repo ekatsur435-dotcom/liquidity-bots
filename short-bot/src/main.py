@@ -876,20 +876,22 @@ def _ohlcv(candles) -> List[List[float]]:
 
 async def _count_real_positions() -> int:
     """
-    ✅ v2.4 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
-    БЫЛО: len(get_positions()) — считало ВСЕ позиции BingX включая
-          Результат: SHORT бот всегда видел 19-20 и был заблокирован навсегда!
-    СТАЛО: фильтр side == "SHORT" → считаем только наши шорты.
+    ✅ v2.5 FIX: Считаем ТОЛЬКО SHORT позиции этого бота.
+    BingX использует position_side (не side) — старый фильтр по .side давал 0
+    → бот открывал неограниченное число позиций при лимите 15.
     """
     if state.auto_trader:
         try:
             pos = await state.auto_trader.bingx.get_positions()
-            # ✅ КРИТИЧЕСКИЙ ФИК: только SHORT позиции!
-            short_pos = [p for p in pos if getattr(p, "side", "").upper() == "SELL"]
+            # ✅ FIX: BingX возвращает position_side="SHORT", не side="SELL"
+            short_pos = [
+                p for p in pos
+                if getattr(p, "position_side", getattr(p, "side", "")).upper() in ("SHORT", "SELL")
+                and abs(getattr(p, "size", 0)) > 0
+            ]
             if short_pos:
-                msg = f"""📉 <b>SHORT Позиции {'[DEMO] ' if Config.DEMO_MODE else ''}({len(short_pos)}):</b>\n\n"""
-                msg += "\n".join(f"  • {getattr(p,'symbol','?')} {getattr(p,'size',0):.2f} @ {getattr(p,'entry_price',0):.4f} (UPNL: {getattr(p,'unrealized_pnl',0):.2f})" for p in short_pos)
-                print(msg)
+                print(f"[SHORT] Open positions on exchange: {len(short_pos)} "
+                      f"({', '.join(getattr(p,'symbol','?') for p in short_pos[:5])})")
             return len(short_pos)
         except Exception as e:
             print(f"[SHORT] _count_real_positions BingX error: {e}")

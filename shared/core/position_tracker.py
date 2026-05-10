@@ -152,7 +152,14 @@ class PositionTracker:
                     for p in positions
                 )
                 if not has_real_position:
-                    # Позиция есть в Redis, нет на бирже — это zombie
+                    # Позиция есть в Redis, нет на бирже — zombie
+                    # ✅ FIX v2.5: удаляем ОБА ключа (signals: и positions:)
+                    try:
+                        self.redis.client.delete(f"{self.bot_type}:signals:{symbol}")
+                        self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+                        print(f"🗑️ [ZOMBIE] Redis очищен: {symbol}")
+                    except Exception:
+                        pass
                     entry = sig.get('entry_price', 0)
                     redis_price = sig.get('last_price', entry)
                     opened_at = sig.get('timestamp', '')
@@ -448,9 +455,14 @@ class PositionTracker:
                         position_exists = True
                         break
                 if not position_exists:
-                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — возможно закрыта. Пропускаем обновление SL.")
-                    # Удаляем из Redis тоже
-                    self.redis.delete(f"{self.bot_type}:signal:{symbol}")
+                    print(f"⚠️  [PT] _move_sl: позиция {symbol} не найдена на бирже — закрыта. Синхронизируем Redis.")
+                    # ✅ FIX v2.5: правильный ключ signals: (не signal:)
+                    try:
+                        self.redis.client.delete(f"{self.bot_type}:signals:{symbol}")
+                        self.redis.client.delete(f"{self.bot_type}:positions:{symbol}")
+                        print(f"🗑️ [PT] Redis очищен для {symbol} (позиция закрыта на бирже)")
+                    except Exception as _re:
+                        print(f"⚠️ [PT] Redis cleanup error {symbol}: {_re}")
                     return
             except Exception as e:
                 print(f"⚠️  [PT] _move_sl: ошибка проверки позиции {symbol}: {e}")

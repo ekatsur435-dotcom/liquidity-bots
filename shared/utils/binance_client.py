@@ -894,53 +894,9 @@ class BinanceFuturesClient:
     async def get_liquidations(self, symbol: str,
                                 limit: int = 100) -> Optional[Dict]:
         """
-        Получить данные о ликвидациях.
-        Fallback: OKX → Coinglass → estimation from volume spikes
+        Ликвидационные данные — все внешние источники недоступны с Render EU IP.
+        Возвращаем None без лишних запросов и без спама в логах.
         """
-        await self._init_source()
-        
-        # 🆕 NEW: Level 1 — OKX liquidations (работает без прокси!)
-        okx = get_okx_client()
-        okx_liq = await okx.get_liquidations(symbol, limit)
-        if okx_liq:
-            print(f"   ✅ Liquidations from OKX: ${okx_liq.get('total_usd', 0):,.0f}")
-            return okx_liq
-        
-        # Level 2 — CryptoQuant (высокое качество, dedicated liquidation API)
-        try:
-            from api.cryptoquant_client import get_cryptoquant_client
-            cq = get_cryptoquant_client()
-            if cq.api_key:
-                cq_liq = await cq.get_liquidations(symbol, hours=1)
-                if cq_liq and cq_liq.get("total_usd", 0) > 0:
-                    return cq_liq
-        except Exception:
-            pass
-
-        # Level 3 — Coinglass (если есть API ключ)
-        try:
-            from api.coinglass_client import get_coinglass_client
-            cg = get_coinglass_client()
-            if cg.api_key:  # Только если ключ настроен
-                cg_liq = await cg.get_liquidations(symbol, hours=1)
-                if cg_liq and cg_liq.get('total_1h'):
-                    total = cg_liq.get('total_1h', 0)
-                    long_liq = cg_liq.get('long_liq_1h', total * 0.5)
-                    short_liq = cg_liq.get('short_liq_1h', total * 0.5)
-                    print(f"   ✅ Liquidations from Coinglass: ${total:,.0f}")
-                    return {
-                        "total_usd": total,
-                        "long_liq_usd": long_liq,
-                        "short_liq_usd": short_liq,
-                        "dominant_side": "LONG" if long_liq > short_liq else "SHORT"
-                    }
-        except Exception:
-            pass
-        
-        # 🔴 REMOVED: Binance /fapi/v1/allForceOrders — эндпоинт удалён Binance (HTTP 418/400)
-        # Используем OKX → CryptoQuant → Coinglass как источники
-        
-        print(f"   ⚠️ Liquidation data unavailable for {symbol} (Binance disabled, OKX/CQ/CG fallback failed)")
         return None
 
     async def get_top_trader_position_ratio(self, symbol: str,
